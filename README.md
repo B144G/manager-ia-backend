@@ -1,0 +1,343 @@
+# MANAGER-IA : serveur (backend)
+
+Ce dossier contient le « cerveau » du site MANAGER-IA : comptes des utilisateurs, offres Gratuit / Pro / Pro Max / Méga Pro / Illimité, paiements, assistant IA, agent de service client (WhatsApp, Messenger, Instagram), notifications pour vous, et une page d'administration (`/admin`).
+
+Il fonctionne avec **Node.js 20 ou plus** et une petite base de données SQLite (un simple fichier, rien à installer en plus).
+
+> **Important : à lire avant de commencer**
+> - Ce code a été écrit et vérifié sans accès à vos vrais comptes (Campay, Meta/WhatsApp, e-mail, Anthropic). Faites **toujours un essai réel** de chaque service après le déploiement (voir « Check-list de mise en ligne » à la fin).
+> - Les appels vocaux (téléphone) **ne sont pas gérés** par ce serveur : voir la section « Agent de service client ».
+
+---
+
+## 1. Installation sur votre ordinateur (essai)
+
+1. Installez Node.js 20 ou plus : <https://nodejs.org> (version « LTS »).
+2. Ouvrez un terminal dans ce dossier, puis :
+   ```bash
+   npm install
+   cp .env.example .env        # sous Windows : copy .env.example .env
+   ```
+3. Ouvrez le fichier `.env` avec un éditeur de texte et remplissez au minimum :
+   ```
+   ADMIN_USERNAME=votre_identifiant
+   ADMIN_PASSWORD=un_mot_de_passe_long_et_unique
+   ```
+   (Tout le reste est facultatif pour un premier essai.)
+4. Lancez :
+   ```bash
+   npm start
+   ```
+5. Ouvrez <http://localhost:3000/api/health> : vous devez voir `{"ok":true}`. La page d'administration est sur <http://localhost:3000/admin>.
+
+Sans aucune clé externe, le serveur démarre quand même : les notifications s'affichent dans le terminal, les paiements sont en mode manuel et l'assistant IA répond « indisponible » (le site a un plan B).
+
+**Commandes utiles**
+- `npm start` : démarre le serveur.
+- `npm run dev` : démarre et redémarre tout seul quand vous modifiez le code.
+- `npm run smoke` : lance un test automatique complet sur une base temporaire (rien n'est modifié chez vous). Tout doit afficher « OK ».
+
+---
+
+## 2. Brancher le frontend
+
+**Cas simple (recommandé) : même adresse.** Copiez les fichiers de votre site (le `index.html` et ses fichiers) dans le dossier `public/`. Le serveur les affiche à la racine (`/`), et l'API est sur `/api/...`. Rien d'autre à régler : les cookies de connexion fonctionnent directement.
+
+**Frontend sur un autre domaine** (par exemple le site sur `https://manager-ia.com` et le serveur sur `https://api.manager-ia.com`) :
+1. Dans les variables : `ALLOWED_ORIGINS=https://manager-ia.com,https://www.manager-ia.com`
+2. `COOKIE_SAMESITE=none` et `COOKIE_SECURE=true` (le HTTPS est obligatoire).
+3. Côté frontend, chaque appel doit envoyer les cookies : `fetch(url, { credentials: "include", ... })`.
+
+Le serveur renvoie toujours les erreurs sous la forme `{"error":"message en français"}`.
+
+---
+
+## 3. Les variables d'environnement
+
+Elles sont toutes décrites et commentées dans `.env.example`. Résumé :
+
+| Variable | À quoi ça sert | Obligatoire ? |
+|---|---|---|
+| `NODE_ENV` | `production` en ligne | conseillé en ligne |
+| `JWT_SECRET` | secret qui protège les connexions | **oui en production** (le serveur refuse de démarrer sans) |
+| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | accès à `/admin` | oui pour utiliser l'admin |
+| `ALLOWED_ORIGINS`, `COOKIE_SAMESITE`, `COOKIE_SECURE` | frontend sur un autre domaine | seulement dans ce cas |
+| `TRUST_PROXY` | `1` derrière Render/Railway/nginx (automatique en production) | non |
+| `DB_PATH` | emplacement du fichier de base de données | conseillé en ligne (disque persistant) |
+| `ADMIN_EMAIL`, `ADMIN_WHATSAPP` | où vous recevez les notifications | non (valeurs par défaut) |
+| `SMTP_*` | envoi des e-mails | non |
+| `WHATSAPP_PHONE_ID`, `WHATSAPP_TOKEN`, `WHATSAPP_TEMPLATE` | WhatsApp (notifications + agent client) | non |
+| `META_VERIFY_TOKEN`, `META_APP_SECRET`, `PAGE_ACCESS_TOKEN` | agent client WhatsApp/Messenger/Instagram | non |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | assistant IA et agent client | non |
+| `AI_PROVIDER`, `AI_API_KEY`, `AI_MODEL`, `AI_BASE_URL`, `AI_MODEL_FAST`, `AI_PROMPT_CACHE` | changer de fournisseur d'IA (Anthropic ou compatible OpenAI), petit modèle économique, cache — voir `.env.example`. Test : `npm run test:ai` | non |
+| `CAMPAY_USERNAME`, `CAMPAY_PASSWORD`, `CAMPAY_BASE_URL` | paiement automatique | non |
+| `MTN_NUMBER`, `ORANGE_NUMBER`, `PAYMENT_HOLDER_NAME` | paiement manuel | oui si pas de Campay |
+
+Ne mettez **jamais** vos clés dans le code ni dans un fichier publié sur Internet (GitHub public, etc.).
+
+---
+
+### Inscription avec code par e-mail
+
+Dès que l'envoi d'e-mails est configuré (`SMTP_HOST`…), l'inscription demande une vérification : le visiteur reçoit un code à 6 chiffres **valable 1 minute** (5 essais maximum par code, 5 codes par heure et par adresse, renvoi possible après 20 s). Le compte n'est créé qu'après la saisie du bon code, puis la personne arrive directement dans son espace. Un téléphone seul n'est alors plus accepté à l'inscription (il n'y a pas d'envoi de SMS). Variable `SIGNUP_VERIFY` : `auto` (par défaut), `on` ou `off` (pour des essais en local sans e-mail). Test : `npm run smoke:signup`.
+
+## 4. Mise en ligne, pas à pas
+
+Dans tous les cas, définissez au minimum : `NODE_ENV=production`, `JWT_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, et vos numéros de paiement (`MTN_NUMBER`, `ORANGE_NUMBER`, `PAYMENT_HOLDER_NAME`).
+
+Générer un `JWT_SECRET` :
+```bash
+node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+```
+
+### Option A : Render (simple)
+
+1. Mettez ce dossier dans un dépôt GitHub **privé** (le fichier `.gitignore` empêche d'y mettre `.env` et la base).
+2. Sur <https://render.com> : *New* → *Web Service* → choisissez votre dépôt.
+3. Réglages : *Runtime* = Node ; *Build Command* = `npm install` ; *Start Command* = `npm start`.
+4. Onglet *Environment* : ajoutez les variables ci-dessus.
+5. **Disque persistant (indispensable)** : la base de données est un fichier. Sans disque, tout est effacé à chaque redéploiement. Dans *Disks*, ajoutez un disque (monté sur `/var/data`, par exemple) puis ajoutez la variable `DB_PATH=/var/data/manager-ia.db`. (Les disques demandent une formule payante chez Render.)
+6. Déployez. Testez `https://votre-service.onrender.com/api/health`.
+7. Avec votre propre nom de domaine : *Settings* → *Custom Domains*, puis suivez les instructions DNS.
+
+### Option B : Railway
+
+1. Dépôt GitHub privé, puis <https://railway.app> → *New Project* → *Deploy from GitHub repo*.
+2. Onglet *Variables* : ajoutez les variables.
+3. Onglet *Settings* → *Volumes* : créez un volume monté sur `/data`, puis `DB_PATH=/data/manager-ia.db`.
+4. *Settings* → *Networking* → *Generate Domain* (ou votre domaine).
+5. Le fichier `Dockerfile` fourni est utilisé automatiquement.
+
+### Option C : un serveur à vous (VPS Ubuntu)
+
+```bash
+# 1. Installer Node 20+, nginx et pm2 (voir la doc de votre hébergeur pour Node)
+sudo npm install -g pm2
+# 2. Copier le dossier sur le serveur, puis :
+cd manager-ia-backend
+npm install --omit=dev
+nano .env          # remplir les variables (NODE_ENV=production, JWT_SECRET, ...)
+pm2 start src/server.js --name manager-ia
+pm2 save && pm2 startup       # redémarre tout seul après un redémarrage du serveur
+```
+Ensuite, mettez nginx devant (pour le HTTPS) et installez un certificat gratuit avec `certbot` :
+```nginx
+server {
+  server_name manager-ia.com;
+  location / {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+}
+```
+`sudo certbot --nginx -d manager-ia.com`
+
+### Option D : Docker
+
+```bash
+docker build -t manager-ia .
+docker run -d --name manager-ia -p 3000:3000 --env-file .env -v manager-ia-data:/app/data manager-ia
+```
+
+---
+
+## 5. Notifications pour vous (e-mail + WhatsApp)
+
+À chaque **nouvelle inscription**, **nouvelle demande de contact**, **paiement à valider** et **paiement confirmé**, vous recevez un e-mail (à `ADMIN_EMAIL`) et un message WhatsApp (à `ADMIN_WHATSAPP`). Si un des deux canaux n'est pas configuré, le serveur continue sans problème. Toutes les notifications sont aussi visibles dans l'onglet *Notifications* de `/admin`. Elles ne ralentissent jamais le site.
+
+### E-mail avec Gmail (mot de passe d'application)
+
+Gmail refuse votre mot de passe normal pour ce genre d'usage. Il faut un « mot de passe d'application » :
+1. Activez la **validation en deux étapes** sur votre compte Google (<https://myaccount.google.com/security>).
+2. Allez sur <https://myaccount.google.com/apppasswords>, donnez un nom (ex : « MANAGER-IA ») et créez le mot de passe : Google affiche 16 lettres.
+3. Dans les variables :
+   ```
+   SMTP_HOST=smtp.gmail.com
+   SMTP_PORT=587
+   SMTP_USER=votre.adresse@gmail.com
+   SMTP_PASS=les16lettres (sans espaces)
+   SMTP_FROM=MANAGER-IA <votre.adresse@gmail.com>
+   ```
+Gmail limite le nombre d'e-mails par jour (environ 500) : c'est largement suffisant pour démarrer.
+
+### WhatsApp : créer le modèle de message (obligatoire)
+
+WhatsApp n'autorise l'envoi d'un message « à froid » (hors des 24 h après la dernière réponse du client) qu'avec un **modèle approuvé par Meta**. Voici comment le créer :
+
+1. Créez une application sur <https://developers.facebook.com> (type « Entreprise »), ajoutez le produit **WhatsApp**, et rattachez un numéro WhatsApp Business. Notez le **Phone number ID** → `WHATSAPP_PHONE_ID`.
+2. Créez un **jeton permanent** : dans *Business Settings* → *Users* → *System users*, créez un utilisateur système, donnez-lui l'accès à l'application et au compte WhatsApp, puis générez un jeton avec les permissions `whatsapp_business_messaging` et `whatsapp_business_management` → `WHATSAPP_TOKEN`. (Le jeton temporaire du tableau de bord expire en 24 h : ne l'utilisez que pour un essai.)
+3. Dans le **Gestionnaire WhatsApp** (WhatsApp Manager) → *Modèles de message* (Message templates) → *Créer un modèle* :
+   - **Catégorie** : Utilitaire (*Utility*)
+   - **Nom** : `nouvelle_notification` (exactement, en minuscules)
+   - **Langue** : Français (`fr`)
+   - **Corps** (exactement une variable `{{1}}`) :
+     ```
+     Notification MANAGER-IA : {{1}} Consultez votre espace administrateur pour la suite.
+     ```
+   - **Exemple de valeur pour {{1}}** (Meta le demande) : `Nouvelle inscription : Awa (237670000000)`
+   - Pas d'en-tête, pas de boutons.
+4. Envoyez pour approbation (de quelques minutes à quelques heures). Quand le statut est « Approuvé », c'est prêt. Si vous donnez un autre nom au modèle, changez `WHATSAPP_TEMPLATE`.
+5. Tant que votre application Meta est en mode « développement », vous ne pouvez écrire qu'aux numéros ajoutés dans la liste de test du tableau de bord WhatsApp : ajoutez-y votre numéro d'administrateur.
+
+Le serveur envoie ce modèle avec le texte de la notification dans `{{1}}` (sur une seule ligne, 600 caractères maximum).
+
+---
+
+## 6. Activer les paiements
+
+### Paiement manuel (aucune inscription nécessaire)
+Renseignez `MTN_NUMBER`, `ORANGE_NUMBER` et `PAYMENT_HOLDER_NAME`. Le déroulement :
+1. L'utilisateur choisit une offre. Il reçoit une référence `MI-XXXXXX`, le montant et vos numéros.
+2. Il envoie l'argent en indiquant la référence en motif, puis saisit l'ID de transaction reçu par SMS.
+3. Vous recevez une notification, vous **vérifiez sur votre téléphone que l'argent est bien arrivé**, puis vous ouvrez `/admin` → *Paiements* → **Valider** (ou *Refuser*). L'offre est alors activée pour 30 jours.
+
+### Paiement automatique avec Campay
+1. Créez un compte marchand sur <https://www.campay.net> et créez une **application** : vous obtenez un *nom d'utilisateur* et un *mot de passe* d'API → `CAMPAY_USERNAME`, `CAMPAY_PASSWORD`.
+2. Pour essayer d'abord : `CAMPAY_BASE_URL=https://demo.campay.net/api` (avec les identifiants du compte de démonstration). Pour le réel : `https://www.campay.net/api`.
+3. Dans les réglages de votre application Campay, indiquez l'adresse de notification (webhook) : `https://VOTRE-DOMAINE/api/payments/webhook/campay`
+4. Dès que `CAMPAY_USERNAME` et `CAMPAY_PASSWORD` sont définis, le site passe en mode « push » : le client reçoit la demande de paiement sur son téléphone et l'offre s'active automatiquement.
+
+Sécurité : le serveur **ne croit jamais** ce que le webhook affirme. Il demande lui-même à Campay l'état réel du paiement avant d'activer l'offre, et une offre n'est jamais activée deux fois.
+
+> À vérifier dans la documentation officielle de Campay (<https://documenter.getpostman.com/view/2391374/T1LV8PVA>) : adresses d'API, format du champ `from`, valeurs de statut, et l'adresse de webhook. Je n'ai pas pu tester avec un vrai compte.
+
+---
+
+## 7. Agent de service client (WhatsApp, Messenger, Instagram)
+
+L'agent répond automatiquement aux clients de **votre entreprise** (ou de celle d'un client que vous gérez) en s'appuyant sur Claude.
+
+1. Copiez `business.example.json` en `business.json` et remplacez **tout** par les vraies informations : nom, description, produits avec prix, horaires, livraison, paiement, ton, consignes. (L'exemple décrit une boutique de vêtements fictive à Douala ; tous les produits sont marqués EXEMPLE.) Le fichier est relu automatiquement quand vous le modifiez.
+2. Dans la partie `media`, associez des mots-clés à une image ou une vidéo (lien public en `https://`) : quand le client écrit l'un de ces mots, l'image ou la vidéo est envoyée après la réponse.
+3. Renseignez `ANTHROPIC_API_KEY`, `META_VERIFY_TOKEN` (un mot de votre choix) et `META_APP_SECRET` (clé secrète de l'application Meta).
+
+**WhatsApp** : dans le tableau de bord de l'application Meta → WhatsApp → *Configuration* → *Webhook* : adresse de rappel `https://VOTRE-DOMAINE/webhooks/whatsapp`, jeton de vérification = votre `META_VERIFY_TOKEN`, puis abonnez-vous au champ **messages**.
+
+**Messenger et Instagram** : adresse de rappel `https://VOTRE-DOMAINE/webhooks/meta`, même jeton, abonnement aux messages de la Page (et d'Instagram). Mettez le jeton de la Page dans `PAGE_ACCESS_TOKEN`.
+
+Comment ça marche :
+- Le serveur vérifie la **signature** de chaque message de Meta (`X-Hub-Signature-256`) ; un message non signé est rejeté.
+- Il répond tout de suite « 200 » à Meta, puis traite le message et répond au client.
+- Il garde les 10 derniers échanges de chaque client pour comprendre le contexte.
+- Si le client écrit « humain », « conseiller » ou « responsable », ou si l'IA n'est pas sûre : le client reçoit un message « un conseiller va reprendre », **vous êtes notifié**, et le robot se tait pendant `HANDOFF_SILENCE_HOURS` heures (2 par défaut).
+- Les messages vocaux, images et documents reçus ne sont pas lus : le client est invité à écrire.
+
+Limites à connaître :
+- **Les appels vocaux ne sont PAS gérés.** Répondre à des appels téléphoniques par une IA demande un service de téléphonie voix + IA à part (fournisseur de numéros, reconnaissance vocale, synthèse vocale). Ce n'est pas inclus ici.
+- WhatsApp n'autorise les réponses libres que dans les 24 h suivant le dernier message du client.
+- Pour répondre à de vrais clients (pas seulement vos testeurs), l'application Meta doit passer en mode « Live » et votre entreprise doit être vérifiée par Meta. Voir la documentation Meta.
+
+---
+
+## 8. La page d'administration (`/admin`)
+
+Elle a la même présentation que le tableau de bord des utilisateurs : **Vue d'ensemble** (à traiter aujourd'hui, santé du système, indicateurs, revenus et inscriptions, répartition des offres, paiements à valider, demandes de contact, derniers inscrits, activité récente), puis Utilisateurs, Organisations, Paiements, Offres et abonnements, Contacts reçus, Utilisation de l'IA, Notifications et Paramètres. Elle n'affiche jamais de secret (clés, mots de passe) : seulement « configuré » ou non.
+
+
+Connectez-vous avec `ADMIN_USERNAME` / `ADMIN_PASSWORD` (10 essais maximum par 15 minutes). Vous y trouvez : les chiffres clés (inscrits, offres, paiements à valider, revenus du mois), la liste des **inscrits** (recherche, changement d'offre, liens WhatsApp et e-mail), les **paiements** (Valider / Refuser), les **demandes de contact**, les **notifications**, et l'export CSV des inscrits (s'ouvre directement dans Excel). Elle fonctionne sur téléphone.
+
+---
+
+## 8 bis. L'espace de travail IA (`/app.html`)
+
+C'est l'application maîtresse : chaque utilisateur crée une **organisation** (entreprise, boutique, association…) et gère son activité avec l'aide de l'IA, dans des **sous-applications** séparées :
+
+| Sous-application | Ce qu'elle fait | Qui y a accès |
+|---|---|---|
+| Tableau de bord | point de situation, **score de santé**, chiffres clés, graphique entrées/sorties (responsables), alertes, **décisions à prendre** (demandes de validation), projets, tâches | tous |
+| Alertes | alertes calculées par des règles claires (demandes urgentes, tâches/projets en retard, dépassement de budget, solde négatif…), avec « Que faire ? » (IA) | tous (alertes budget : responsables et plus) |
+| Service client | boîte de demandes, réponses, brouillon de réponse par l'IA, lien de formulaire public pour les clients | tous |
+| Projets et tâches | projets, tâches, assignation, retards, plan de projet proposé par l'IA | tous (créer un projet : responsable et plus) |
+| Budget | entrées / sorties, limites par catégorie, conseils de l'IA | responsables et plus |
+| Organisation | fiche de l'organisation, organigramme des postes, structure proposée par l'IA | tous (modifier : administrateur) |
+| Fonctionnement | procédures étape par étape, rédaction par l'IA | tous (modifier : administrateur) |
+| Équipe et antennes | rôles, invitations par lien, antennes (succursales / extensions) | tous (gérer : administrateur) |
+
+**Rôles** : Propriétaire > Administrateur > Responsable > Membre. **Antennes** : une personne rattachée à une antenne ne voit que les données de cette antenne et les données communes ; les administrateurs et les personnes sans antenne voient tout.
+
+**Demandes de validation** : toute personne soumet une décision (achat, embauche…) ; un responsable la valide ou la refuse (jamais sa propre demande, sauf administrateur). C'est la base du futur système d'autorisations.
+
+**L'IA ne modifie jamais rien toute seule.** Quand elle propose un plan, des postes, une procédure ou des limites de budget, la personne relit, puis valide : seulement alors le serveur enregistre (en revérifiant tout). Les messages de clients et les noms saisis sont traités comme des *données*, jamais comme des consignes (protection contre l'injection de consignes).
+
+**Limites par offre** (de la personne qui possède l'organisation) : voir `workspaceLimits` dans `src/config.js` — Gratuit : 1 organisation, 3 personnes, 1 antenne, 40 messages IA par mois ; Pro (50 000 FCFA) : 3 / 15 / 5 / 1 000 ; Pro Max (75 000) : 10 / 100 / 50 / 2 000 ; Méga Pro (100 000) : 25 / 300 / 150 / 3 500 ; Illimité (150 000) : sans limite pratique / 6 000. Les messages IA sont comptés **pour toute l'organisation** (table `ai_usage`) par période d'abonnement de 30 jours alignée sur l'échéance du propriétaire (mois civil en offre Gratuite) ; **une offre payante ne peut changer qu'à la fin de l'abonnement** (renouvellement de la même offre possible à tout moment ; l'administrateur peut forcer un changement à la main). Valeurs de départ, modifiables : `WS_AI_FREE`, `WS_AI_PRO`, `WS_AI_PROMAX`, `WS_AI_MEGAPRO`, `WS_AI_ILLIMITE` (messages) et `PRICE_PRO`, `PRICE_PROMAX`, `PRICE_MEGAPRO`, `PRICE_ILLIMITE` (prix).
+
+**Assistant commercial public** (`src/workspace/sales-public.js`, `sales.js`, page `chat.html`) : chaque organisation reçoit un lien `chat.html?o=<jeton>&c=<campagne>` à mettre dans ses publicités. L'IA répond aux prospects d'après le catalogue (table `catalog`) et les informations pratiques, enregistre le prospect (table `customers`, `stage = prospect`, `source = campagne`), puis crée une commande « à valider » (`documents.kind = 'order'`, prix calculés par le serveur d'après le catalogue, jamais par l'IA). Garde-fous : limite de débit par IP, quota de messages IA de l'organisation, remise interdite, passage de la main (ticket du service client) pour les réclamations. **Messages vocaux** : `POST /api/ws/public/chat/:jeton/voice` (audio transcrit via `STT_*`, API compatible OpenAI) ; sans `STT_API_KEY`, la page utilise la dictée du navigateur. Pas encore de WhatsApp par organisation. Test : `npm run smoke:ws`.
+
+**WhatsApp par organisation** (`src/workspace/whatsapp.js`, `src/services/waOrg.js`, `src/services/vault.js`) : chaque organisation connecte son numéro via l'API officielle (Cloud API) de Meta : l'administrateur saisit l'identifiant du numéro, le jeton d'accès et le secret de l'application (chiffrés en AES-256-GCM dans la base, jamais renvoyés), puis colle dans Meta l'adresse `/api/ws/public/whatsapp/<jeton>` et le jeton de vérification affichés dans l'onglet WhatsApp. Chaque message est vérifié par sa signature (`X-Hub-Signature-256`, corps brut), dédoublonné, limité (25 messages par 10 min et par numéro), puis traité comme sur la page web (même assistant, même quota IA). Les messages vocaux sont téléchargés chez Meta et transcrits (`STT_*`). Un responsable peut reprendre la conversation (`POST /api/ws/orgs/:id/sales/chats/:id/reply`, 24 h après le dernier message du client) ; l'IA se tait alors. Les conversations utilisent `#nom-de-campagne` dans le premier message (lien `wa.me`). Les QR codes (page de discussion et lien WhatsApp) sont générés dans le navigateur avec une bibliothèque locale (`assets/vendor/qrcode.min.js`, licence MIT). Aucune connexion par QR sur un WhatsApp personnel (méthode non officielle, numéros bloqués). Test : `npm run smoke:ws`.
+
+**Attribution, fiche prospect, mot de passe oublié** : l'assistant public remplit une fiche (`chats.lead` : besoin, quantité, délai, lieu, budget, température) à chaque message ; elle est jointe au ticket de passage de main. Un responsable attribue une conversation à un membre (`PUT /sales/chats/:id/assign`), qui reçoit une alerte et un e-mail ; l'option « répartition automatique » (`orgs.auto_assign`) choisit le commercial (poste contenant commercial/vente/vendeur/sales) ayant le moins de conversations en cours. Tout membre voit « Mes conversations » (`/sales-mine/...`) : seulement celles qui lui sont attribuées. Mot de passe oublié : `POST /api/password/forgot` (réponse toujours identique), lien à usage unique de 1 h (empreinte SHA-256 en base), `POST /api/password/reset` ; les sessions plus anciennes sont refusées (`users.pass_changed_at`) ; comptes téléphone : l'administrateur génère le lien (`POST /api/admin/users/:id/reset-link`). Pages `reinitialiser.html` et lien sur `connexion.html`.
+
+**E-mails aux clients** (`src/workspace/mail.js`) : depuis « Clients et ventes », l'IA rédige et la personne relit puis envoie. Destinataire = un client enregistré avec une adresse e-mail (pas d'envoi libre) ; jusqu'à 3 pièces jointes (images PNG/JPEG/GIF/WebP ou PDF, 2 Mo chacune, type vérifié sur le contenu) ; quota par jour selon l'offre (`MAIL_DAY_*`) ; journal des envois (table `outbox`). Il faut renseigner `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`. Les vidéos ne se joignent pas (lien dans le message).
+
+**Ajouter une sous-application** : une ligne dans `src/workspace/modules.js`, un fichier de routes dans `src/workspace/`, un fichier `assets/ws/xxx.js` côté site (et sa ligne dans `app.html`).
+
+**Tester** : `npm run smoke:ws` (base temporaire + faux serveur Claude : aucun appel externe, rien d'installé chez vous).
+
+### Les deux IA (éducation, étape suivante)
+
+- **IA de l'espace de travail** (gère l'activité des utilisateurs) : consignes dans `src/ai/workspace-prompts.js`, connaissances dans `knowledge/workspace/*.md`.
+- **IA du site** (assistant des visiteurs) : consignes dans `src/services/claude.js`, connaissances dans `knowledge/site/*.md`.
+
+Déposez simplement des fichiers `.md` dans ces dossiers : ils sont lus automatiquement (voir `knowledge/README.md`).
+
+---
+
+## 9. Sauvegarde de la base de données
+
+Toutes vos données sont dans **un seul fichier** : `data/manager-ia.db` (ou l'emplacement `DB_PATH`). SQLite en mode WAL crée aussi `manager-ia.db-wal` et `manager-ia.db-shm` : ce sont des fichiers normaux.
+
+- **Sauvegarde propre (conseillée)**, serveur en marche, avec l'outil `sqlite3` :
+  ```bash
+  sqlite3 data/manager-ia.db ".backup 'sauvegarde-$(date +%F).db'"
+  ```
+- Sans cet outil : arrêtez le serveur, copiez les 3 fichiers `manager-ia.db*`, redémarrez.
+- Automatique sur un VPS : ajoutez dans `crontab -e` une ligne qui exécute la commande ci-dessus chaque nuit, puis copiez les sauvegardes **ailleurs** (autre serveur, Google Drive...). Une sauvegarde sur le même disque ne protège pas d'une panne du disque.
+- Sur Render/Railway : activez les sauvegardes/instantanés du disque si disponibles, et téléchargez régulièrement une copie.
+- Exportez aussi de temps en temps la liste des inscrits en CSV depuis `/admin`.
+
+Pour restaurer : arrêtez le serveur, remplacez le fichier `.db` par la sauvegarde, redémarrez.
+
+---
+
+## 10. Sécurité : ce qui est fait, et ce qui vous revient
+
+Fait par le serveur : mots de passe chiffrés (bcrypt), cookies `httpOnly` (invisibles pour le JavaScript du site), en-têtes de sécurité (helmet), limites de débit (globale et par action sensible), validation de toutes les entrées, requêtes SQL paramétrées, taille des requêtes limitée (100 Ko), vérification de l'origine des requêtes, journaux sans mots de passe ni jetons, offre et date d'expiration impossibles à modifier par le client, signature des webhooks Meta vérifiée, webhook Campay recontrôlé auprès de Campay.
+
+À votre charge :
+- Utilisez **HTTPS** partout (Render/Railway le fournissent ; sur un VPS, certbot).
+- Choisissez un `ADMIN_PASSWORD` long et unique ; ne le partagez pas.
+- Gardez vos clés secrètes : si l'une fuit, **changez-la immédiatement** chez le fournisseur.
+- Faites des sauvegardes (section 9) et mettez à jour les dépendances de temps en temps (`npm audit`, `npm update`).
+- Respectez la protection des données de vos inscrits (noms, numéros, e-mails).
+
+Remarque : les numéros camerounais à 9 chiffres commençant par 6 sont enregistrés avec le préfixe `237` (ex : `653621388` devient `237653621388`) pour qu'un même numéro écrit de plusieurs façons soit reconnu.
+
+---
+
+## 11. Référence rapide de l'API
+
+Utilisateur (cookie `mia_token`, 30 jours) :
+`POST /api/register` · `POST /api/login` · `POST /api/logout` · `GET /api/me` · `PUT /api/me/state` · `POST /api/contact` · `POST /api/assistant` · `GET /api/plans` · `POST /api/payments/initiate` · `POST /api/payments/confirm-manual` · `GET /api/payments/:reference` · `POST|GET /api/payments/webhook/campay` · `GET /api/health`
+
+Administrateur (cookie `mia_admin`) :
+`POST /api/admin/login` · `POST /api/admin/logout` · `GET /api/admin/stats` · `GET /api/admin/users?q=&plan=` · `GET /api/admin/payments?status=` · `POST /api/admin/payments/:id/validate` · `POST /api/admin/payments/:id/reject` · `POST /api/admin/users/:id/plan` · `GET /api/admin/leads` · `GET /api/admin/notifications` · `GET /api/admin/export/users.csv`
+
+Webhooks Meta : `GET|POST /webhooks/whatsapp` · `GET|POST /webhooks/meta`
+
+Tâches automatiques (toutes les heures) : les offres expirées repassent à « Gratuit » ; un rappel est envoyé 3 jours avant l'expiration (e-mail si le contact est un e-mail, et notification pour vous), une seule fois par période.
+
+---
+
+## 12. Check-list de mise en ligne
+
+- [ ] `https://VOTRE-DOMAINE/api/health` répond `{"ok":true}`
+- [ ] Je peux créer un compte, me déconnecter, me reconnecter
+- [ ] Je me connecte à `/admin` et je vois mon inscription de test
+- [ ] J'ai reçu l'e-mail et le message WhatsApp de notification
+- [ ] Un paiement de test (manuel ou Campay) active bien l'offre
+- [ ] L'assistant du site répond (clé Anthropic)
+- [ ] Message de test envoyé au numéro WhatsApp de l'entreprise : l'agent répond
+- [ ] Le disque / volume persistant est monté et une sauvegarde est programmée
+- [ ] `JWT_SECRET` et `ADMIN_PASSWORD` sont longs et secrets

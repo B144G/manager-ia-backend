@@ -1,0 +1,31 @@
+{
+  "name": "manager-ia-backend",
+  "version": "1.0.0",
+  "description": "Backend de MANAGER-IA : comptes, offres, paiements, assistant IA, agent de service client, administration.",
+  "main": "src/server.js",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "smoke": "node scripts/smoke.js",
+    "smoke:ws": "node scripts/smoke-workspace.js",
+    "smoke:signup": "node scripts/smoke-signup.js",
+    "test:ai": "node scripts/test-ai-adapter.js",
+    "eval:ai": "node scripts/eval-ai.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.10.0 || ^12.0.0",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^6.9.15"
+  }
+}

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Administration MANAGER-IA</title>
+  <link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+  <section id="login" class="login hidden">
+    <form id="loginForm" class="lcard">
+      <h1>MANAGER<b>-IA</b></h1>
+      <p class="muted">Espace administrateur</p>
+      <label>Identifiant <input name="username" autocomplete="username" required></label>
+      <label>Mot de passe <input name="password" type="password" autocomplete="current-password" required></label>
+      <p id="loginError" class="error" role="alert"></p>
+      <button class="bt solid" type="submit">Se connecter</button>
+    </form>
+  </section>
+
+  <div id="app" class="shell hidden">
+    <aside class="side" id="side"></aside>
+    <div class="col">
+      <header class="top" id="top"></header>
+      <main class="main" id="main"></main>
+    </div>
+  </div>
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="/admin/admin.js"></script>
+</body>
+</html>

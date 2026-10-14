@@ -1,0 +1,29 @@
+{
+  "_aide": "FICHIER D'EXEMPLE. Copiez-le en business.json et remplacez tout par les vraies informations de votre entreprise. Les produits ci-dessous sont FICTIFS.",
+  "name": "Boutique Mode Douala (EXEMPLE)",
+  "description": "Boutique de vêtements pour femmes, hommes et enfants située à Douala. Tenues de ville, tenues de cérémonie et accessoires. (EXEMPLE : à remplacer)",
+  "location": "Akwa, Douala, près du carrefour Ancien Hôpital (EXEMPLE)",
+  "hours": "Du lundi au samedi de 9h à 19h, dimanche de 14h à 18h (EXEMPLE)",
+  "delivery": "Livraison à Douala en 24 h pour 1 000 FCFA. Livraison dans les autres villes du Cameroun par agence de voyage en 2 à 4 jours, frais selon la ville, payés par le client. Retrait gratuit en boutique. (EXEMPLE)",
+  "payment": "Orange Money, MTN Mobile Money ou espèces à la livraison à Douala. Pour une commande hors de Douala, paiement d'avance par Mobile Money. (EXEMPLE)",
+  "contact": "WhatsApp boutique : +237 6XX XX XX XX (EXEMPLE)",
+  "tone": "chaleureux, poli, simple, avec un peu d'énergie ; vouvoiement ; quelques émojis légers autorisés",
+  "products": [
+    { "name": "Robe wax Aïcha (EXEMPLE)", "price": 15000, "currency": "FCFA", "sizes": ["S", "M", "L", "XL"], "colors": ["bleu", "rouge", "jaune"], "description": "Robe longue en tissu wax", "stock": "disponible" },
+    { "name": "Chemise homme lin Bako (EXEMPLE)", "price": 12000, "currency": "FCFA", "sizes": ["M", "L", "XL", "XXL"], "colors": ["blanc", "beige"], "description": "Chemise légère en lin", "stock": "disponible" },
+    { "name": "Ensemble enfant Kodjo (EXEMPLE)", "price": 8500, "currency": "FCFA", "sizes": ["2 ans", "4 ans", "6 ans", "8 ans"], "description": "Ensemble haut + short en coton", "stock": "sur commande, 3 jours" },
+    { "name": "Sac à main Mbella (EXEMPLE)", "price": 9000, "currency": "FCFA", "colors": ["noir", "marron"], "description": "Sac en simili cuir", "stock": "stock limité" }
+  ],
+  "instructions": [
+    "Pour une commande, demande le nom du produit, la taille, la couleur, la ville et le numéro de téléphone du client.",
+    "Ne confirme jamais qu'un article est en stock s'il n'est pas marqué comme disponible : propose qu'un conseiller vérifie.",
+    "Les retours sont acceptés sous 48 h si l'article n'est pas porté (EXEMPLE).",
+    "Pas de négociation de prix ni de promotion inventée : renvoie vers un conseiller."
+  ],
+  "handoffMessage": "Bien sûr ! Un conseiller de la boutique va reprendre cette conversation très bientôt. Merci de votre patience.",
+  "media": {
+    "robe, robes, wax": { "type": "image", "url": "https://exemple.com/images/robe-wax.jpg", "caption": "Robe wax Aïcha (EXEMPLE : remplacez par votre vraie image)" },
+    "chemise, lin": { "type": "image", "url": "https://exemple.com/images/chemise-lin.jpg", "caption": "Chemise lin Bako (EXEMPLE)" },
+    "video, defile, collection": { "type": "video", "url": "https://exemple.com/videos/collection.mp4", "caption": "Notre collection (EXEMPLE)" }
+  }
+}

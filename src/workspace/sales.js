@@ -1,0 +1,212 @@
+'use strict';
+// Sous-application « Assistant commercial » (responsables et plus) : réglages de l'assistant public, catalogue, conversations avec
+// les prospects, commandes à valider et résultats par campagne. L'assistant lui-même est dans sales-public.js.
+const express = require('express');
+const { db, nowISO } = require('../db');
+const A = require('./access');
+const crm = require('./crm');
+const L = require('./sales-assign');
+const stt = require('../services/stt');
+const vault = require('../services/vault');
+const waOrg = require('../services/waOrg');
+const crypto = require('crypto');
+const { HttpError, asyncHandler, oneLine } = require('../util');
+
+const router = express.Router({ mergeParams: true });
+router.use(A.need('manager'));
+
+const today = () => nowISO().slice(0, 10);
+const catItem = (r) => ({ id: r.id, name: r.name, description: r.description, price: r.price, unit: r.unit, active: Boolean(r.active) });
+
+router.get('/', (req, res) => {
+  const o = req.org.id;
+  const since = new Date(Date.now() - 7 * 86400000).toISOString();
+  const one = (sql, ...a) => db.prepare(sql).get(o, ...a).c;
+  res.json({
+    settings: { chatEnabled: Boolean(req.org.chat_enabled), salesInfo: req.org.sales_info, token: A.can(req, 'admin') ? req.org.intake_token : undefined, voice: stt.isConfigured(), autoAssign: Boolean(req.org.auto_assign), waNumber: req.org.wa_number, waConnected: waOrg.isConnected(req.org) },
+    stats: {
+      chats7: one('SELECT COUNT(*) c FROM chats WHERE org_id = ? AND created_at >= ?', since),
+      prospects: one("SELECT COUNT(*) c FROM customers WHERE org_id = ? AND stage = 'prospect'"),
+      pendingOrders: one("SELECT COUNT(*) c FROM documents WHERE org_id = ? AND kind = 'order' AND status = 'pending'"),
+      ordered: db.prepare("SELECT COALESCE(SUM(total), 0) t FROM documents WHERE org_id = ? AND kind = 'order' AND status IN ('pending','confirmed','invoiced')").get(o).t,
+      catalog: one('SELECT COUNT(*) c FROM catalog WHERE org_id = ? AND active = 1'),
+      waiting: one("SELECT COUNT(*) c FROM chats WHERE org_id = ? AND status = 'handoff'"),
+    },
+  });
+});
+
+router.put('/settings', A.need('admin'), (req, res) => {
+  const b = req.body || {};
+  const on = b.chatEnabled === undefined ? req.org.chat_enabled : b.chatEnabled ? 1 : 0;
+  if (on && !db.prepare('SELECT 1 FROM catalog WHERE org_id = ? AND active = 1').get(req.org.id)) throw new HttpError(400, "Ajoutez d'abord au moins un article au catalogue : l'assistant a besoin de vos prix pour répondre.");
+  db.prepare('UPDATE orgs SET chat_enabled = ?, sales_info = ?, auto_assign = ? WHERE id = ?').run(on, b.salesInfo === undefined ? req.org.sales_info : A.text(b.salesInfo, 2500), b.autoAssign === undefined ? req.org.auto_assign : b.autoAssign ? 1 : 0, req.org.id);
+  A.logActivity(req.org.id, req.user.id, 'sales', on ? "Assistant commercial public activé" : 'Assistant commercial public désactivé');
+  res.json({ ok: true });
+});
+
+// ---------- Catalogue ----------
+router.get('/catalog', (req, res) => res.json({ items: db.prepare('SELECT * FROM catalog WHERE org_id = ? ORDER BY active DESC, name COLLATE NOCASE').all(req.org.id).map(catItem) }));
+router.post('/catalog', (req, res) => {
+  const b = req.body || {};
+  if (db.prepare('SELECT COUNT(*) c FROM catalog WHERE org_id = ?').get(req.org.id).c >= 200) throw new HttpError(403, 'Le catalogue est limité à 200 articles.');
+  const id = db.prepare('INSERT INTO catalog (org_id, name, description, price, unit, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(req.org.id, A.text(b.name, 100, { required: true, msg: "Indiquez le nom de l'article." }), A.text(b.description, 300), A.amount(b.price), A.text(b.unit, 30), nowISO()).lastInsertRowid;
+  res.status(201).json({ id: Number(id) });
+});
+router.put('/catalog/:id', (req, res) => {
+  const r = db.prepare('SELECT * FROM catalog WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
+  if (!r) throw new HttpError(404, 'Article introuvable.');
+  const b = req.body || {};
+  db.prepare('UPDATE catalog SET name = ?, description = ?, price = ?, unit = ?, active = ? WHERE id = ?').run(
+    b.name === undefined ? r.name : A.text(b.name, 100, { required: true, msg: "Indiquez le nom de l'article." }), b.description === undefined ? r.description : A.text(b.description, 300),
+    b.price === undefined ? r.price : A.amount(b.price), b.unit === undefined ? r.unit : A.text(b.unit, 30), b.active === undefined ? r.active : b.active ? 1 : 0, r.id);
+  res.json({ ok: true });
+});
+router.delete('/catalog/:id', (req, res) => {
+  const r = db.prepare('DELETE FROM catalog WHERE id = ? AND org_id = ?').run(A.id(req.params.id), req.org.id);
+  if (!r.changes) throw new HttpError(404, 'Article introuvable.');
+  res.json({ ok: true });
+});
+
+// ---------- Conversations ----------
+router.get('/chats', (req, res) => {
+  const rows = db.prepare(`SELECT c.id, c.campaign, c.status, c.channel, c.contact, c.created_at, c.updated_at, c.assignee_id, c.lead, au.name AS assignee, cu.name AS customer, cu.phone, cu.stage,
+      (SELECT content FROM chat_messages m WHERE m.chat_id = c.id AND m.role = 'user' ORDER BY m.id DESC LIMIT 1) AS lastText,
+      (SELECT COUNT(*) FROM chat_messages m WHERE m.chat_id = c.id) AS messages
+    FROM chats c LEFT JOIN customers cu ON cu.id = c.customer_id LEFT JOIN users au ON au.id = c.assignee_id WHERE c.org_id = ? ORDER BY c.updated_at DESC LIMIT 100`).all(req.org.id);
+  res.json({ chats: rows.map((r) => ({ id: r.id, campaign: r.campaign, status: r.status, channel: r.channel, contact: r.contact, assigneeId: r.assignee_id, assignee: r.assignee, temperature: L.cleanLead(JSON.parse(r.lead || '{}')).temperature || null, at: r.updated_at, customer: r.customer, phone: r.phone, stage: r.stage, lastText: r.lastText, messages: r.messages })) });
+});
+router.get('/chats/:id', (req, res) => {
+  const c = db.prepare('SELECT * FROM chats WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
+  if (!c) throw new HttpError(404, 'Conversation introuvable.');
+  res.json({ campaign: c.campaign, status: c.status, channel: c.channel, contact: c.contact, assigneeId: c.assignee_id, lead: L.cleanLead(JSON.parse(c.lead || '{}')), summary: L.leadSummary(c.lead), messages: db.prepare('SELECT role, content, created_at AS at FROM chat_messages WHERE chat_id = ? ORDER BY id LIMIT 200').all(c.id) });
+});
+
+// Un humain écrit lui-même au client sur WhatsApp (l'IA se tait tant que la conversation n'est pas rendue) : seulement dans les 24 h après le dernier message du client.
+async function replyToChat(org, user, chat, text) {
+  if (chat.channel !== 'whatsapp') throw new HttpError(400, "Seules les conversations WhatsApp permettent d'écrire au client depuis ici.");
+  if (!waOrg.isConnected(org)) throw new HttpError(400, "WhatsApp n'est pas connecté.");
+  const last = db.prepare("SELECT created_at FROM chat_messages WHERE chat_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1").get(chat.id);
+  if (!last || Date.now() - Date.parse(last.created_at) > 24 * 3600000) throw new HttpError(400, "Plus de 24 h depuis le dernier message du client : WhatsApp n'autorise plus d'écrire librement. Attendez qu'il vous réécrive.");
+  try { await waOrg.sendText(org, chat.contact, text); } catch (e) { throw new HttpError(502, "Le message n'a pas pu partir. Vérifiez la connexion WhatsApp dans les réglages."); }
+  db.prepare("INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, 'staff', ?, ?)").run(chat.id, text, nowISO());
+  db.prepare("UPDATE chats SET status = 'handoff', updated_at = ? WHERE id = ?").run(nowISO(), chat.id);
+  A.logActivity(org.id, user.id, 'sales', 'Réponse envoyée à un client sur WhatsApp');
+}
+router.post('/chats/:id/reply', asyncHandler(async (req, res) => {
+  const c = db.prepare('SELECT * FROM chats WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
+  if (!c) throw new HttpError(404, 'Conversation introuvable.');
+  await replyToChat(req.org, req.user, c, A.text((req.body || {}).text, 1000, { required: true, msg: 'Écrivez votre message.' }));
+  res.json({ ok: true });
+}));
+// Attribuer la conversation à un membre de l'équipe (commercial) : il est prévenu (alerte, e-mail) et l'IA se tait. userId null = libérer.
+router.put('/chats/:id/assign', (req, res) => {
+  const c = db.prepare('SELECT * FROM chats WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
+  if (!c) throw new HttpError(404, 'Conversation introuvable.');
+  const uid = A.idOrNull((req.body || {}).userId, 'Personne invalide.');
+  if (!L.assign(req.org, c, uid, req.user.id)) throw new HttpError(400, "Cette personne ne fait pas partie de l'équipe.");
+  res.json({ ok: true });
+});
+router.put('/chats/:id/status', (req, res) => {
+  const c = db.prepare('SELECT * FROM chats WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
+  if (!c) throw new HttpError(404, 'Conversation introuvable.');
+  db.prepare('UPDATE chats SET status = ? WHERE id = ?').run(A.oneOf((req.body || {}).status, ['open', 'handoff'], undefined, 'Statut inconnu.'), c.id);
+  res.json({ ok: true });
+});
+
+// ---------- WhatsApp de l'organisation (API officielle de Meta) : réglages réservés aux administrateurs ----------
+const waState = (o) => ({ connected: waOrg.isConnected(o), phoneId: o.wa_phone_id, number: o.wa_number, tokenSet: Boolean(vault.decrypt(o.wa_token)), secretSet: Boolean(vault.decrypt(o.wa_secret)), verifyToken: o.wa_verify, webhookPath: `/api/ws/public/whatsapp/${o.intake_token}`, voice: stt.isConfigured() });
+router.get('/whatsapp', A.need('admin'), (req, res) => res.json(waState(req.org)));
+router.put('/whatsapp', A.need('admin'), (req, res) => {
+  const b = req.body || {};
+  const o = req.org;
+  if (b.phoneId !== undefined && String(b.phoneId).trim() && !/^\d{5,30}$/.test(String(b.phoneId).trim())) throw new HttpError(400, "L'identifiant du numéro (Phone number ID) doit contenir uniquement des chiffres (5 à 30).");
+  const phoneId = b.phoneId === undefined ? o.wa_phone_id : String(b.phoneId).trim();
+  if (false) throw new HttpError(400, "L'identifiant du numéro (Phone number ID) doit contenir uniquement des chiffres (5 à 30).");
+  if (b.number !== undefined && /[A-Za-z]/.test(String(b.number))) throw new HttpError(400, 'Numéro WhatsApp invalide : chiffres uniquement, avec l\'indicatif du pays (237…).');
+  const number = b.number === undefined ? o.wa_number : String(b.number).replace(/\D/g, '');
+  if (number && (number.length < 8 || number.length > 15)) throw new HttpError(400, 'Numéro WhatsApp invalide : indiquez-le avec l\'indicatif du pays, par exemple 237677112233.');
+  const token = b.token ? String(b.token).trim() : '';
+  const secret = b.appSecret ? String(b.appSecret).trim() : '';
+  if (token && (token.length < 20 || token.length > 600 || /\s/.test(token))) throw new HttpError(400, 'Jeton d\'accès invalide (copiez-le en entier depuis Meta, sans espace).');
+  if (secret && (secret.length < 8 || secret.length > 200 || /\s/.test(secret))) throw new HttpError(400, "Secret de l'application invalide (copiez-le depuis Meta, sans espace).");
+  db.prepare('UPDATE orgs SET wa_phone_id = ?, wa_number = ?, wa_token = ?, wa_secret = ?, wa_verify = ? WHERE id = ?').run(
+    phoneId, number, token ? vault.encrypt(token) : o.wa_token, secret ? vault.encrypt(secret) : o.wa_secret, o.wa_verify || crypto.randomBytes(12).toString('hex'), o.id);
+  A.logActivity(o.id, req.user.id, 'sales', 'Réglages WhatsApp mis à jour');
+  res.json(waState(db.prepare('SELECT * FROM orgs WHERE id = ?').get(o.id)));
+});
+router.post('/whatsapp/test', A.need('admin'), asyncHandler(async (req, res) => {
+  if (!req.org.wa_phone_id || !vault.decrypt(req.org.wa_token)) throw new HttpError(400, "Enregistrez d'abord l'identifiant du numéro et le jeton d'accès.");
+  try { res.json(await waOrg.profile(req.org)); } catch (e) { throw new HttpError(502, `Meta a refusé la connexion : ${oneLine(e.message.replace(/^.*HTTP \d+ : /, ''), 160)}`); }
+}));
+router.delete('/whatsapp', A.need('admin'), (req, res) => {
+  db.prepare("UPDATE orgs SET wa_phone_id = '', wa_token = '', wa_secret = '', wa_verify = '', wa_number = '' WHERE id = ?").run(req.org.id);
+  A.logActivity(req.org.id, req.user.id, 'sales', 'WhatsApp déconnecté');
+  res.json({ ok: true });
+});
+
+// ---------- Commandes des clients (à valider) ----------
+router.get('/orders', (req, res) => {
+  const rows = db.prepare("SELECT d.*, c.name AS customer, c.phone, c.email FROM documents d JOIN customers c ON c.id = d.customer_id WHERE d.org_id = ? AND d.kind = 'order' ORDER BY CASE d.status WHEN 'pending' THEN 0 ELSE 1 END, d.id DESC LIMIT 100").all(req.org.id);
+  res.json({ orders: rows.map((d) => ({ id: d.id, number: d.number, status: d.status, total: d.total, note: d.note, lines: JSON.parse(d.lines), customer: d.customer, customerId: d.customer_id, phone: d.phone, email: d.email, at: d.created_at })) });
+});
+const orderOf = (req) => {
+  const d = db.prepare("SELECT * FROM documents WHERE id = ? AND org_id = ? AND kind = 'order'").get(A.id(req.params.id), req.org.id);
+  if (!d) throw new HttpError(404, 'Commande introuvable.');
+  return d;
+};
+router.put('/orders/:id/status', (req, res) => {
+  const d = orderOf(req);
+  const st = A.oneOf((req.body || {}).status, ['confirmed', 'cancelled'], undefined, 'Statut inconnu.');
+  if (d.status !== 'pending') throw new HttpError(400, 'Cette commande a déjà été traitée.');
+  db.prepare('UPDATE documents SET status = ?, updated_at = ? WHERE id = ?').run(st, nowISO(), d.id);
+  A.logActivity(req.org.id, req.user.id, 'sales', `Commande ${d.number} ${st === 'confirmed' ? 'confirmée' : 'refusée'}`);
+  res.json({ ok: true });
+});
+// Commande confirmée → facture (brouillon) avec les mêmes lignes.
+router.post('/orders/:id/invoice', (req, res) => {
+  const d = orderOf(req);
+  if (d.status !== 'confirmed') throw new HttpError(400, "Confirmez d'abord la commande.");
+  const id = crm.createDoc(req, { customerId: d.customer_id, lines: JSON.parse(d.lines), note: `Suite à la commande ${d.number}`, due: (req.body || {}).due }, 'invoice');
+  db.prepare("UPDATE documents SET status = 'invoiced', updated_at = ? WHERE id = ?").run(nowISO(), d.id);
+  res.status(201).json({ id });
+});
+
+// ---------- Campagnes : de la conversation à la commande ----------
+router.get('/campaigns', (req, res) => {
+  const rows = db.prepare(`SELECT CASE WHEN c.campaign = '' THEN '(sans campagne)' ELSE c.campaign END AS campaign, COUNT(*) AS chats,
+      COUNT(DISTINCT c.customer_id) AS prospects,
+      COUNT(DISTINCT (SELECT d.id FROM documents d WHERE d.chat_id = c.id AND d.kind = 'order' AND d.status != 'cancelled' LIMIT 1)) AS ordered,
+      COALESCE(SUM((SELECT COALESCE(SUM(d.total), 0) FROM documents d WHERE d.chat_id = c.id AND d.kind = 'order' AND d.status != 'cancelled')), 0) AS amount
+    FROM chats c WHERE c.org_id = ? GROUP BY c.campaign ORDER BY chats DESC LIMIT 30`).all(req.org.id);
+  res.json({ campaigns: rows });
+});
+
+// ---------- « Mes conversations » : tout membre de l'équipe voit et traite SEULEMENT les conversations qui lui sont attribuées ----------
+const mine = express.Router({ mergeParams: true });
+const mineChat = (req) => {
+  const c = db.prepare('SELECT * FROM chats WHERE id = ? AND org_id = ? AND assignee_id = ?').get(A.id(req.params.id), req.org.id, req.user.id);
+  if (!c) throw new HttpError(404, "Cette conversation ne vous est pas attribuée.");
+  return c;
+};
+mine.get('/chats', (req, res) => {
+  const rows = db.prepare(`SELECT c.id, c.campaign, c.status, c.channel, c.contact, c.updated_at, c.lead, cu.name AS customer, cu.phone, cu.stage,
+      (SELECT content FROM chat_messages m WHERE m.chat_id = c.id AND m.role = 'user' ORDER BY m.id DESC LIMIT 1) AS lastText
+    FROM chats c LEFT JOIN customers cu ON cu.id = c.customer_id WHERE c.org_id = ? AND c.assignee_id = ? ORDER BY c.updated_at DESC LIMIT 60`).all(req.org.id, req.user.id);
+  res.json({ chats: rows.map((r) => ({ id: r.id, campaign: r.campaign, status: r.status, channel: r.channel, contact: r.contact, at: r.updated_at, customer: r.customer, phone: r.phone, stage: r.stage, lastText: r.lastText, temperature: L.cleanLead(JSON.parse(r.lead || '{}')).temperature || null })) });
+});
+mine.get('/chats/:id', (req, res) => {
+  const c = mineChat(req);
+  res.json({ campaign: c.campaign, status: c.status, channel: c.channel, contact: c.contact, assigneeId: c.assignee_id, lead: L.cleanLead(JSON.parse(c.lead || '{}')), summary: L.leadSummary(c.lead), messages: db.prepare('SELECT role, content, created_at AS at FROM chat_messages WHERE chat_id = ? ORDER BY id LIMIT 200').all(c.id) });
+});
+mine.post('/chats/:id/reply', asyncHandler(async (req, res) => {
+  await replyToChat(req.org, req.user, mineChat(req), A.text((req.body || {}).text, 1000, { required: true, msg: 'Écrivez votre message.' }));
+  res.json({ ok: true });
+}));
+mine.post('/chats/:id/release', (req, res) => { L.assign(req.org, mineChat(req), null, req.user.id); res.json({ ok: true }); }); // rendre la conversation à l'équipe
+mine.put('/chats/:id/status', (req, res) => {
+  const c = mineChat(req);
+  db.prepare('UPDATE chats SET status = ? WHERE id = ?').run(A.oneOf((req.body || {}).status, ['open', 'handoff'], undefined, 'Statut inconnu.'), c.id);
+  res.json({ ok: true });
+});
+
+module.exports = { router, mine };
