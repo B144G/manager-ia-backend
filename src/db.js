@@ -745,6 +745,28 @@ const MIGRATIONS = [
   ALTER TABLE orgs ADD COLUMN cal_token TEXT NOT NULL DEFAULT '';
   ALTER TABLE orgs ADD COLUMN appt_reminder INTEGER NOT NULL DEFAULT 1;
   `,
+  // Clés d'accès WebAuthn et défis à usage unique pour la connexion et le renouvellement biométriques.
+  `
+  CREATE TABLE webauthn_credentials (
+    credential_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    public_key TEXT NOT NULL,
+    counter INTEGER NOT NULL DEFAULT 0,
+    transports TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    last_used_at TEXT
+  );
+  CREATE INDEX idx_webauthn_user ON webauthn_credentials(user_id);
+  CREATE TABLE webauthn_challenges (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    purpose TEXT NOT NULL,
+    challenge TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_webauthn_challenges_expiry ON webauthn_challenges(expires_at);
+  `,
 ];
 
 function migrate() {

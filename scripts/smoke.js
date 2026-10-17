@@ -65,7 +65,7 @@ async function main() {
     const blank = ['ALLOWED_ORIGINS', 'COOKIE_SAMESITE', 'COOKIE_SECURE', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM',
       'WHATSAPP_PHONE_ID', 'WHATSAPP_TOKEN', 'PAGE_ACCESS_TOKEN', 'ANTHROPIC_API_KEY', 'CAMPAY_USERNAME', 'CAMPAY_PASSWORD', 'BUSINESS_FILE', 'SITE_URL'];
     const env = { ...process.env, ...Object.fromEntries(blank.map((k) => [k, ''])), NODE_ENV: 'test', PORT: String(port), JWT_SECRET: 'secret-de-test-assez-long-123456',
-      DB_PATH: dbFile, ADMIN_USERNAME: ADMIN.username, ADMIN_PASSWORD: ADMIN.password, META_APP_SECRET: APP_SECRET, META_VERIFY_TOKEN: VERIFY,
+      DB_PATH: dbFile, TEST_AUTH_BYPASS: '1', ADMIN_USERNAME: ADMIN.username, ADMIN_PASSWORD: ADMIN.password, META_APP_SECRET: APP_SECRET, META_VERIFY_TOKEN: VERIFY,
       MTN_NUMBER: '670000001', ORANGE_NUMBER: '690000002', PAYMENT_HOLDER_NAME: 'Titulaire Test', TRUST_PROXY: '0' };
     child = spawn(process.execPath, [path.join(__dirname, '..', 'src', 'server.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';

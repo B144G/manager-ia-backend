@@ -21,6 +21,7 @@
     "eval:ai": "node scripts/eval-ai.js"
   },
   "dependencies": {
+    "@simplewebauthn/server": "^14.0.3",
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^11.10.0 || ^12.0.0",
     "cookie-parser": "^1.4.6",

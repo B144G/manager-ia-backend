@@ -57,9 +57,13 @@ const config = {
   isProd,
   port: int('PORT', 3000),
   trustProxy: str('TRUST_PROXY', isProd ? '1' : '0'),
+  testAuthBypass: str('NODE_ENV') === 'test' && bool('TEST_AUTH_BYPASS', false),
   siteUrl: str('SITE_URL'),
-  // Inscription avec code par e-mail : 'on', 'off' ou 'auto' (actif dès que l'envoi d'e-mails est configuré).
-  signupVerify: str('SIGNUP_VERIFY') || 'auto',
+  webAuthn: {
+    rpName: str('WEBAUTHN_RP_NAME', 'MANAGER-IA'),
+    rpID: str('WEBAUTHN_RP_ID', 'localhost'),
+    origin: str('WEBAUTHN_ORIGIN', 'http://localhost:5173'),
+  },
   dbPath: resolvePath(str('DB_PATH', 'data/manager-ia.db')),
   publicDir: path.join(ROOT, 'public'),
   adminDir: path.join(ROOT, 'admin'),

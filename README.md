@@ -104,7 +104,8 @@ Elles sont toutes décrites et commentées dans `.env.example`. Résumé :
 | `TRUST_PROXY` | `1` derrière Render/Railway/nginx (automatique en production) | non |
 | `DB_PATH` | emplacement du fichier de base de données | conseillé en ligne (disque persistant) |
 | `ADMIN_EMAIL`, `ADMIN_WHATSAPP` | où vous recevez les notifications | non (valeurs par défaut) |
-| `SMTP_*` | envoi des e-mails | non |
+| `SMTP_*` | code de vérification d'inscription et e-mails | obligatoire pour créer un compte |
+| `WEBAUTHN_RP_NAME`, `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGIN` | clés biométriques; en local `MANAGER-IA`, `localhost`, `http://localhost:5173` | défauts locaux |
 | `WHATSAPP_PHONE_ID`, `WHATSAPP_TOKEN`, `WHATSAPP_TEMPLATE` | WhatsApp (notifications + agent client) | non |
 | `META_VERIFY_TOKEN`, `META_APP_SECRET`, `PAGE_ACCESS_TOKEN` | agent client WhatsApp/Messenger/Instagram | non |
 | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | assistant IA et agent client | non |
@@ -139,6 +140,9 @@ Tests : `npm run smoke:ws` (412 contrôles), `npm run smoke`, `npm run smoke:sig
 
 ### Sécurité : ce qui est en place
 
+- **Inscription et biométrie** : un code à 6 chiffres envoyé par SMTP expire en 30 secondes; après validation, l'appareil enregistre une clé d'accès WebAuthn avec vérification utilisateur requise. À chaque connexion, le mot de passe est suivi de cette clé (empreinte, visage ou code PIN selon l'appareil). Après 5 minutes sans activité, une nouvelle vérification est demandée avant toute action protégée. L'empreinte elle-même ne quitte jamais l'appareil.
+- **Configuration locale** : remplissez `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` et `SMTP_FROM` dans le `.env` du backend, puis redémarrez-le. Sans SMTP opérationnel, aucune inscription n'est créée et aucun code n'est simulé. En ligne, servez le site en HTTPS et définissez `WEBAUTHN_RP_ID` et `WEBAUTHN_ORIGIN` sur le domaine exact.
+
 - **Mots de passe** : 8 caractères minimum, refus des mots de passe courants, de ceux qui contiennent le nom ou l'e-mail ; chiffrés (bcrypt coût 12). En production, `ADMIN_PASSWORD` doit faire au moins 10 caractères (le serveur refuse de démarrer sinon).
 - **Verrouillage** : 8 échecs de connexion en 15 minutes bloquent le compte (ou l'administration) pendant 15 minutes ; l'administrateur est alerté. Un compte inexistant répond comme un compte existant.
 - **Changer son mot de passe** : `POST /api/me/password` (mot de passe actuel + nouveau). Les autres appareils sont déconnectés et un e-mail d'alerte est envoyé.
@@ -151,7 +155,11 @@ Tests : `npm run smoke:ws` (412 contrôles), `npm run smoke`, `npm run smoke:sig
 
 ### Inscription avec code par e-mail
 
-Dès que l'envoi d'e-mails est configuré (`SMTP_HOST`…), l'inscription demande une vérification : le visiteur reçoit un code à 6 chiffres **valable 1 minute** (5 essais maximum par code, 5 codes par heure et par adresse, renvoi possible après 20 s). Le compte n'est créé qu'après la saisie du bon code, puis la personne arrive directement dans son espace. Un téléphone seul n'est alors plus accepté à l'inscription (il n'y a pas d'envoi de SMS). Variable `SIGNUP_VERIFY` : `auto` (par défaut), `on` ou `off` (pour des essais en local sans e-mail). Test : `npm run smoke:signup`.
+Dès que l'envoi d'e-mails est configuré (`SMTP_HOST`…), l'inscription exige un code à 6 chiffres **valable 30 secondes** (5 essais maximum par code, 5 codes par heure et par adresse, renvoi après 20 s). Sans SMTP, l'inscription est refusée; aucun code ne peut être simulé. Un téléphone seul n'est pas accepté à l'inscription.
+
+Après le code, l'utilisateur enregistre une clé d'accès WebAuthn sur son appareil. À chaque connexion, le mot de passe est suivi de la clé; si le compte existait avant cette fonction, un code e-mail est exigé une fois pour enregistrer la clé. Après 5 minutes sans activité, une nouvelle vérification est demandée avant la prochaine action protégée. La validation locale peut utiliser l'empreinte, le visage ou le code PIN de l'appareil; le serveur ne reçoit jamais les données biométriques. En production, HTTPS est obligatoire; `WEBAUTHN_RP_ID` et `WEBAUTHN_ORIGIN` doivent correspondre exactement au domaine du site.
+
+Le test d'intégration utilise un faux SMTP local, sans envoyer de vrai courriel : `npm run smoke:signup`.
 
 ## 4. Mise en ligne, pas à pas
 
@@ -390,7 +398,7 @@ Remarque : les numéros camerounais à 9 chiffres commençant par 6 sont enregis
 
 ## 11. Référence rapide de l'API
 
-Utilisateur (cookie `mia_token`, 30 jours) :
+Utilisateur (cookie `mia_token`, 30 jours maximum, verrou biométrique après 5 minutes d'inactivité) :
 `POST /api/register` · `POST /api/login` · `POST /api/logout` · `GET /api/me` · `PUT /api/me/state` · `POST /api/contact` · `POST /api/assistant` · `GET /api/plans` · `POST /api/payments/initiate` · `POST /api/payments/confirm-manual` · `GET /api/payments/:reference` · `POST|GET /api/payments/webhook/campay` · `GET /api/health`
 
 Administrateur (cookie `mia_admin`) :
