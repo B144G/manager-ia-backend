@@ -6,6 +6,8 @@ const { db, nowISO, publicUser } = require('../db');
 const limits = require('../middleware/limits');
 const { setAdminCookie, clearAdminCookie, requireAdmin } = require('../middleware/auth');
 const { markPaid, planConflict } = require('../services/payments');
+const sec = require('../services/security');
+const { notify } = require('../services/notify');
 const { HttpError, safeEqual, cleanText, addDays, parseJSON } = require('../util');
 
 const fs = require('fs');
@@ -19,9 +21,17 @@ router.post('/login', limits.adminLogin, (req, res) => {
     throw new HttpError(503, "L'administration n'est pas configurée : définissez ADMIN_USERNAME et ADMIN_PASSWORD.");
   }
   const b = req.body || {};
+  sec.assertNotLocked('admin');
   const okUser = safeEqual(typeof b.username === 'string' ? b.username : '', config.admin.username);
   const okPass = safeEqual(typeof b.password === 'string' ? b.password : '', config.admin.password);
-  if (!(okUser && okPass)) throw new HttpError(401, 'Identifiant ou mot de passe incorrect.');
+  if (!(okUser && okPass)) {
+    const locked = sec.recordFail('admin');
+    sec.audit(locked ? 'admin_locked' : 'admin_login_fail', req, null, '');
+    if (locked) notify('securite', "Alerte : trop d'échecs de connexion administrateur, accès bloqué 15 minutes.");
+    throw new HttpError(401, 'Identifiant ou mot de passe incorrect.');
+  }
+  sec.clearFails('admin');
+  sec.audit('admin_login', req, null, '');
   setAdminCookie(res);
   res.json({ ok: true });
 });
@@ -32,6 +42,11 @@ router.post('/logout', (req, res) => {
 });
 
 router.use(requireAdmin);
+
+router.get('/security-log', (req, res) => {
+  const n = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500);
+  res.json({ events: db.prepare('SELECT id, at, type, user_id AS userId, ip, detail FROM security_log ORDER BY id DESC LIMIT ?').all(n) });
+});
 
 router.get('/stats', (req, res) => {
   const total = db.prepare('SELECT COUNT(*) AS n FROM users').get().n;

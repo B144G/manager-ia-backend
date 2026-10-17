@@ -10,9 +10,12 @@ const modules = [
   { id: 'crm', title: 'Clients et ventes', min: 'member', ai: true },
   { id: 'sales', title: 'Assistant commercial', min: 'member', ai: true },
   { id: 'hr', title: 'Ressources humaines', min: 'manager', ai: true },
+  { id: 'accounting', title: 'Comptabilité', min: 'admin', ai: false },
   { id: 'structure', title: 'Organisation', min: 'member', ai: true },
   { id: 'processes', title: 'Fonctionnement', min: 'member', ai: true },
   { id: 'team', title: 'Équipe et antennes', min: 'member', ai: true },
   { id: 'alerts', title: 'Alertes', min: 'member', ai: true },
+  { id: 'integrations', title: 'Intégrations', min: 'admin', ai: false },
+  { id: 'billing', title: 'Abonnement', min: 'owner', ai: false },
 ];
 module.exports = { modules, ids: modules.map((m) => m.id) };

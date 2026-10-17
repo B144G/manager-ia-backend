@@ -19,6 +19,47 @@ async function sendText(org, to, body) {
   return r.data;
 }
 
+/** Message « modèle » (template) approuvé par Meta : seul moyen d'écrire à un client plus de 24 h après son dernier message. */
+async function sendTemplate(org, to, name, language, params) {
+  const c = creds(org);
+  if (!c.phoneId || !c.token) throw new Error('WhatsApp non connecté');
+  const template = { name, language: { code: language || 'fr' } };
+  if (params && params.length) template.components = [{ type: 'body', parameters: params.map((t) => ({ type: 'text', text: String(t).replace(/[\n\t]+/g, ' ').slice(0, 300) })) }];
+  const r = await fetchJson(`${config.meta.graphUrl}/${encodeURIComponent(c.phoneId)}/messages`, {
+    method: 'POST', headers: { Authorization: `Bearer ${c.token}` },
+    body: { messaging_product: 'whatsapp', to: String(to).replace(/\D/g, ''), type: 'template', template },
+  });
+  if (!r.ok) throw fail(r, 'WhatsApp');
+  return r.data;
+}
+
+/** Envoie un fichier à Meta (images 5 Mo, vidéos 16 Mo au plus) et renvoie son identifiant, utilisable 30 jours pour tous les destinataires. */
+async function uploadMedia(org, buf, mime, filename) {
+  const c = creds(org);
+  if (!c.phoneId || !c.token) throw new Error('WhatsApp non connecté');
+  const fd = new FormData();
+  fd.append('messaging_product', 'whatsapp');
+  fd.append('type', mime);
+  fd.append('file', new Blob([buf], { type: mime }), filename || 'fichier');
+  const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 90000);
+  try {
+    const res = await fetch(`${config.meta.graphUrl}/${encodeURIComponent(c.phoneId)}/media`, { method: 'POST', headers: { Authorization: `Bearer ${c.token}` }, body: fd, signal: ctl.signal });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data || !data.id) throw fail({ status: res.status, data }, 'WhatsApp (envoi de fichier)');
+    return String(data.id);
+  } finally { clearTimeout(timer); }
+}
+/** Envoie une image ou une vidéo déjà envoyée à Meta (kind = 'image' ou 'video'), avec une légende facultative. */
+async function sendMedia(org, to, kind, mediaId, caption) {
+  const c = creds(org);
+  if (!c.phoneId || !c.token) throw new Error('WhatsApp non connecté');
+  const body = { messaging_product: 'whatsapp', to: String(to).replace(/\D/g, ''), type: kind, [kind]: { id: mediaId } };
+  if (caption) body[kind].caption = String(caption).slice(0, 1000);
+  const r = await fetchJson(`${config.meta.graphUrl}/${encodeURIComponent(c.phoneId)}/messages`, { method: 'POST', headers: { Authorization: `Bearer ${c.token}` }, body });
+  if (!r.ok) throw fail(r, 'WhatsApp');
+  return r.data;
+}
+
 /** Numéro affiché et nom vérifié du compte : sert à tester la connexion. */
 async function profile(org) {
   const c = creds(org);
@@ -42,4 +83,4 @@ async function downloadMedia(org, mediaId) {
   } finally { clearTimeout(timer); }
 }
 
-module.exports = { isConnected, sendText, profile, downloadMedia };
+module.exports = { isConnected, sendText, sendTemplate, uploadMedia, sendMedia, profile, downloadMedia };

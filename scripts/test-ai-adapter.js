@@ -50,7 +50,19 @@ const load = (env) => {
   ok(r.url === '/v1/chat/completions' && r.headers.authorization === 'Bearer k2', 'route et en-tête OpenAI');
   ok(r.body.model === 'mistral-small' && r.body.messages[0].role === 'system' && r.body.messages[0].content === 'REGLES\n\nDONNEES', 'message système assemblé');
   ok(c.stats().provider === 'openai' && c.stats().input === 20, 'compteurs OpenAI');
+  const img = [{ type: 'text', text: 'Cette robe ?' }, { type: 'image', mime: 'image/png', data: 'AAAA' }, { type: 'document', mime: 'application/pdf', data: 'BBBB' }];
+  await c.ask({ messages: [{ role: 'user', content: img }] });
+  const parts = o.seen[o.seen.length - 1].body.messages[0].content;
+  ok(parts[1].type === 'image_url' && parts[1].image_url.url === 'data:image/png;base64,AAAA' && parts[2].type === 'text' && /PDF/.test(parts[2].text), 'pièces jointes au format OpenAI (le PDF devient une note)');
   o.srv.close();
+
+  console.log('Pièces jointes (Anthropic)');
+  const im = await fake(() => ({ content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 1, output_tokens: 1 } }));
+  c = load({ ANTHROPIC_API_KEY: 'k', ANTHROPIC_BASE_URL: `http://127.0.0.1:${im.port}` });
+  await c.ask({ messages: [{ role: 'user', content: img }] });
+  const ap = im.seen[0].body.messages[0].content;
+  ok(ap[1].type === 'image' && ap[1].source.type === 'base64' && ap[1].source.media_type === 'image/png' && ap[1].source.data === 'AAAA' && ap[2].type === 'document' && ap[2].source.media_type === 'application/pdf', 'image et PDF au format Anthropic');
+  im.srv.close();
 
   console.log('Sans clé / erreur');
   c = load({});

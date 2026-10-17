@@ -12,12 +12,13 @@ const router = express.Router();
 const crypto = require('crypto');
 const config = require('../config');
 const { mailUser, mailEnabled, sendMail } = require('../services/notify');
+const sec = require('../services/security');
 
 const DOMAINS = ['ia', 'ecom', 'trading', 'web', 'port', 'stat', 'bud'];
 const OTHERS = ['app', 'delegate', 'client'];
 const VALID_INTERESTS = [...DOMAINS, ...OTHERS];
 const FREE_MAX_DOMAINS = 2;
-const DUMMY_HASH = bcrypt.hashSync('mot-de-passe-factice', 10);
+const DUMMY_HASH = bcrypt.hashSync('mot-de-passe-factice', sec.BCRYPT_COST);
 
 const countDomains = (list) => list.filter((i) => DOMAINS.includes(i)).length;
 
@@ -93,6 +94,7 @@ function createUser(res, { name, contact, hash, interests }) {
     throw e;
   }
   setUserCookie(res, Number(id));
+  sec.audit('register', null, Number(id), '');
   notify('inscription', `Nouvelle inscription : ${name} (${contact}) - intérêts : ${interests.join(', ') || 'aucun'}`);
   return publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id));
 }
@@ -106,7 +108,8 @@ router.post('/register', limits.register, asyncHandler(async (req, res) => {
   const pass = typeof b.pass === 'string' ? b.pass : '';
   if (name.length < 2) throw new HttpError(400, 'Veuillez indiquer votre nom.');
   if (!contact) throw new HttpError(400, 'Contact invalide : entrez un e-mail ou un numéro de téléphone valide.');
-  if (pass.length < 6 || pass.length > 200) throw new HttpError(400, 'Le mot de passe doit contenir au moins 6 caractères.');
+  const pw = sec.passwordProblem(pass, name, contact.value);
+  if (pw) throw new HttpError(400, pw);
   let interests = b.interests === undefined ? [] : cleanInterests(b.interests);
   // Offre Gratuite : 2 domaines maximum dès l'inscription (on garde les 2 premiers).
   let kept = 0;
@@ -115,7 +118,7 @@ router.post('/register', limits.register, asyncHandler(async (req, res) => {
   const dup = 'Un compte existe déjà avec ce contact. Utilisez « Me connecter ».';
   if (db.prepare('SELECT 1 FROM users WHERE contact = ?').get(contact.value)) throw new HttpError(409, dup);
 
-  const hash = await bcrypt.hash(pass, 10);
+  const hash = await bcrypt.hash(pass, sec.BCRYPT_COST);
   if (!verifyOn()) return res.status(201).json({ user: createUser(res, { name, contact: contact.value, hash, interests }) });
 
   if (!contact.value.includes('@')) throw new HttpError(400, 'Entrez une adresse e-mail : nous vous y envoyons un code de vérification.');
@@ -176,9 +179,17 @@ router.post('/login', limits.login, asyncHandler(async (req, res) => {
   const contact = normalizeContact(b.contact);
   const pass = typeof b.pass === 'string' ? b.pass.slice(0, 200) : '';
   const fail = new HttpError(401, 'Contact ou mot de passe incorrect.');
+  const key = contact ? 'u:' + contact.value : '';
+  if (key) sec.assertNotLocked(key);
   const row = contact ? db.prepare('SELECT * FROM users WHERE contact = ?').get(contact.value) : null;
   const ok = await bcrypt.compare(pass, row ? row.pass_hash : DUMMY_HASH); // même durée si le compte n'existe pas
-  if (!row || !ok) throw fail;
+  if (!row || !ok) {
+    if (key && sec.recordFail(key)) sec.audit('login_locked', req, row && row.id, 'verrouillage 15 min');
+    else sec.audit('login_fail', req, row && row.id, '');
+    throw fail;
+  }
+  sec.clearFails(key);
+  sec.audit('login_ok', req, row.id, '');
   setUserCookie(res, row.id);
   res.json({ user: publicUser(getUserFresh(row.id)) });
 }));
@@ -212,14 +223,32 @@ router.post('/password/reset', limits.make(15 * 60 * 1000, 10, 'Trop de tentativ
   const b = req.body || {};
   const token = typeof b.token === 'string' ? b.token.slice(0, 100) : '';
   const pass = typeof b.pass === 'string' ? b.pass : '';
-  if (pass.length < 6 || pass.length > 200) throw new HttpError(400, 'Le mot de passe doit contenir au moins 6 caractères.');
+  const pw = sec.passwordProblem(pass);
+  if (pw) throw new HttpError(400, pw);
   const r = /^[a-f0-9]{64}$/.test(token) ? db.prepare('SELECT * FROM password_resets WHERE token_hash = ?').get(hashToken(token)) : null;
   if (!r || r.used_at || Date.parse(r.expires_at) < Date.now()) throw new HttpError(400, 'Ce lien n\'est plus valable (il dure 1 heure et ne sert qu\'une fois). Demandez-en un nouveau.');
-  const hash = await bcrypt.hash(pass, 10);
+  const hash = await bcrypt.hash(pass, sec.BCRYPT_COST);
   db.transaction(() => {
     db.prepare('UPDATE users SET pass_hash = ?, pass_changed_at = ? WHERE id = ?').run(hash, nowISO(), r.user_id);
     db.prepare('UPDATE password_resets SET used_at = ? WHERE user_id = ?').run(nowISO(), r.user_id);
   })();
+  sec.audit('password_reset', req, r.user_id, '');
+  res.json({ ok: true });
+}));
+
+// ---- Changer son mot de passe (connecté) : les autres appareils sont déconnectés ----
+router.post('/me/password', requireUser, limits.make(15 * 60 * 1000, 10, 'Trop de tentatives. Réessayez dans quelques minutes.'), asyncHandler(async (req, res) => {
+  const b = req.body || {};
+  const cur = typeof b.current === 'string' ? b.current.slice(0, 200) : '';
+  const pass = typeof b.pass === 'string' ? b.pass : '';
+  if (!(await bcrypt.compare(cur, req.user.pass_hash))) { sec.audit('password_change_fail', req, req.user.id, ''); throw new HttpError(403, 'Mot de passe actuel incorrect.'); }
+  const pw = sec.passwordProblem(pass, req.user.name, req.user.contact);
+  if (pw) throw new HttpError(400, pw);
+  if (pass === cur) throw new HttpError(400, 'Le nouveau mot de passe doit être différent de l\'ancien.');
+  db.prepare('UPDATE users SET pass_hash = ?, pass_changed_at = ? WHERE id = ?').run(await bcrypt.hash(pass, sec.BCRYPT_COST), nowISO(), req.user.id);
+  sec.audit('password_change', req, req.user.id, '');
+  setUserCookie(res, req.user.id); // cet appareil reste connecté, les autres non
+  if (req.user.contact.includes('@')) mailUser(req.user.contact, 'Votre mot de passe MANAGER-IA a été modifié', `Bonjour ${req.user.name},\n\nVotre mot de passe vient d'être modifié. Si ce n'est pas vous, réinitialisez-le tout de suite depuis la page de connexion (« Mot de passe oublié »).\n\nL'équipe MANAGER-IA`);
   res.json({ ok: true });
 }));
 

@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 
-const MAX_TOTAL = 26000; // caractères ajoutés au prompt (garde le coût et la latence raisonnables)
+const MAX_TOTAL = 30000; // caractères ajoutés au prompt (garde le coût et la latence raisonnables)
 const cache = new Map(); // fichier -> { mtime, text }
 
 function readFile(file) {

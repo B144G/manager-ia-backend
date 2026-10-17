@@ -9,7 +9,8 @@ const claude = require('../services/claude');
 const knowledge = require('../ai/knowledge');
 const P = require('../ai/workspace-prompts');
 const A = require('./access');
-const { ids: MODULE_IDS } = require('./modules');
+const { modules: ALL_MODULES } = require('./modules');
+const MODULE_IDS = ALL_MODULES.filter((m) => m.ai !== false).map((m) => m.id);
 const { HttpError, asyncHandler, log, oneLine } = require('../util');
 
 const router = express.Router({ mergeParams: true });

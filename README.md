@@ -1,5 +1,44 @@
 # MANAGER-IA : serveur (backend)
 
+## Liaison site (frontend) ↔ serveur (backend)
+
+Deux dossiers, deux adresses. Le site doit connaître l'adresse du serveur, et le serveur doit autoriser l'adresse du site.
+
+| | Dossier | Adresse en essai local | Où se règle le lien |
+|---|---|---|---|
+| **Serveur (API)** | `manager-ia-backend` | `http://localhost:3000` | fichier `.env` du serveur : `PORT`, `SITE_URL`, `ALLOWED_ORIGINS` |
+| **Site** | `manager-ia-frontend` | `http://localhost:5173` | fichier `.env` du site : `API_BASE` (puis `npm run config`) |
+
+## Essayer sur votre ordinateur (3 commandes de chaque côté)
+
+```bash
+# 1) Le serveur
+cd manager-ia-backend
+npm run setup      # crée .env avec des secrets aléatoires et affiche le mot de passe administrateur
+npm install
+npm start          # http://localhost:3000
+
+# 2) Le site (autre terminal)
+cd manager-ia-frontend
+npm start          # écrit config.js depuis .env puis sert le site sur http://localhost:5173
+```
+
+Ouvrez <http://localhost:5173>. Si le port 3000 est déjà pris sur votre machine, changez `PORT` dans le `.env` du serveur **et** `API_BASE` dans le `.env` du site (puis `npm run config`).
+
+## En ligne
+
+| Situation | `.env` du site | `.env` du serveur |
+|---|---|---|
+| **Même domaine** (recommandé : copiez le site dans `manager-ia-backend/public`) | `API_BASE=` (vide) | `ALLOWED_ORIGINS` vide, `COOKIE_SAMESITE=lax` |
+| **Deux domaines** (site `https://manager-ia.com`, serveur `https://api.manager-ia.com`) | `API_BASE=https://api.manager-ia.com` | `ALLOWED_ORIGINS=https://manager-ia.com`, `SITE_URL=https://manager-ia.com`, `COOKIE_SAMESITE=none`, `COOKIE_SECURE=true` (HTTPS obligatoire) |
+
+Vérifications : `https://<serveur>/api/health` doit répondre `{"ok":true}` ; dans le navigateur, la connexion crée un cookie `mia_token`. Une erreur « Origine non autorisée » signifie que `ALLOWED_ORIGINS` ne contient pas l'adresse exacte du site (avec `http`/`https` et sans `/` final).
+
+Le `.env` du site ne contient **aucun secret** (l'adresse du serveur est publique). Celui du serveur en contient : ne le publiez jamais (il est exclu des zips et de Git).
+
+---
+
+
 Ce dossier contient le « cerveau » du site MANAGER-IA : comptes des utilisateurs, offres Gratuit / Pro / Pro Max / Méga Pro / Illimité, paiements, assistant IA, agent de service client (WhatsApp, Messenger, Instagram), notifications pour vous, et une page d'administration (`/admin`).
 
 Il fonctionne avec **Node.js 20 ou plus** et une petite base de données SQLite (un simple fichier, rien à installer en plus).
@@ -76,6 +115,39 @@ Elles sont toutes décrites et commentées dans `.env.example`. Résumé :
 Ne mettez **jamais** vos clés dans le code ni dans un fichier publié sur Internet (GitHub public, etc.).
 
 ---
+
+### Nouveautés de la version 22
+
+| Fonction | Où | À savoir |
+|---|---|---|
+| Abonnement et paiement MTN / Orange | Sous-application « Abonnement » (propriétaire) | Automatique avec Campay (`CAMPAY_*`), sinon manuel (numéros `MTN_NUMBER`, `ORANGE_NUMBER`, validation par l'administrateur) |
+| Relances WhatsApp (modèles Meta) | Assistant commercial > Relances | Il faut créer et faire approuver les modèles dans Meta ; STOP/REPRENDRE gérés ; `DEFAULT_COUNTRY_CODE` (237 par défaut) |
+| Photos et PDF reçus sur WhatsApp | Automatique | Le modèle d'IA doit savoir lire les images (Claude : oui). Un PDF n'est lu qu'avec Anthropic. Conservés 90 jours |
+| Comptabilité simple (plan OHADA de base) | Sous-application « Comptabilité » (administrateurs) | Outil d'aide : à faire valider par un expert-comptable ; pas de liasse fiscale officielle |
+| Agenda (lien .ics Google/Outlook/Apple) et rappels la veille | Assistant commercial > Rendez-vous | Lien secret en lecture seule (actualisation par l'agenda, `API_PUBLIC_URL` en HTTPS pour Google) ; rappels des rendez-vous confirmés à partir de 16 h ; modèle Meta « Rappel de rendez-vous » après 24 h. Pas de synchronisation à double sens (il faudrait une application Google OAuth) |
+| Prospection : rendez-vous, passage à l'équipe, dossier de l'IA interne | Assistant commercial > Rendez-vous, Réglages | Rendez-vous de 60 min (6 h-21 h, heure du Cameroun), pas de double réservation ; après commande/rendez-vous : conversation à l'équipe + dossier préparé (1 message IA) |
+| Photos et vidéos d'articles sur WhatsApp | Assistant commercial > Catalogue > « Photos et vidéos » | Images 3 Mo, vidéos MP4 16 Mo (limite WhatsApp), 8 fichiers par article, 80 Mo par organisation ; stockés dans la base (pensez aux sauvegardes) |
+| Réponses vocales, délai de réponse (0 à 180 s) | Assistant commercial > Réglages | Voix : `TTS_API_KEY` (ou la clé de transcription). Délai : file en base, survit au redémarrage. Messenger/Instagram : `API_PUBLIC_URL` pour envoyer fichiers et voix |
+| Messenger et Instagram | Assistant commercial > Canaux | Page Facebook + jeton de Page + secret de l'application Meta ; texte seulement |
+| Intégrations : API et webhooks | Sous-application « Intégrations » (administrateurs) | API `/api/v1`, webhooks signés ; adresses privées refusées (protection SSRF) |
+| Application web installable (PWA) | `manifest.webmanifest`, `sw.js` | Nécessite HTTPS en production ; ce n'est pas une application des boutiques |
+| Sécurité | voir plus haut | 0 faille connue dans les dépendances au moment de la livraison |
+
+Tests : `npm run smoke:ws` (412 contrôles), `npm run smoke`, `npm run smoke:signup`, `npm run smoke:security`, `npm run test:ai`, `npm run test:webhooks`.
+
+**Jamais vérifié avec de vrais services** : l'IA (clé Anthropic), WhatsApp / Messenger / Instagram (Meta), Campay, l'envoi d'e-mails et la transcription vocale ont été testés uniquement avec des faux serveurs locaux. Faites un essai réel de chacun avant d'ouvrir à des clients.
+
+### Sécurité : ce qui est en place
+
+- **Mots de passe** : 8 caractères minimum, refus des mots de passe courants, de ceux qui contiennent le nom ou l'e-mail ; chiffrés (bcrypt coût 12). En production, `ADMIN_PASSWORD` doit faire au moins 10 caractères (le serveur refuse de démarrer sinon).
+- **Verrouillage** : 8 échecs de connexion en 15 minutes bloquent le compte (ou l'administration) pendant 15 minutes ; l'administrateur est alerté. Un compte inexistant répond comme un compte existant.
+- **Changer son mot de passe** : `POST /api/me/password` (mot de passe actuel + nouveau). Les autres appareils sont déconnectés et un e-mail d'alerte est envoyé.
+- **Journal de sécurité** (connexions, échecs, verrouillages, changements) : `GET /api/admin/security-log` (administrateur). Conservé 180 jours, sans mot de passe ni code.
+- **En-têtes** : HSTS, `nosniff`, `Permissions-Policy`, politique de contenu (CSP) stricte sur le site et l'administration (aucun script en ligne autorisé).
+- **Sauvegarde** : `npm run backup` (copie cohérente + contrôle d'intégrité + rotation `BACKUP_KEEP`, 14 par défaut). Planifiez-la chaque nuit et copiez-la ailleurs.
+- **Dépendances** : `npm audit --omit=dev` doit afficher 0 faille ; relancez-le régulièrement.
+- Tests : `npm run smoke:security`.
+- **Pas encore fait** : double authentification (2FA) de l'administrateur, journal des actions de l'administrateur, audit de sécurité par un tiers.
 
 ### Inscription avec code par e-mail
 

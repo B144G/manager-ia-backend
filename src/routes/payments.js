@@ -8,6 +8,7 @@ const { requireUser } = require('../middleware/auth');
 const campay = require('../services/campay');
 const { markPaid, planConflict } = require('../services/payments');
 const { notify } = require('../services/notify');
+const A = require('../workspace/access');
 const { asyncHandler, HttpError, cleanText, genReference, log, oneLine } = require('../util');
 
 const router = express.Router();
@@ -19,6 +20,25 @@ router.get('/plans', (req, res) => {
     durationDays: config.durationDays,
     manual: { mtn: config.payment.mtn, orange: config.payment.orange, holder: config.payment.holder },
     automatic: config.campay.enabled,
+  });
+});
+
+// Page « Abonnement » : offre actuelle, quotas, offres disponibles (avec la raison si un changement est refusé) et historique.
+router.get('/billing', requireUser, (req, res) => {
+  const u = getUserFresh(req.user.id);
+  const exp = u.plan !== 'Gratuit' && u.plan_expires ? Date.parse(u.plan_expires) : 0;
+  const active = exp > Date.now();
+  const lim = (name) => { const l = A.limitsFor(name); return { orgs: l.orgs, members: l.members, branches: l.branches, aiMonth: l.aiMonth, emailDay: l.emailDay }; };
+  const plans = Object.values(config.plans).map((p) => {
+    const reason = planConflict(u, p.name);
+    return { id: p.id, name: p.name, priceXAF: p.priceXAF, limits: lim(p.name), current: active && u.plan === p.name, available: !reason, reason: reason || '' };
+  });
+  const orgs = db.prepare('SELECT * FROM orgs WHERE owner_id = ? ORDER BY id').all(u.id).map((o) => ({ id: o.id, name: o.name, aiUsed: A.aiUsed(o), aiMax: A.limitsFor(u.plan).aiMonth, periodEnd: A.quotaWindow(o).end }));
+  const history = db.prepare('SELECT reference, plan, operator, amount_xaf, mode, status, created_at, paid_at FROM payments WHERE user_id = ? ORDER BY id DESC LIMIT 20').all(u.id)
+    .map((p) => ({ reference: p.reference, plan: (config.plans[p.plan] || {}).name || p.plan, operator: p.operator, amountXAF: p.amount_xaf, mode: p.mode, status: p.status, createdAt: p.created_at, paidAt: p.paid_at }));
+  res.json({
+    plan: active ? u.plan : 'Gratuit', expiresAt: active ? u.plan_expires : null, daysLeft: active ? Math.ceil((exp - Date.now()) / 86400000) : 0,
+    freeLimits: lim('Gratuit'), plans, orgs, history, durationDays: config.durationDays, automatic: config.campay.enabled,
   });
 });
 

@@ -35,6 +35,21 @@ Règles : réponds en français, en texte brut (pas de Markdown, pas d'astérisq
 
 const isConfigured = () => Boolean(config.ai.key);
 
+/**
+ * Un message peut contenir des pièces jointes : content = [{type:'text', text}, {type:'image'|'document', mime, data (base64)}].
+ * On les convertit au format du fournisseur. (Un PDF n'est lu que par Anthropic ; les modèles compatibles OpenAI reçoivent une note.)
+ */
+function convertParts(content, provider) {
+  if (!Array.isArray(content)) return content;
+  const out = [];
+  for (const p of content) {
+    if (p.type === 'text') out.push({ type: 'text', text: String(p.text || '') });
+    else if (p.type === 'image') out.push(provider === 'openai' ? { type: 'image_url', image_url: { url: `data:${p.mime};base64,${p.data}` } } : { type: 'image', source: { type: 'base64', media_type: p.mime, data: p.data } });
+    else if (p.type === 'document') out.push(provider === 'openai' ? { type: 'text', text: '[Document PDF joint : ce modèle ne peut pas le lire.]' } : { type: 'document', source: { type: 'base64', media_type: p.mime, data: p.data } });
+  }
+  return out;
+}
+
 // Compteurs depuis le démarrage (visibles via stats()) : permettent de vérifier que la mise en cache économise bien.
 const counters = { calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 const stats = () => ({ ...counters, provider: config.ai.provider, model: config.ai.model, modelFast: config.ai.modelFast || null });
@@ -61,7 +76,7 @@ async function ask({ system = '', stable = '', messages, maxTokens = 600, tier }
     const r = await fetchJson(`${c.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { authorization: `Bearer ${c.key}` },
-      body: { model, max_tokens: maxTokens, messages: [...(sys ? [{ role: 'system', content: sys }] : []), ...messages] },
+      body: { model, max_tokens: maxTokens, messages: [...(sys ? [{ role: 'system', content: sys }] : []), ...messages.map((m) => ({ ...m, content: convertParts(m.content, 'openai') }))] },
       timeout: 45000,
     });
     if (!r.ok) throw failure(r, 'IA');
@@ -75,7 +90,7 @@ async function ask({ system = '', stable = '', messages, maxTokens = 600, tier }
     const r = await fetchJson(`${c.baseUrl}/v1/messages`, {
       method: 'POST',
       headers: { 'x-api-key': c.key, 'anthropic-version': '2023-06-01' },
-      body: { model, max_tokens: maxTokens, ...(blocks.length ? { system: blocks } : {}), messages },
+      body: { model, max_tokens: maxTokens, ...(blocks.length ? { system: blocks } : {}), messages: messages.map((m) => ({ ...m, content: convertParts(m.content, 'anthropic') })) },
       timeout: 45000,
     });
     if (!r.ok) throw failure(r, 'Anthropic');

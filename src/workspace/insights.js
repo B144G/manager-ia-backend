@@ -55,6 +55,8 @@ function alerts(req) {
     if (po.c) add('medium', 'sales', 'Assistant commercial', `${plural(po.c, 'commande de client attend', 'commandes de clients attendent')} votre validation`, po.m);
     const hw = db.prepare("SELECT COUNT(*) c, MIN(updated_at) m FROM chats WHERE org_id = ? AND status = 'handoff'").get(o);
     if (hw.c) add('medium', 'sales', 'Assistant commercial', `${plural(hw.c, 'conversation attend', 'conversations attendent')} un conseiller`, hw.m);
+    const ap = db.prepare("SELECT COUNT(*) c, MIN(created_at) m FROM appointments WHERE org_id = ? AND status = 'pending' AND date >= ?").get(o, new Date(Date.now() + 3600000).toISOString().slice(0, 10));
+    if (ap.c) add('medium', 'sales', 'Assistant commercial', `${plural(ap.c, 'rendez-vous attend', 'rendez-vous attendent')} votre confirmation`, ap.m);
     // Ressources humaines
     const pl = db.prepare("SELECT COUNT(*) c, MIN(created_at) m FROM leaves WHERE org_id = ? AND status = 'pending'").get(o);
     if (pl.c) add('info', 'hr', 'Ressources humaines', `${plural(pl.c, 'demande de congé attend', 'demandes de congé attendent')} une réponse`, pl.m);

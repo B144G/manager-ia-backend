@@ -522,6 +522,229 @@ const MIGRATIONS = [
     window_start TEXT NOT NULL
   );
   `,
+  // Sécurité : verrouillage après échecs de connexion et journal de sécurité.
+  `
+  CREATE TABLE login_fails (
+    k TEXT PRIMARY KEY,
+    fails INTEGER NOT NULL DEFAULT 0,
+    first_at TEXT NOT NULL,
+    locked_until TEXT
+  );
+  CREATE TABLE security_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    type TEXT NOT NULL,
+    user_id INTEGER,
+    ip TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX security_log_at ON security_log(at);
+  `,
+  // Messages WhatsApp sortants (modèles approuvés par Meta) : modèles, journal d'envoi, désabonnements, relances automatiques.
+  `
+  CREATE TABLE wa_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    language TEXT NOT NULL DEFAULT 'fr',
+    purpose TEXT NOT NULL DEFAULT 'general',
+    params INTEGER NOT NULL DEFAULT 0,
+    preview TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, name, language)
+  );
+  CREATE TABLE wa_outbound (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    chat_id INTEGER,
+    ref_kind TEXT NOT NULL DEFAULT '',
+    ref_id INTEGER,
+    phone TEXT NOT NULL,
+    template TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_wa_outbound ON wa_outbound(org_id, ref_kind, ref_id, created_at);
+  CREATE TABLE wa_optout (
+    org_id INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    phone TEXT NOT NULL,
+    at TEXT NOT NULL,
+    PRIMARY KEY (org_id, phone)
+  );
+  ALTER TABLE orgs ADD COLUMN wa_followup INTEGER NOT NULL DEFAULT 0;
+  `,
+  // Images et documents envoyés par les prospects (WhatsApp) : conservés pour l'équipe, lus par l'IA.
+  `
+  CREATE TABLE chat_media (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+    org_id INTEGER NOT NULL,
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    data BLOB NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_chat_media ON chat_media(chat_id, id);
+  `,
+  // Comptabilité simple (plan comptable OHADA de base) : comptes, écritures équilibrées non modifiables, réglages ; paiements de factures détaillés.
+  `
+  CREATE TABLE doc_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    amount INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    created_by INTEGER,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_doc_payments ON doc_payments(org_id, doc_id);
+  INSERT INTO doc_payments (org_id, doc_id, amount, date, created_by, created_at)
+    SELECT org_id, id, paid, substr(updated_at, 1, 10), NULL, updated_at FROM documents WHERE kind = 'invoice' AND paid > 0;
+  CREATE TABLE acc_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    label TEXT NOT NULL,
+    custom INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (org_id, code)
+  );
+  CREATE TABLE acc_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    journal TEXT NOT NULL,
+    number TEXT NOT NULL,
+    date TEXT NOT NULL,
+    label TEXT NOT NULL,
+    piece TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    source_id INTEGER,
+    reversed_of INTEGER,
+    created_by INTEGER,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, number)
+  );
+  CREATE UNIQUE INDEX idx_acc_source ON acc_entries(org_id, source, source_id) WHERE source != '';
+  CREATE INDEX idx_acc_entries_date ON acc_entries(org_id, date);
+  CREATE TABLE acc_lines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id INTEGER NOT NULL REFERENCES acc_entries(id) ON DELETE CASCADE,
+    org_id INTEGER NOT NULL,
+    account TEXT NOT NULL,
+    debit INTEGER NOT NULL DEFAULT 0,
+    credit INTEGER NOT NULL DEFAULT 0,
+    memo TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX idx_acc_lines_account ON acc_lines(org_id, account);
+  CREATE INDEX idx_acc_lines_entry ON acc_lines(entry_id);
+  CREATE TABLE acc_settings (
+    org_id INTEGER PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    vat_rate REAL NOT NULL DEFAULT 19.25,
+    pay_account TEXT NOT NULL DEFAULT '571',
+    purchase_vat INTEGER NOT NULL DEFAULT 0,
+    locked_until TEXT
+  );
+  `,
+  // Messenger et Instagram (messages privés) par organisation ; clés d'API et webhooks sortants (intégrations).
+  `
+  ALTER TABLE orgs ADD COLUMN fb_page_id TEXT NOT NULL DEFAULT '';
+  ALTER TABLE orgs ADD COLUMN fb_token TEXT NOT NULL DEFAULT '';
+  ALTER TABLE orgs ADD COLUMN fb_secret TEXT NOT NULL DEFAULT '';
+  ALTER TABLE orgs ADD COLUMN fb_verify TEXT NOT NULL DEFAULT '';
+  ALTER TABLE orgs ADD COLUMN ig_id TEXT NOT NULL DEFAULT '';
+  CREATE TABLE api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    prefix TEXT NOT NULL,
+    key_hash TEXT NOT NULL UNIQUE,
+    scope TEXT NOT NULL DEFAULT 'read',
+    last_used TEXT,
+    created_by INTEGER,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE webhooks_out (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    events TEXT NOT NULL,
+    secret TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    fails INTEGER NOT NULL DEFAULT 0,
+    last_status TEXT NOT NULL DEFAULT '',
+    last_at TEXT,
+    created_at TEXT NOT NULL
+  );
+  `,
+  // Photos et vidéos des articles du catalogue, envoyées aux clients par WhatsApp (identifiant Meta gardé 25 jours pour ne pas renvoyer le fichier).
+  `
+  CREATE TABLE catalog_media (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_id INTEGER NOT NULL REFERENCES catalog(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    data BLOB NOT NULL,
+    wa_media_id TEXT NOT NULL DEFAULT '',
+    wa_phone_id TEXT NOT NULL DEFAULT '',
+    wa_media_at TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_catalog_media ON catalog_media(item_id, id);
+  `,
+  // Délai de réponse choisi par l'organisation (0 à 180 s), réponse vocale, file des réponses en attente, fichiers temporaires (voix) servis par lien signé.
+  `
+  ALTER TABLE orgs ADD COLUMN reply_delay INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE orgs ADD COLUMN voice_reply TEXT NOT NULL DEFAULT 'mirror';
+  CREATE TABLE reply_queue (
+    chat_id INTEGER PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+    org_id INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    due_at TEXT NOT NULL,
+    via_voice INTEGER NOT NULL DEFAULT 0,
+    media_id INTEGER,
+    last_text TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_reply_queue_due ON reply_queue(due_at);
+  CREATE TABLE tmp_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL,
+    mime TEXT NOT NULL,
+    data BLOB NOT NULL,
+    expires_at TEXT NOT NULL
+  );
+  `,
+  // Rendez-vous pris par l'assistant public, passage automatique à l'équipe après une commande ou un rendez-vous, dossier préparé par l'IA interne.
+  `
+  CREATE TABLE appointments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+    chat_id INTEGER REFERENCES chats(id) ON DELETE SET NULL,
+    date TEXT NOT NULL,
+    time TEXT NOT NULL,
+    duration INTEGER NOT NULL DEFAULT 60,
+    purpose TEXT NOT NULL DEFAULT '',
+    place TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    source TEXT NOT NULL DEFAULT 'assistant',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_appointments ON appointments(org_id, date, time);
+  ALTER TABLE orgs ADD COLUMN handoff_order INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE orgs ADD COLUMN handoff_appt INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE chats ADD COLUMN brief TEXT NOT NULL DEFAULT '';
+  `,
+  // Rappel de rendez-vous la veille, et lien d'agenda (Google Agenda, Outlook, Apple) propre à chaque organisation.
+  `
+  ALTER TABLE appointments ADD COLUMN reminded_at TEXT;
+  ALTER TABLE orgs ADD COLUMN cal_token TEXT NOT NULL DEFAULT '';
+  ALTER TABLE orgs ADD COLUMN appt_reminder INTEGER NOT NULL DEFAULT 1;
+  `,
 ];
 
 function migrate() {

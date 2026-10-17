@@ -20,6 +20,17 @@ if (tp && tp !== '0' && tp.toLowerCase() !== 'false') app.set('trust proxy', /^\
 // CSP désactivée ici : elle est appliquée seulement à /admin (le frontend public a ses propres scripts).
 app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 
+// En-têtes de sécurité supplémentaires (sur tout) et politique de contenu stricte pour les pages du site servies ici.
+app.use((req, res, next) => {
+  res.set('Permissions-Policy', 'camera=(), geolocation=(), payment=(), microphone=(self)');
+  res.set('X-Content-Type-Options', 'nosniff');
+  next();
+});
+const siteCsp = () => [
+  "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com", 'font-src https://fonts.gstatic.com',
+  "img-src 'self' data: blob:", "media-src 'self' blob:", `connect-src 'self' ${config.allowedOrigins.join(' ')}`.trim(),
+  "object-src 'none'", "base-uri 'self'", "form-action 'self'", "frame-ancestors 'none'",
+].join('; ');
 const sameOrigin = (o) => config.allowedOrigins.includes(String(o).replace(/\/+$/, ''));
 app.use(cors({
   origin: (origin, cb) => cb(null, !origin || sameOrigin(origin)),
@@ -44,7 +55,7 @@ app.use('/webhooks', require('./routes/webhooks'));
 
 const jsonSmall = express.json({ limit: '100kb' });
 // Les fichiers joints (images, PDF) arrivent en base64 : cette seule route a une limite plus large (elle la règle elle-même, après connexion).
-app.use((req, res, next) => ((/^\/api\/ws\/orgs\/\d+\/mail\/files$/.test(req.path) || /^\/api\/ws\/public\/chat\/[A-Za-z0-9]+\/voice$/.test(req.path) || /^\/api\/ws\/public\/whatsapp\/[A-Za-z0-9]+$/.test(req.path)) && req.method === 'POST' ? next() : jsonSmall(req, res, next)));
+app.use((req, res, next) => ((/^\/api\/ws\/orgs\/\d+\/mail\/files$/.test(req.path) || /^\/api\/ws\/public\/chat\/[A-Za-z0-9]+\/voice$/.test(req.path) || /^\/api\/ws\/public\/(whatsapp|meta)\/[A-Za-z0-9]+$/.test(req.path)) && req.method === 'POST' ? next() : jsonSmall(req, res, next)));
 
 // Protection contre les requêtes venant d'un autre site (CSRF) : l'en-tête Origin doit être connu.
 function originCheck(req, res, next) {
@@ -67,6 +78,7 @@ app.use('/api', require('./routes/auth'));
 app.use('/api', require('./routes/contact'));
 app.use('/api', require('./routes/assistant'));
 app.use('/api', require('./routes/payments'));
+app.use('/api/v1', require('./workspace/public-api'));
 app.use('/api/admin', require('./routes/admin'));
 const workspace = require('./workspace');
 app.use('/api/ws/public', workspace.pub);
@@ -84,6 +96,7 @@ app.get('/admin', (req, res) => res.sendFile('index.html', { root: config.adminD
 app.use('/admin', express.static(config.adminDir, { index: false, dotfiles: 'ignore' }));
 
 // Frontend (si le dossier public contient des fichiers)
+app.use((req, res, next) => { if (req.method === 'GET' && !req.path.startsWith('/api')) res.set('Content-Security-Policy', siteCsp()); next(); });
 app.use(express.static(config.publicDir, { index: 'index.html', dotfiles: 'ignore' }));
 app.use((req, res) => {
   const home = path.join(config.publicDir, 'index.html');
@@ -112,6 +125,8 @@ function start() {
     log.info(`Assistant IA : ${on(config.ai.key)} | Paiement automatique Campay : ${on(config.campay.enabled)} | WhatsApp admin : ${on(config.whatsapp.phoneId && config.whatsapp.token)} | E-mail : ${on(config.smtp.host)} | Admin : ${on(config.admin.username && config.admin.password)} | Webhooks Meta : ${on(config.meta.appSecret)}`);
   });
   require('./jobs').start();
+  require('./workspace/inbound').start(); // réponses différées (délai choisi par l'organisation)
+  require('./workspace/sales-appt').startReminders(); // rappels de rendez-vous la veille
   const stop = () => server.close(() => { try { db.close(); } catch { /* rien */ } process.exit(0); });
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);

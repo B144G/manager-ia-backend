@@ -29,12 +29,16 @@ function runOnce() {
 
   // 3) Nettoyage des vieilles données techniques
   db.prepare('DELETE FROM conversations WHERE created_at < ?').run(addDays(new Date(), -90).toISOString());
+  require('./services/security').sweep();
+  require('./services/signedUrl').purge();
+  db.prepare('DELETE FROM chat_media WHERE created_at < ?').run(addDays(new Date(), -90).toISOString());
   db.prepare('DELETE FROM notifications WHERE created_at < ?').run(addDays(new Date(), -180).toISOString());
 }
 
 function safeRun() {
   try {
     runOnce();
+    require('./workspace/wa-out').runAllAuto().catch(() => {});
   } catch (e) {
     log.error('Tâches automatiques en erreur :', oneLine(e.message, 200));
   }

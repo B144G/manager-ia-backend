@@ -30,7 +30,23 @@ pub.post('/intake/:token', intakeLimit, (req, res) => {
 
 // Assistant commercial public (page chat.html) : sans connexion, avec limites de débit.
 pub.use('/chat', require('./sales-public'));
+// Fichier à lien signé et temporaire : Messenger et Instagram téléchargent eux-mêmes les photos, vidéos et voix à envoyer.
+pub.get('/file/:token', limits.make(60 * 1000, 120, 'Trop de requêtes.'), (req, res) => {
+  const d = require('../services/signedUrl').read(req.params.token);
+  const row = d ? (d.k === 'cm' ? db.prepare('SELECT mime, data FROM catalog_media WHERE id = ?').get(d.i) : db.prepare('SELECT mime, data FROM tmp_files WHERE id = ? AND expires_at > ?').get(d.i, nowISO())) : null;
+  if (!row) return res.status(404).json({ error: 'Lien expiré ou invalide.' });
+  res.set({ 'Content-Type': row.mime, 'Content-Length': row.data.length, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox" });
+  return res.end(row.data);
+});
+// Agenda des rendez-vous (abonnement Google Agenda / Outlook / Apple par adresse secrète, en lecture seule)
+pub.get('/calendar/:token.ics', limits.make(60 * 1000, 60, 'Trop de requêtes.'), (req, res) => {
+  const org = /^[a-f0-9]{36}$/.test(req.params.token) ? db.prepare('SELECT * FROM orgs WHERE cal_token = ?').get(req.params.token) : null;
+  if (!org) return res.status(404).type('text/plain').send('Agenda introuvable.');
+  res.set({ 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'private, max-age=300', 'X-Content-Type-Options': 'nosniff', 'Content-Disposition': 'inline; filename="rendez-vous.ics"' });
+  return res.send(require('./sales-appt').icsFeed(org));
+});
 pub.use('/whatsapp', require('./whatsapp'));
+pub.use('/meta', require('./meta-channels'));
 
 // ---------- Tout le reste exige une connexion ----------
 router.use(requireUser);
@@ -217,6 +233,8 @@ orgRouter.use('/mail', require('./mail'));
 orgRouter.use('/sales', require('./sales').router);
 orgRouter.use('/sales-mine', require('./sales').mine);
 orgRouter.use('/hr', require('./hr'));
+orgRouter.use('/accounting', require('./accounting'));
+orgRouter.use('/integrations', require('./integrations'));
 orgRouter.use('/structure', require('./structure'));
 orgRouter.use('/ai', require('./ai').router);
 

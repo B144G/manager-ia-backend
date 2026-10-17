@@ -8,13 +8,14 @@ const { db } = require('../db');
 const vault = require('../services/vault');
 const waOrg = require('../services/waOrg');
 const stt = require('../services/stt');
-const sales = require('./sales-public');
+const inbound = require('./inbound');
+const waOut = require('./wa-out');
 const { safeEqual, log, makeSeen, oneLine, cleanText } = require('../util');
 
 const router = express.Router();
 const seen = makeSeen();
 const hits = new Map();
-const UNSUPPORTED = "Je peux lire les messages écrits et les messages vocaux. Pouvez-vous m'écrire ou m'enregistrer votre demande ?";
+const UNSUPPORTED = "Je peux lire les messages écrits et les messages vocaux, ainsi que les photos et les PDF. Pouvez-vous m'écrire ou m'enregistrer votre demande ?";
 
 const orgOf = (token) => db.prepare('SELECT * FROM orgs WHERE intake_token = ?').get(String(token || '').slice(0, 80));
 
@@ -72,24 +73,38 @@ async function handleMessage(org, m) {
   if (!from || from.length > 15) return;
   if (tooMany(`${org.id}:${from}`)) return;
 
-  let text = ''; let viaVoice = false;
+  let text = ''; let viaVoice = false; let attachment = null;
   if (m.type === 'text' && m.text && typeof m.text.body === 'string') text = cleanText(m.text.body, 1000);
   else if (m.type === 'audio' && m.audio && m.audio.id && stt.isConfigured()) {
     try { text = cleanText(await stt.transcribe(await waOrg.downloadMedia(org, m.audio.id)), 1000); viaVoice = true; } catch (e) { log.warn('WhatsApp : message vocal illisible :', oneLine(e.message, 160)); }
     if (!text) return void (await waOrg.sendText(org, from, "Je n'ai pas pu comprendre votre message vocal. Pouvez-vous le réécrire ou le renvoyer ?"));
+  } else if ((m.type === 'image' && m.image && m.image.id) || (m.type === 'document' && m.document && m.document.id)) {
+    // Photo ou document (PDF) : lu par l'IA (modèle capable de lire les images), conservé pour l'équipe.
+    const doc = m.type === 'document' ? m.document : m.image;
+    try { attachment = await waOrg.downloadMedia(org, doc.id); } catch (e) { log.warn('WhatsApp : pièce jointe illisible :', oneLine(e.message, 160)); return void (await waOrg.sendText(org, from, "Je n'ai pas pu ouvrir votre fichier. Pouvez-vous le renvoyer ou m'écrire votre demande ?")); }
+    text = cleanText(doc.caption || '', 1000);
   } else {
     return void (await waOrg.sendText(org, from, UNSUPPORTED));
   }
-  if (!text) return;
+  if (!text && !attachment) return;
+
+  // Désabonnement : « STOP » arrête toute relance sortante ; « REPRENDRE » la réactive.
+  const word = text.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z ]/g, '').trim();
+  if (['stop', 'arret', 'arreter', 'desabonner', 'unsubscribe', 'stop relances'].includes(word)) {
+    waOut.optOut(org.id, from);
+    return void (await waOrg.sendText(org, from, "C'est noté : vous ne recevrez plus de messages de relance. Vous pouvez toujours nous écrire. Pour les réactiver, répondez REPRENDRE."));
+  }
+  if (['reprendre', 'start'].includes(word) && waOut.isOptedOut(org.id, from)) {
+    waOut.optIn(org.id, from);
+    return void (await waOrg.sendText(org, from, 'Merci, les messages de relance sont réactivés.'));
+  }
 
   // Campagne : le lien WhatsApp d'une publicité préremplit « #nom-de-campagne » dans le premier message.
   let campaign = '';
   const tag = /#([A-Za-z0-9_-]{2,40})/.exec(text);
   if (tag) { campaign = tag[1]; text = cleanText(text.replace(tag[0], ''), 1000) || 'Bonjour'; }
 
-  const out = await sales.converseWhatsApp(org, from, campaign, text, viaVoice);
-  if (out.silent || !out.reply) return;
-  await waOrg.sendText(org, from, viaVoice ? `(J'ai compris : « ${oneLine(text, 200)} »)\n\n${out.reply}` : out.reply);
+  await inbound.receive(org, 'whatsapp', from, { campaign, text, viaVoice, attachment });
 }
 
 module.exports = router;

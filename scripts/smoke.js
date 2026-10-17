@@ -184,6 +184,13 @@ async function main() {
     check('utilisateur passé Pro, expiration ~30 jours', r.json.user.plan === 'Pro' && days > 29.9 && days < 30.1, { plan: r.json.user.plan, days });
     r = await user('GET', '/api/payments/' + pay.reference);
     check('statut paid', r.json.status === 'paid');
+    r = await client(base)('GET', '/api/billing');
+    check('abonnement sans connexion -> 401', r.status === 401);
+    r = await user('GET', '/api/billing');
+    const bl = r.json;
+    check('abonnement : offre Pro active ~30 jours', r.status === 200 && bl.plan === 'Pro' && bl.daysLeft >= 29 && bl.daysLeft <= 30 && bl.plans.length === 4, bl);
+    check('abonnement : renouveler Pro possible, changer d\'offre refusé avec raison', bl.plans.find((p) => p.id === 'pro').available === true && bl.plans.find((p) => p.id === 'pro').current === true && bl.plans.find((p) => p.id === 'megapro').available === false && /fin de l'abonnement/.test(bl.plans.find((p) => p.id === 'megapro').reason), bl.plans);
+    check('abonnement : historique avec le paiement', bl.history.length >= 1 && bl.history[0].status === 'paid' && bl.history[0].plan === 'Pro', bl.history);
     r = await user('PUT', '/api/me/state', { interests: ['ia', 'web', 'trading', 'stat'], progress: {}, project: {} });
     check('Pro : plus de limite de domaines', r.status === 200 && r.json.user.interests.length === 4, r.json);
 

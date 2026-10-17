@@ -153,12 +153,14 @@ router.post('/documents/:id/payments', A.need('manager'), (req, res) => {
   const paid = d.paid + amount;
   db.transaction(() => {
     db.prepare('UPDATE documents SET paid = ?, status = ?, updated_at = ? WHERE id = ?').run(paid, paid >= d.total ? 'paid' : 'sent', nowISO(), d.id);
+    db.prepare('INSERT INTO doc_payments (org_id, doc_id, amount, date, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(req.org.id, d.id, amount, today(), req.user.id, nowISO());
     if ((req.body || {}).toBudget !== false) {
       db.prepare("INSERT INTO budget_entries (org_id, branch_id, kind, category, label, amount, date, created_by, created_at) VALUES (?, ?, 'income', 'Ventes', ?, ?, ?, ?, ?)")
         .run(req.org.id, d.branch_id, `Paiement ${d.number}`, amount, today(), req.user.id, nowISO());
     }
   })();
   A.logActivity(req.org.id, req.user.id, 'crm', `Paiement reçu sur ${d.number}`);
+  require('../services/webhooks').emit(req.org.id, 'payment.received', { invoice_id: d.id, number: d.number, amount, paid, total: d.total, status: paid >= d.total ? 'paid' : 'sent' });
   res.json({ paid, status: paid >= d.total ? 'paid' : 'sent' });
 });
 

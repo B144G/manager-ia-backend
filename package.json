@@ -1,19 +1,23 @@
 {
   "name": "manager-ia-backend",
   "version": "1.0.0",
-  "description": "Backend de MANAGER-IA : comptes, offres, paiements, assistant IA, agent de service client, administration.",
+  "description": "Serveur (API) de MANAGER-IA : comptes, abonnements et paiements, espace de travail (stock, clients, RH, comptabilité), assistant IA, WhatsApp / Messenger / Instagram, administration.",
   "main": "src/server.js",
   "private": true,
   "engines": {
     "node": ">=20"
   },
   "scripts": {
+    "setup": "node scripts/setup.js",
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "smoke": "node scripts/smoke.js",
     "smoke:ws": "node scripts/smoke-workspace.js",
     "smoke:signup": "node scripts/smoke-signup.js",
+    "smoke:security": "node scripts/smoke-security.js",
+    "backup": "node scripts/backup.js",
     "test:ai": "node scripts/test-ai-adapter.js",
+    "test:webhooks": "node scripts/test-webhooks.js",
     "eval:ai": "node scripts/eval-ai.js"
   },
   "dependencies": {
@@ -26,6 +30,14 @@
     "express-rate-limit": "^7.4.0",
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
-    "nodemailer": "^6.9.15"
-  }
+    "nodemailer": "^10.1.1"
+  },
+  "license": "UNLICENSED",
+  "keywords": [
+    "manager-ia",
+    "erp",
+    "whatsapp",
+    "ia",
+    "ohada"
+  ]
 }

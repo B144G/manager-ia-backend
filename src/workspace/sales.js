@@ -9,21 +9,28 @@ const L = require('./sales-assign');
 const stt = require('../services/stt');
 const vault = require('../services/vault');
 const waOrg = require('../services/waOrg');
+const B = require('./sales-brief');
+const tts = require('../services/tts');
+const metaChat = require('../services/metaChat');
 const crypto = require('crypto');
 const { HttpError, asyncHandler, oneLine } = require('../util');
 
 const router = express.Router({ mergeParams: true });
 router.use(A.need('manager'));
+router.use('/wa', require('./wa-out').router);
+router.use('/', require('./wa-media').router);
+router.use('/', require('./sales-appt').router);
+router.use('/meta', require('./meta-channels').settings);
 
 const today = () => nowISO().slice(0, 10);
-const catItem = (r) => ({ id: r.id, name: r.name, description: r.description, price: r.price, unit: r.unit, active: Boolean(r.active) });
+const catItem = (r) => ({ id: r.id, name: r.name, description: r.description, price: r.price, unit: r.unit, active: Boolean(r.active), photos: r.n_img || 0, videos: r.n_vid || 0 });
 
 router.get('/', (req, res) => {
   const o = req.org.id;
   const since = new Date(Date.now() - 7 * 86400000).toISOString();
   const one = (sql, ...a) => db.prepare(sql).get(o, ...a).c;
   res.json({
-    settings: { chatEnabled: Boolean(req.org.chat_enabled), salesInfo: req.org.sales_info, token: A.can(req, 'admin') ? req.org.intake_token : undefined, voice: stt.isConfigured(), autoAssign: Boolean(req.org.auto_assign), waNumber: req.org.wa_number, waConnected: waOrg.isConnected(req.org) },
+    settings: { chatEnabled: Boolean(req.org.chat_enabled), salesInfo: req.org.sales_info, token: A.can(req, 'admin') ? req.org.intake_token : undefined, voice: stt.isConfigured(), autoAssign: Boolean(req.org.auto_assign), waNumber: req.org.wa_number, waConnected: waOrg.isConnected(req.org), replyDelay: req.org.reply_delay, voiceReply: req.org.voice_reply, handoffOrder: Boolean(req.org.handoff_order), handoffAppt: Boolean(req.org.handoff_appt), apptReminder: Boolean(req.org.appt_reminder), ttsAvailable: tts.isConfigured() },
     stats: {
       chats7: one('SELECT COUNT(*) c FROM chats WHERE org_id = ? AND created_at >= ?', since),
       prospects: one("SELECT COUNT(*) c FROM customers WHERE org_id = ? AND stage = 'prospect'"),
@@ -31,6 +38,7 @@ router.get('/', (req, res) => {
       ordered: db.prepare("SELECT COALESCE(SUM(total), 0) t FROM documents WHERE org_id = ? AND kind = 'order' AND status IN ('pending','confirmed','invoiced')").get(o).t,
       catalog: one('SELECT COUNT(*) c FROM catalog WHERE org_id = ? AND active = 1'),
       waiting: one("SELECT COUNT(*) c FROM chats WHERE org_id = ? AND status = 'handoff'"),
+      appointments: one("SELECT COUNT(*) c FROM appointments WHERE org_id = ? AND status = 'pending'"),
     },
   });
 });
@@ -39,13 +47,19 @@ router.put('/settings', A.need('admin'), (req, res) => {
   const b = req.body || {};
   const on = b.chatEnabled === undefined ? req.org.chat_enabled : b.chatEnabled ? 1 : 0;
   if (on && !db.prepare('SELECT 1 FROM catalog WHERE org_id = ? AND active = 1').get(req.org.id)) throw new HttpError(400, "Ajoutez d'abord au moins un article au catalogue : l'assistant a besoin de vos prix pour répondre.");
-  db.prepare('UPDATE orgs SET chat_enabled = ?, sales_info = ?, auto_assign = ? WHERE id = ?').run(on, b.salesInfo === undefined ? req.org.sales_info : A.text(b.salesInfo, 2500), b.autoAssign === undefined ? req.org.auto_assign : b.autoAssign ? 1 : 0, req.org.id);
+  // Délai avant la réponse de l'IA (messageries seulement) : 0 = tout de suite, jusqu'à 180 s ; les messages reçus pendant l'attente sont lus ensemble.
+  let delay = req.org.reply_delay;
+  if (b.replyDelay !== undefined) { delay = Number(b.replyDelay); if (!Number.isInteger(delay) || delay < 0 || delay > 180) throw new HttpError(400, 'Le délai de réponse est un nombre de secondes entre 0 et 180 (3 minutes).'); }
+  const voice = b.voiceReply === undefined ? req.org.voice_reply : A.oneOf(b.voiceReply, ['off', 'mirror', 'always'], undefined, 'Réponse vocale : choix inconnu.');
+  const rem = b.apptReminder === undefined ? req.org.appt_reminder : b.apptReminder ? 1 : 0;
+  const hOrder = b.handoffOrder === undefined ? req.org.handoff_order : b.handoffOrder ? 1 : 0; const hAppt = b.handoffAppt === undefined ? req.org.handoff_appt : b.handoffAppt ? 1 : 0;
+  db.prepare('UPDATE orgs SET chat_enabled = ?, sales_info = ?, auto_assign = ?, reply_delay = ?, voice_reply = ?, handoff_order = ?, handoff_appt = ?, appt_reminder = ? WHERE id = ?').run(on, b.salesInfo === undefined ? req.org.sales_info : A.text(b.salesInfo, 2500), b.autoAssign === undefined ? req.org.auto_assign : b.autoAssign ? 1 : 0, delay, voice, hOrder, hAppt, rem, req.org.id);
   A.logActivity(req.org.id, req.user.id, 'sales', on ? "Assistant commercial public activé" : 'Assistant commercial public désactivé');
   res.json({ ok: true });
 });
 
 // ---------- Catalogue ----------
-router.get('/catalog', (req, res) => res.json({ items: db.prepare('SELECT * FROM catalog WHERE org_id = ? ORDER BY active DESC, name COLLATE NOCASE').all(req.org.id).map(catItem) }));
+router.get('/catalog', (req, res) => res.json({ items: db.prepare("SELECT c.*, (SELECT COUNT(*) FROM catalog_media m WHERE m.item_id = c.id AND m.kind = 'image') AS n_img, (SELECT COUNT(*) FROM catalog_media m WHERE m.item_id = c.id AND m.kind = 'video') AS n_vid FROM catalog c WHERE c.org_id = ? ORDER BY c.active DESC, c.name COLLATE NOCASE").all(req.org.id).map(catItem) }));
 router.post('/catalog', (req, res) => {
   const b = req.body || {};
   if (db.prepare('SELECT COUNT(*) c FROM catalog WHERE org_id = ?').get(req.org.id).c >= 200) throw new HttpError(403, 'Le catalogue est limité à 200 articles.');
@@ -78,19 +92,49 @@ router.get('/chats', (req, res) => {
 router.get('/chats/:id', (req, res) => {
   const c = db.prepare('SELECT * FROM chats WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
   if (!c) throw new HttpError(404, 'Conversation introuvable.');
-  res.json({ campaign: c.campaign, status: c.status, channel: c.channel, contact: c.contact, assigneeId: c.assignee_id, lead: L.cleanLead(JSON.parse(c.lead || '{}')), summary: L.leadSummary(c.lead), messages: db.prepare('SELECT role, content, created_at AS at FROM chat_messages WHERE chat_id = ? ORDER BY id LIMIT 200').all(c.id) });
+  res.json({ campaign: c.campaign, status: c.status, channel: c.channel, contact: c.contact, assigneeId: c.assignee_id, lead: L.cleanLead(JSON.parse(c.lead || '{}')), summary: L.leadSummary(c.lead), brief: B.read(c), appointments: db.prepare("SELECT id, date, time, purpose, status FROM appointments WHERE chat_id = ? ORDER BY id DESC LIMIT 5").all(c.id), messages: db.prepare('SELECT role, content, created_at AS at FROM chat_messages WHERE chat_id = ? ORDER BY id LIMIT 200').all(c.id) });
+});
+
+// Dossier préparé par l'IA interne : régénérer, ou appliquer la fiche client trouvée.
+router.post('/chats/:id/brief', asyncHandler(async (req, res) => {
+  const c = db.prepare('SELECT * FROM chats WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
+  if (!c) throw new HttpError(404, 'Conversation introuvable.');
+  const b = await B.build(req.org, c.id);
+  if (!b) throw new HttpError(503, "Le dossier n'a pas pu être préparé (IA indisponible ou quota atteint).");
+  res.json({ brief: b });
+}));
+router.post('/chats/:id/apply-brief', (req, res) => {
+  const c = db.prepare('SELECT * FROM chats WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
+  if (!c) throw new HttpError(404, 'Conversation introuvable.');
+  const done = B.apply(req.org, c);
+  A.logActivity(req.org.id, req.user.id, 'sales', 'Fiche client complétée avec le dossier de l\'IA');
+  res.json({ ok: true, done });
+});
+
+// Pièce jointe d'un prospect (photo ou PDF). Servie telle quelle mais neutralisée : type fixé d'après le contenu, jamais exécutable, jamais mise en cache.
+function sendMedia(req, res, chat) {
+  const m = db.prepare('SELECT mime, data FROM chat_media WHERE id = ? AND chat_id = ?').get(A.id(req.params.mid), chat.id);
+  if (!m) throw new HttpError(404, 'Fichier introuvable.');
+  res.set({ 'Content-Type': m.mime, 'Content-Length': m.data.length, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox", 'Content-Disposition': 'inline; filename="piece-jointe' + (m.mime === 'application/pdf' ? '.pdf"' : '"') });
+  res.end(m.data);
+}
+router.get('/chats/:id/media/:mid', (req, res) => {
+  const c = db.prepare('SELECT id FROM chats WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
+  if (!c) throw new HttpError(404, 'Conversation introuvable.');
+  sendMedia(req, res, c);
 });
 
 // Un humain écrit lui-même au client sur WhatsApp (l'IA se tait tant que la conversation n'est pas rendue) : seulement dans les 24 h après le dernier message du client.
 async function replyToChat(org, user, chat, text) {
-  if (chat.channel !== 'whatsapp') throw new HttpError(400, "Seules les conversations WhatsApp permettent d'écrire au client depuis ici.");
-  if (!waOrg.isConnected(org)) throw new HttpError(400, "WhatsApp n'est pas connecté.");
+  if (chat.channel === 'web') throw new HttpError(400, "Seules les conversations WhatsApp, Messenger et Instagram permettent d'écrire au client depuis ici.");
+  const wa = chat.channel === 'whatsapp';
+  if (!(wa ? waOrg.isConnected(org) : metaChat.isConnected(org))) throw new HttpError(400, wa ? "WhatsApp n'est pas connecté." : "Messenger / Instagram n'est pas connecté.");
   const last = db.prepare("SELECT created_at FROM chat_messages WHERE chat_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1").get(chat.id);
-  if (!last || Date.now() - Date.parse(last.created_at) > 24 * 3600000) throw new HttpError(400, "Plus de 24 h depuis le dernier message du client : WhatsApp n'autorise plus d'écrire librement. Attendez qu'il vous réécrive.");
-  try { await waOrg.sendText(org, chat.contact, text); } catch (e) { throw new HttpError(502, "Le message n'a pas pu partir. Vérifiez la connexion WhatsApp dans les réglages."); }
+  if (!last || Date.now() - Date.parse(last.created_at) > 24 * 3600000) throw new HttpError(400, "Plus de 24 h depuis le dernier message du client : Meta n'autorise plus d'écrire librement. Attendez qu'il vous réécrive.");
+  try { await (wa ? waOrg.sendText(org, chat.contact, text) : metaChat.sendText(org, chat.contact, text)); } catch (e) { throw new HttpError(502, "Le message n'a pas pu partir. Vérifiez la connexion dans les réglages."); }
   db.prepare("INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, 'staff', ?, ?)").run(chat.id, text, nowISO());
   db.prepare("UPDATE chats SET status = 'handoff', updated_at = ? WHERE id = ?").run(nowISO(), chat.id);
-  A.logActivity(org.id, user.id, 'sales', 'Réponse envoyée à un client sur WhatsApp');
+  A.logActivity(org.id, user.id, 'sales', 'Réponse envoyée à un client');
 }
 router.post('/chats/:id/reply', asyncHandler(async (req, res) => {
   const c = db.prepare('SELECT * FROM chats WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
@@ -196,8 +240,10 @@ mine.get('/chats', (req, res) => {
 });
 mine.get('/chats/:id', (req, res) => {
   const c = mineChat(req);
-  res.json({ campaign: c.campaign, status: c.status, channel: c.channel, contact: c.contact, assigneeId: c.assignee_id, lead: L.cleanLead(JSON.parse(c.lead || '{}')), summary: L.leadSummary(c.lead), messages: db.prepare('SELECT role, content, created_at AS at FROM chat_messages WHERE chat_id = ? ORDER BY id LIMIT 200').all(c.id) });
+  res.json({ campaign: c.campaign, status: c.status, channel: c.channel, contact: c.contact, assigneeId: c.assignee_id, lead: L.cleanLead(JSON.parse(c.lead || '{}')), summary: L.leadSummary(c.lead), brief: B.read(c), appointments: db.prepare("SELECT id, date, time, purpose, status FROM appointments WHERE chat_id = ? ORDER BY id DESC LIMIT 5").all(c.id), messages: db.prepare('SELECT role, content, created_at AS at FROM chat_messages WHERE chat_id = ? ORDER BY id LIMIT 200').all(c.id) });
 });
+mine.get('/chats/:id/media/:mid', (req, res) => sendMedia(req, res, mineChat(req)));
+mine.post('/chats/:id/apply-brief', (req, res) => { res.json({ ok: true, done: B.apply(req.org, mineChat(req)) }); });
 mine.post('/chats/:id/reply', asyncHandler(async (req, res) => {
   await replyToChat(req.org, req.user, mineChat(req), A.text((req.body || {}).text, 1000, { required: true, msg: 'Écrivez votre message.' }));
   res.json({ ok: true });

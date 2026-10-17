@@ -36,6 +36,13 @@ if (!jwtSecret) {
   console.warn('[AVERTISSEMENT] JWT_SECRET absent : un secret temporaire est utilisé (les connexions sont perdues à chaque redémarrage). OK en développement seulement.');
 }
 
+// --- Production : refuser un mot de passe administrateur faible ---
+if (isProd && str('ADMIN_PASSWORD') && str('ADMIN_PASSWORD').length < 10) {
+  console.error('\n[ERREUR] ADMIN_PASSWORD est trop court pour la production (10 caractères minimum, idéalement 16+).\n');
+  process.exit(1);
+}
+if (isProd && !str('DATA_KEY')) console.warn('[AVERTISSEMENT] DATA_KEY absent : les jetons WhatsApp sont chiffrés avec une clé dérivée de JWT_SECRET. Définissez DATA_KEY (48+ caractères aléatoires) et conservez-la : sans elle, ils deviennent illisibles.');
+
 // --- Cookies ---
 let sameSite = str('COOKIE_SAMESITE', 'lax').toLowerCase();
 if (!['lax', 'strict', 'none'].includes(sameSite)) sameSite = 'lax';
@@ -116,6 +123,16 @@ const config = {
     model: str('STT_MODEL', 'whisper-1'),
     language: str('STT_LANGUAGE'), // vide = détection automatique (multilingue)
   },
+
+  // Synthèse vocale (réponses en message vocal) : service compatible OpenAI (/audio/speech). Par défaut, la même clé et le même fournisseur que la transcription.
+  tts: {
+    key: str('TTS_API_KEY') || str('STT_API_KEY'),
+    baseUrl: (str('TTS_BASE_URL') || str('STT_BASE_URL', 'https://api.openai.com/v1')).replace(/\/+$/, ''),
+    model: str('TTS_MODEL', 'tts-1'),
+    voice: str('TTS_VOICE', 'alloy'),
+  },
+  // Adresse publique (HTTPS) de CE serveur, que Meta peut joindre : sert aux photos, vidéos et voix envoyées sur Messenger et Instagram.
+  apiPublicUrl: (str('API_PUBLIC_URL') || str('SITE_URL')).replace(/\/+$/, ''),
 
   // Espace de travail IA : limites par offre du propriétaire de l'organisation.
   // aiMonth = messages IA par mois pour TOUTE l'organisation (quota commun, remis à zéro le 1er du mois).
