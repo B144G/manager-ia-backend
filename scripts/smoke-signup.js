@@ -5,7 +5,6 @@ const fs = require('fs');
 const net = require('net');
 const os = require('os');
 const path = require('path');
-const jwt = require('jsonwebtoken');
 
 let passed = 0; let failed = 0;
 const check = (n, c, x) => { if (c) { passed++; console.log('  OK   ' + n); } else { failed++; console.log('  ECHEC ' + n + (x !== undefined ? ' -> ' + JSON.stringify(x) : '')); } };
@@ -52,9 +51,9 @@ async function main() {
     r = await call('POST', '/api/register', { name: 'Tel', contact: '690000001', pass: 'secret123' });
     check('téléphone refusé : il faut un e-mail', r.status === 400 && /e-mail/.test(r.json.error), r.json);
     r = await call('POST', '/api/register', { name: 'Awa', contact: mail, pass: 'secret123' });
-    check("inscription -> 202, pas de compte, pas de cookie", r.status === 202 && r.json.verify && r.json.expiresIn === 30 && !/mia_token/.test(r.cookie), r);
+    check("inscription -> 202, pas de compte, pas de cookie", r.status === 202 && r.json.verify && r.json.expiresIn === 60 && !/mia_token/.test(r.cookie), r);
     check("l'adresse est masquée dans la réponse", r.json.contact && !r.json.contact.includes('nouveau'), r.json);
-    check('un e-mail avec le code est parti', box.length === 1 && /30 secondes/.test(box[0]) && lastCode(box), box[0]);
+    check('un e-mail avec le code est parti', box.length === 1 && /1 minute/.test(box[0]) && lastCode(box), box[0]);
     const code = lastCode(box);
     r = await call('POST', '/api/login', { contact: mail, pass: 'secret123' });
     check('connexion impossible avant vérification', r.status === 401, r);
@@ -67,27 +66,10 @@ async function main() {
     check('renvoi trop tôt -> 429', r.status === 429, r.json);
     r = await call('POST', '/api/register/verify', { contact: mail, code });
     check('bon code -> 201 + cookie + utilisateur', r.status === 201 && /mia_token/.test(r.cookie) && r.json.user && r.json.user.name === 'Awa', r);
-    const issuedToken = /mia_token=([^;]+)/.exec(r.cookie)[1];
-    const claims = jwt.decode(issuedToken);
-    const staleToken = jwt.sign({ sub: claims.sub, typ: 'user', pc: claims.pc, bioAt: Date.now() - 360000, actAt: Date.now() - 360000 }, 'secret-de-test-assez-long-123456', { algorithm: 'HS256', expiresIn: '1h' });
-    const staleResponse = await fetch(base + '/api/me', { headers: { cookie: `mia_token=${staleToken}` } });
-    check('session inactive depuis 5 minutes -> biométrie exigée', staleResponse.status === 428 && /vérifiez votre identité/i.test((await staleResponse.json()).error));
-    const idlePing = await fetch(base + '/api/session/activity', { method: 'POST', headers: { cookie: `mia_token=${staleToken}`, 'content-type': 'application/json' }, body: '{}' });
-    check('un ping d’activité ne déverrouille pas une ancienne session', idlePing.status === 428);
     r = await call('POST', '/api/register/verify', { contact: mail, code });
     check('le code ne sert qu\'une fois', r.status === 400, r.json);
     r = await call('POST', '/api/login', { contact: mail, pass: 'secret123' });
-    check('connexion sans clé biométrique : code e-mail exigé', r.status === 200 && r.json.verify && r.json.loginVerify, r);
-    check('code de connexion envoyé', box.some((message) => message.includes(`To: ${mail}`)) && lastCode(box), box[box.length - 1]);
-    const loginCode = lastCode(box);
-    const badLoginCode = loginCode === '999999' ? '000000' : '999999';
-    r = await call('POST', '/api/login/verify-email', { contact: mail, code: badLoginCode });
-    check('mauvais code de migration biométrique refusé', r.status === 400 && /incorrect/.test(r.json.error), r.json);
-    r = await call('POST', '/api/login/verify-email', { contact: mail, code: loginCode });
-    const passkeyChallenge = r.json && r.json.challengeId;
-    check('bon code autorise uniquement l’enregistrement de la clé', r.status === 200 && r.json.webauthn === 'register' && r.json.options.challenge && r.json.options.authenticatorSelection.userVerification === 'required', r.json);
-    r = await call('POST', '/api/webauthn/login/verify', { challengeId: passkeyChallenge, enroll: true, response: { id: 'cle-fausse' } });
-    check('assertion WebAuthn inventée refusée', r.status === 400 && /vérification biométrique a échoué/i.test(r.json.error), r.json);
+    check('connexion possible ensuite', r.status === 200, r);
     r = await call('POST', '/api/register', { name: 'Awa', contact: mail, pass: 'secret123' });
     check('adresse déjà inscrite -> 409', r.status === 409, r.json);
 
@@ -100,7 +82,7 @@ async function main() {
     r = await call('POST', '/api/register/verify', { contact: m2, code: c2 });
     check('après 5 essais ratés, même le bon code est refusé -> 429', last.status === 400 && r.status === 429, r.json);
 
-    // Expiration (30 secondes) + renvoi
+    // Expiration (1 minute) + renvoi
     const m3 = `expire${Date.now()}@exemple.com`;
     await call('POST', '/api/register', { name: 'Max', contact: m3, pass: 'secret123' });
     const c3 = lastCode(box);
@@ -110,9 +92,9 @@ async function main() {
     const c3b = lastCode(box);
     check('le nouveau code est envoyé', box.length >= 4 && c3b, c3b);
     if (c3b !== c3) { r = await call('POST', '/api/register/verify', { contact: m3, code: c3 }); check('ancien code invalidé', r.status === 400, r.json); }
-    await sleep(31000);
+    await sleep(61000);
     r = await call('POST', '/api/register/verify', { contact: m3, code: c3b });
-    check('code expiré après 30 secondes -> 400', r.status === 400 && /30 secondes/.test(r.json.error), r.json);
+    check('code expiré après 1 minute -> 400', r.status === 400 && /expiré/.test(r.json.error), r.json);
     r = await call('POST', '/api/login', { contact: m3, pass: 'secret123' });
     check("aucun compte créé avec un code expiré", r.status === 401, r);
   } finally {

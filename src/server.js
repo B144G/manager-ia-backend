@@ -10,7 +10,6 @@ const config = require('./config');
 const { db } = require('./db');
 const limits = require('./middleware/limits');
 const { HttpError, log } = require('./util');
-const { mailEnabled } = require('./services/notify');
 
 const app = express();
 app.disable('x-powered-by');
@@ -123,7 +122,7 @@ function start() {
     log.info(`MANAGER-IA démarré sur le port ${config.port} (${config.isProd ? 'production' : 'développement'})`);
     log.info(`Base de données : ${config.dbPath}`);
     const on = (v) => (v ? 'activé' : 'non configuré');
-    log.info(`Assistant IA : ${on(config.ai.key)} | Paiement automatique Campay : ${on(config.campay.enabled)} | WhatsApp admin : ${on(config.whatsapp.phoneId && config.whatsapp.token)} | E-mail : ${on(mailEnabled())} | Admin : ${on(config.admin.username && config.admin.password)} | Webhooks Meta : ${on(config.meta.appSecret)}`);
+    log.info(`Assistant IA : ${on(config.ai.key)} | Paiement automatique Campay : ${on(config.campay.enabled)} | WhatsApp admin : ${on(config.whatsapp.phoneId && config.whatsapp.token)} | E-mail : ${on(config.smtp.host)} | Admin : ${on(config.admin.username && config.admin.password)} | Webhooks Meta : ${on(config.meta.appSecret)}`);
   });
   require('./jobs').start();
   require('./workspace/inbound').start(); // réponses différées (délai choisi par l'organisation)

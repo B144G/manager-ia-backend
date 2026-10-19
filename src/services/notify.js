@@ -32,11 +32,7 @@ async function sendMail({ to, subject, text, replyTo, fromName, attachments }) {
   await t.sendMail({ from: name ? `"${name}" <${String(addr).replace(/^.*<|>.*$/g, '')}>` : addr, to, subject, text, replyTo: replyTo || undefined, attachments: attachments || undefined });
   return true;
 }
-const mailEnabled = () => {
-  const hasUser = Boolean(config.smtp.user), hasPass = Boolean(config.smtp.pass);
-  const isGmail = /(^|\.)smtp\.gmail\.com$/i.test(config.smtp.host);
-  return Boolean(config.smtp.host && (config.smtp.from || config.smtp.user) && hasUser === hasPass && (!isGmail || (hasUser && hasPass)));
-};
+const mailEnabled = () => Boolean(config.smtp.host);
 
 /** E-mail à un utilisateur (seulement si son contact est un e-mail). N'attend pas, ne plante pas. */
 function mailUser(contact, subject, text) {

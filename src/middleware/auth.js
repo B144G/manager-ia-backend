@@ -9,7 +9,6 @@ const USER_COOKIE = 'mia_token';
 const ADMIN_COOKIE = 'mia_admin';
 const USER_MAX_AGE = 30 * 24 * 3600 * 1000;
 const ADMIN_MAX_AGE = 12 * 3600 * 1000;
-const BIOMETRIC_IDLE_MS = 5 * 60 * 1000;
 
 const cookieOpts = (maxAge) => ({
   httpOnly: true,
@@ -19,10 +18,10 @@ const cookieOpts = (maxAge) => ({
   maxAge,
 });
 
-function setUserCookie(res, userId, biometricAt = Date.now(), activityAt = Date.now()) {
+function setUserCookie(res, userId) {
   // « pc » = date du dernier changement de mot de passe : un changement invalide toutes les sessions ouvertes avant lui (sans dépendre de l'horloge).
   const row = db.prepare('SELECT pass_changed_at FROM users WHERE id = ?').get(userId);
-  const token = jwt.sign({ sub: userId, typ: 'user', pc: (row && row.pass_changed_at) || '', bioAt: biometricAt, actAt: activityAt }, config.jwtSecret, { algorithm: 'HS256', expiresIn: '30d' });
+  const token = jwt.sign({ sub: userId, typ: 'user', pc: (row && row.pass_changed_at) || '' }, config.jwtSecret, { algorithm: 'HS256', expiresIn: '30d' });
   res.cookie(USER_COOKIE, token, cookieOpts(USER_MAX_AGE));
 }
 const clearUserCookie = (res) => res.clearCookie(USER_COOKIE, { ...cookieOpts(0), maxAge: undefined });
@@ -50,15 +49,7 @@ function requireUser(req, res, next) {
   const row = getUserFresh(p.sub);
   if (!row) throw new HttpError(401, 'Compte introuvable. Veuillez vous reconnecter.');
   if ((p.pc || '') !== (row.pass_changed_at || '')) throw new HttpError(401, 'Votre mot de passe a été modifié : reconnectez-vous.');
-  const currentPath = req.originalUrl.split('?')[0];
-  const biometricRoute = /^\/api\/webauthn\/session\/(options|verify)$/.test(currentPath);
-  const sessionExpired = !Number.isFinite(p.actAt) || Date.now() - p.actAt >= BIOMETRIC_IDLE_MS;
-  if (!config.testAuthBypass && sessionExpired && !biometricRoute) throw new HttpError(428, 'Vérifiez votre identité pour reprendre la session.');
-  const credential = db.prepare('SELECT 1 FROM webauthn_credentials WHERE user_id = ? LIMIT 1').get(row.id);
-  const setupRoute = currentPath === '/api/me' || currentPath.startsWith('/api/webauthn/register/');
-  if (!config.testAuthBypass && !credential && !setupRoute) throw new HttpError(428, 'Enregistrez une empreinte digitale ou la sécurité de votre appareil pour continuer.');
   req.user = row;
-  req.auth = p;
   next();
 }
 
