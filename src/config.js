@@ -60,7 +60,14 @@ const config = {
   siteUrl: str('SITE_URL'),
   // Inscription avec code par e-mail : 'on', 'off' ou 'auto' (actif dès que l'envoi d'e-mails est configuré).
   signupVerify: str('SIGNUP_VERIFY') || 'auto',
-  dbPath: resolvePath(str('DB_PATH', 'data/manager-ia.db')),
+  // PostgreSQL : DATABASE_URL (Neon : adresse « pooled »). DATABASE_URL_UNPOOLED (adresse directe) sert aux migrations si fournie.
+  // Pour les tests : DATABASE_URL=pglite://memory (ou pglite:///chemin/dossier), un vrai PostgreSQL embarqué sans installation.
+  database: (() => {
+    const url = str('DATABASE_URL');
+    if (!url) { console.error('[ERREUR] DATABASE_URL manquant. Exemple Neon : postgresql://utilisateur:motdepasse@ep-xxx.eu-central-1.aws.neon.tech/neondb?sslmode=require'); process.exit(1); }
+    if (/^pglite:/i.test(url)) { const rest = url.replace(/^pglite:\/\//i, ''); return { driver: 'pglite', pgliteDir: rest && rest !== 'memory' ? resolvePath(rest) : '', poolMax: 1 }; }
+    return { driver: 'pg', url, directUrl: str('DATABASE_URL_UNPOOLED') || url, ssl: str('DATABASE_SSL') === 'false' ? false : undefined, poolMax: Math.max(1, parseInt(str('DB_POOL_MAX', '10'), 10) || 10) };
+  })(),
   publicDir: path.join(ROOT, 'public'),
   adminDir: path.join(ROOT, 'admin'),
 
