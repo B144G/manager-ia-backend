@@ -767,10 +767,10 @@ function publicUser(row) {
 
 /** Récupère un utilisateur et le repasse à "Gratuit" si son offre a expiré. */
 async function getUserFresh(id) {
-  let row = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  let row = await db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   if (row && row.plan !== 'Gratuit' && row.plan_expires && new Date(row.plan_expires).getTime() <= Date.now()) {
-    db.prepare("UPDATE users SET plan = 'Gratuit', plan_expires = NULL WHERE id = ?").run(id);
-    row = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    await db.prepare("UPDATE users SET plan = 'Gratuit', plan_expires = NULL WHERE id = ?").run(id);
+    row = await db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   }
   return row;
 }

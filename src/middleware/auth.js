@@ -18,9 +18,9 @@ const cookieOpts = (maxAge) => ({
   maxAge,
 });
 
-function setUserCookie(res, userId) {
+async function setUserCookie(res, userId) {
   // « pc » = date du dernier changement de mot de passe : un changement invalide toutes les sessions ouvertes avant lui (sans dépendre de l'horloge).
-  const row = db.prepare('SELECT pass_changed_at FROM users WHERE id = ?').get(userId);
+  const row = await db.prepare('SELECT pass_changed_at FROM users WHERE id = ?').get(userId);
   const token = jwt.sign({ sub: userId, typ: 'user', pc: (row && row.pass_changed_at) || '' }, config.jwtSecret, { algorithm: 'HS256', expiresIn: '30d' });
   res.cookie(USER_COOKIE, token, cookieOpts(USER_MAX_AGE));
 }
@@ -41,12 +41,12 @@ function verify(token, typ) {
   }
 }
 
-function requireUser(req, res, next) {
+async function requireUser(req, res, next) {
   const token = req.cookies && req.cookies[USER_COOKIE];
   if (!token) throw new HttpError(401, 'Vous devez être connecté.');
   const p = verify(token, 'user');
   if (!p) throw new HttpError(401, 'Session expirée. Veuillez vous reconnecter.');
-  const row = getUserFresh(p.sub);
+  const row = await getUserFresh(p.sub);
   if (!row) throw new HttpError(401, 'Compte introuvable. Veuillez vous reconnecter.');
   if ((p.pc || '') !== (row.pass_changed_at || '')) throw new HttpError(401, 'Votre mot de passe a été modifié : reconnectez-vous.');
   req.user = row;

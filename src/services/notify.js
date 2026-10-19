@@ -68,14 +68,14 @@ async function run(type, text) {
 
   if (channels.length === 0) log.info(`[notification ${type}] ${text}  (aucun canal configuré : affichée ici seulement)`);
 
-  db.prepare('INSERT INTO notifications (type, text, channels, created_at) VALUES (?, ?, ?, ?)').run(
+  await db.prepare('INSERT INTO notifications (type, text, channels, created_at) VALUES (?, ?, ?, ?)').run(
     type, oneLine(text, 1000), channels.join(','), nowISO()
   );
 }
 
 /** Lance la notification en arrière-plan. À appeler SANS await. */
 function notify(type, text) {
-  setImmediate(() => {
+  setImmediate(async () => {
     run(type, text).catch((e) => log.warn('Notification impossible :', oneLine(e.message, 200)));
   });
 }

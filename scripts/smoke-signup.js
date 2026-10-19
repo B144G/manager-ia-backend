@@ -5,6 +5,7 @@ const fs = require('fs');
 const net = require('net');
 const os = require('os');
 const path = require('path');
+const { startTestPg } = require('./lib/testdb');
 
 let passed = 0; let failed = 0;
 const check = (n, c, x) => { if (c) { passed++; console.log('  OK   ' + n); } else { failed++; console.log('  ECHEC ' + n + (x !== undefined ? ' -> ' + JSON.stringify(x) : '')); } };
@@ -34,9 +35,9 @@ const lastCode = (box) => { const m = box.length ? /rification : (\d{6})\n/.exec
 async function main() {
   const smtpPort = await freePort(); const box = []; const smtp = await fakeSmtp(smtpPort, box);
   const port = await freePort(); const base = `http://127.0.0.1:${port}`;
-  const dbFile = path.join(os.tmpdir(), `manager-ia-su-${process.pid}.db`);
+  const pgt = await startTestPg();
   const blank = ['ALLOWED_ORIGINS', 'COOKIE_SAMESITE', 'COOKIE_SECURE', 'WHATSAPP_PHONE_ID', 'WHATSAPP_TOKEN', 'CAMPAY_USERNAME', 'CAMPAY_PASSWORD', 'BUSINESS_FILE', 'KNOWLEDGE_DIR', 'SIGNUP_VERIFY'];
-  const env = { ...process.env, ...Object.fromEntries(blank.map((k) => [k, ''])), NODE_ENV: 'test', PORT: String(port), JWT_SECRET: 'secret-de-test-assez-long-123456', DB_PATH: dbFile, TRUST_PROXY: '0',
+  const env = { ...process.env, ...Object.fromEntries(blank.map((k) => [k, ''])), NODE_ENV: 'test', PORT: String(port), JWT_SECRET: 'secret-de-test-assez-long-123456', DATABASE_URL: pgt.url, TRUST_PROXY: '0',
     ADMIN_USERNAME: 'admin-test', ADMIN_PASSWORD: 'mot-de-passe-admin-test', SMTP_HOST: '127.0.0.1', SMTP_PORT: String(smtpPort), SMTP_FROM: 'noreply@manager-ia.test' };
   const child = spawn(process.execPath, [path.join(__dirname, '..', 'src', 'server.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = ''; child.stdout.on('data', (d) => { out += d; }); child.stderr.on('data', (d) => { out += d; });
@@ -99,7 +100,7 @@ async function main() {
     check("aucun compte créé avec un code expiré", r.status === 401, r);
   } finally {
     child.kill(); smtp.close();
-    for (const f of [dbFile, dbFile + '-wal', dbFile + '-shm']) { try { fs.unlinkSync(f); } catch { /* absent */ } }
+    await pgt.stop();
   }
   console.log(`\n${passed} réussis, ${failed} échoués`);
   process.exit(failed ? 1 : 0);

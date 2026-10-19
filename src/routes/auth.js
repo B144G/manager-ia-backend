@@ -81,22 +81,22 @@ async function sendSignupCode(row, name) {
   if (!sent) throw new HttpError(503, "L'envoi d'e-mails n'est pas disponible pour le moment. Réessayez plus tard.");
   return { codeHash: codeHash(row.contact, code), expires: new Date(now + CODE_MS).toISOString(), at: new Date(now).toISOString() };
 }
-const sweepCodes = () => db.prepare('DELETE FROM signup_codes WHERE expires_at < ?').run(new Date(Date.now() - 10 * 60 * 1000).toISOString());
+const sweepCodes = async () => await db.prepare('DELETE FROM signup_codes WHERE expires_at < ?').run(new Date(Date.now() - 10 * 60 * 1000).toISOString());
 
-function createUser(res, { name, contact, hash, interests }) {
+async function createUser(res, { name, contact, hash, interests }) {
   const dup = 'Un compte existe déjà avec ce contact. Utilisez « Me connecter ».';
   let id;
   try {
-    id = db.prepare('INSERT INTO users (name, contact, pass_hash, interests, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(name, contact, hash, JSON.stringify(interests), nowISO()).lastInsertRowid;
+    id = (await db.prepare('INSERT INTO users (name, contact, pass_hash, interests, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(name, contact, hash, JSON.stringify(interests), nowISO())).lastInsertRowid;
   } catch (e) {
-    if (String(e.code || '').startsWith('SQLITE_CONSTRAINT')) throw new HttpError(409, dup);
+    if (e.code === '23505') throw new HttpError(409, dup);
     throw e;
   }
-  setUserCookie(res, Number(id));
-  sec.audit('register', null, Number(id), '');
+  await setUserCookie(res, Number(id));
+  await sec.audit('register', null, Number(id), '');
   notify('inscription', `Nouvelle inscription : ${name} (${contact}) - intérêts : ${interests.join(', ') || 'aucun'}`);
-  return publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id));
+  return publicUser(await db.prepare('SELECT * FROM users WHERE id = ?').get(id));
 }
 
 router.get('/register/info', (req, res) => res.json({ verify: verifyOn() }));
@@ -116,19 +116,19 @@ router.post('/register', limits.register, asyncHandler(async (req, res) => {
   interests = interests.filter((i) => !DOMAINS.includes(i) || ++kept <= FREE_MAX_DOMAINS);
 
   const dup = 'Un compte existe déjà avec ce contact. Utilisez « Me connecter ».';
-  if (db.prepare('SELECT 1 FROM users WHERE contact = ?').get(contact.value)) throw new HttpError(409, dup);
+  if (await db.prepare('SELECT 1 FROM users WHERE contact = ?').get(contact.value)) throw new HttpError(409, dup);
 
   const hash = await bcrypt.hash(pass, sec.BCRYPT_COST);
-  if (!verifyOn()) return res.status(201).json({ user: createUser(res, { name, contact: contact.value, hash, interests }) });
+  if (!verifyOn()) return res.status(201).json({ user: await createUser(res, { name, contact: contact.value, hash, interests }) });
 
   if (!contact.value.includes('@')) throw new HttpError(400, 'Entrez une adresse e-mail : nous vous y envoyons un code de vérification.');
-  sweepCodes();
-  const prev = db.prepare('SELECT * FROM signup_codes WHERE contact = ?').get(contact.value);
+  await sweepCodes();
+  const prev = await db.prepare('SELECT * FROM signup_codes WHERE contact = ?').get(contact.value);
   const now = Date.now();
   const fresh = prev && now - Date.parse(prev.window_start) < 3600 * 1000;
   if (fresh && prev.sends >= MAX_SENDS) throw new HttpError(429, 'Trop de codes demandés pour cette adresse. Réessayez dans une heure.');
   const sent = await sendSignupCode({ contact: contact.value }, name);
-  db.prepare(`INSERT INTO signup_codes (contact, name, pass_hash, interests, code_hash, expires_at, attempts, sent_at, sends, window_start)
+  await db.prepare(`INSERT INTO signup_codes (contact, name, pass_hash, interests, code_hash, expires_at, attempts, sent_at, sends, window_start)
     VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
     ON CONFLICT(contact) DO UPDATE SET name = excluded.name, pass_hash = excluded.pass_hash, interests = excluded.interests, code_hash = excluded.code_hash,
       expires_at = excluded.expires_at, attempts = 0, sent_at = excluded.sent_at, sends = excluded.sends, window_start = excluded.window_start`)
@@ -138,14 +138,14 @@ router.post('/register', limits.register, asyncHandler(async (req, res) => {
 
 router.post('/register/resend', limits.make(15 * 60 * 1000, 20, 'Trop de demandes. Réessayez dans quelques minutes.'), asyncHandler(async (req, res) => {
   const contact = normalizeContact((req.body || {}).contact);
-  const row = contact && verifyOn() ? db.prepare('SELECT * FROM signup_codes WHERE contact = ?').get(contact.value) : null;
+  const row = contact && verifyOn() ? await db.prepare('SELECT * FROM signup_codes WHERE contact = ?').get(contact.value) : null;
   if (!row) throw new HttpError(400, 'Aucune inscription en attente pour cette adresse. Recommencez l\'inscription.');
   const wait = RESEND_MS - (Date.now() - Date.parse(row.sent_at));
   if (wait > 0) throw new HttpError(429, `Patientez ${Math.ceil(wait / 1000)} s avant de redemander un code.`);
   const fresh = Date.now() - Date.parse(row.window_start) < 3600 * 1000;
   if (fresh && row.sends >= MAX_SENDS) throw new HttpError(429, 'Trop de codes demandés pour cette adresse. Réessayez dans une heure.');
   const sent = await sendSignupCode(row, row.name);
-  db.prepare('UPDATE signup_codes SET code_hash = ?, expires_at = ?, attempts = 0, sent_at = ?, sends = ?, window_start = ? WHERE contact = ?')
+  await db.prepare('UPDATE signup_codes SET code_hash = ?, expires_at = ?, attempts = 0, sent_at = ?, sends = ?, window_start = ? WHERE contact = ?')
     .run(sent.codeHash, sent.expires, sent.at, fresh ? row.sends + 1 : 1, fresh ? row.window_start : sent.at, row.contact);
   res.json({ ok: true, expiresIn: CODE_MS / 1000, resendIn: RESEND_MS / 1000 });
 }));
@@ -154,7 +154,7 @@ router.post('/register/verify', limits.make(15 * 60 * 1000, 40, 'Trop de tentati
   const b = req.body || {};
   const contact = normalizeContact(b.contact);
   const code = typeof b.code === 'string' ? b.code.replace(/\s/g, '') : '';
-  const row = contact ? db.prepare('SELECT * FROM signup_codes WHERE contact = ?').get(contact.value) : null;
+  const row = contact ? await db.prepare('SELECT * FROM signup_codes WHERE contact = ?').get(contact.value) : null;
   if (!row) throw new HttpError(400, 'Aucune inscription en attente pour cette adresse. Recommencez l\'inscription.');
   if (!/^\d{6}$/.test(code)) throw new HttpError(400, 'Entrez le code à 6 chiffres reçu par e-mail.');
   if (Date.parse(row.expires_at) < Date.now()) throw new HttpError(400, 'Ce code a expiré (il dure 1 minute). Demandez-en un nouveau.');
@@ -162,12 +162,12 @@ router.post('/register/verify', limits.make(15 * 60 * 1000, 40, 'Trop de tentati
   const a = Buffer.from(codeHash(row.contact, code), 'hex');
   const ok = crypto.timingSafeEqual(a, Buffer.from(row.code_hash, 'hex'));
   if (!ok) {
-    db.prepare('UPDATE signup_codes SET attempts = attempts + 1 WHERE contact = ?').run(row.contact);
+    await db.prepare('UPDATE signup_codes SET attempts = attempts + 1 WHERE contact = ?').run(row.contact);
     throw new HttpError(400, 'Code incorrect.');
   }
-  const user = db.transaction(() => {
-    const u = createUser(res, { name: row.name, contact: row.contact, hash: row.pass_hash, interests: parseJSON(row.interests, []) });
-    db.prepare('DELETE FROM signup_codes WHERE contact = ?').run(row.contact);
+  const user = await db.transaction(async () => {
+    const u = await createUser(res, { name: row.name, contact: row.contact, hash: row.pass_hash, interests: parseJSON(row.interests, []) });
+    await db.prepare('DELETE FROM signup_codes WHERE contact = ?').run(row.contact);
     return u;
   })();
   res.status(201).json({ user });
@@ -180,18 +180,18 @@ router.post('/login', limits.login, asyncHandler(async (req, res) => {
   const pass = typeof b.pass === 'string' ? b.pass.slice(0, 200) : '';
   const fail = new HttpError(401, 'Contact ou mot de passe incorrect.');
   const key = contact ? 'u:' + contact.value : '';
-  if (key) sec.assertNotLocked(key);
-  const row = contact ? db.prepare('SELECT * FROM users WHERE contact = ?').get(contact.value) : null;
+  if (key) await sec.assertNotLocked(key);
+  const row = contact ? await db.prepare('SELECT * FROM users WHERE contact = ?').get(contact.value) : null;
   const ok = await bcrypt.compare(pass, row ? row.pass_hash : DUMMY_HASH); // même durée si le compte n'existe pas
   if (!row || !ok) {
-    if (key && sec.recordFail(key)) sec.audit('login_locked', req, row && row.id, 'verrouillage 15 min');
-    else sec.audit('login_fail', req, row && row.id, '');
+    if (key && await sec.recordFail(key)) await sec.audit('login_locked', req, row && row.id, 'verrouillage 15 min');
+    else await sec.audit('login_fail', req, row && row.id, '');
     throw fail;
   }
-  sec.clearFails(key);
-  sec.audit('login_ok', req, row.id, '');
-  setUserCookie(res, row.id);
-  res.json({ user: publicUser(getUserFresh(row.id)) });
+  await sec.clearFails(key);
+  await sec.audit('login_ok', req, row.id, '');
+  await setUserCookie(res, row.id);
+  res.json({ user: publicUser(await getUserFresh(row.id)) });
 }));
 
 // ---- Mot de passe oublié ----
@@ -199,19 +199,19 @@ router.post('/login', limits.login, asyncHandler(async (req, res) => {
 // Sinon (téléphone) : l'administrateur est prévenu et envoie lui-même un lien (valable 1 h, usage unique) après avoir vérifié la personne.
 const RESET_MS = 60 * 60 * 1000;
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
-function makeResetLink(req, userId, by) {
+async function makeResetLink(req, userId, by) {
   const token = crypto.randomBytes(32).toString('hex');
-  db.prepare("DELETE FROM password_resets WHERE user_id = ? AND used_at IS NULL").run(userId);
-  db.prepare('INSERT INTO password_resets (user_id, token_hash, expires_at, created_by, created_at) VALUES (?, ?, ?, ?, ?)').run(userId, hashToken(token), new Date(Date.now() + RESET_MS).toISOString(), by, nowISO());
+  await db.prepare("DELETE FROM password_resets WHERE user_id = ? AND used_at IS NULL").run(userId);
+  await db.prepare('INSERT INTO password_resets (user_id, token_hash, expires_at, created_by, created_at) VALUES (?, ?, ?, ?, ?)').run(userId, hashToken(token), new Date(Date.now() + RESET_MS).toISOString(), by, nowISO());
   const base = (config.siteUrl || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
   return { link: `${base}/reinitialiser.html?t=${token}`, expiresAt: new Date(Date.now() + RESET_MS).toISOString() };
 }
-router.post('/password/forgot', limits.make(15 * 60 * 1000, 6, 'Trop de demandes. Réessayez dans quelques minutes.'), (req, res) => {
+router.post('/password/forgot', limits.make(15 * 60 * 1000, 6, 'Trop de demandes. Réessayez dans quelques minutes.'), async (req, res) => {
   const contact = normalizeContact((req.body || {}).contact);
-  const row = contact ? db.prepare('SELECT * FROM users WHERE contact = ?').get(contact.value) : null;
+  const row = contact ? await db.prepare('SELECT * FROM users WHERE contact = ?').get(contact.value) : null;
   if (row) {
     if (row.contact.includes('@') && mailEnabled()) {
-      const { link } = makeResetLink(req, row.id, 'user');
+      const { link } = await makeResetLink(req, row.id, 'user');
       mailUser(row.contact, 'Réinitialisation de votre mot de passe - MANAGER-IA', `Bonjour ${row.name},\n\nVous avez demandé à changer votre mot de passe. Ouvrez ce lien (valable 1 heure, une seule fois) :\n${link}\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez ce message : votre mot de passe reste inchangé.\n\nL'équipe MANAGER-IA`);
     } else {
       notify('reinitialisation', `Demande de réinitialisation de mot de passe : ${row.name} (${row.contact}). Vérifiez la personne, puis générez un lien dans Administration > Utilisateurs.`);
@@ -225,14 +225,14 @@ router.post('/password/reset', limits.make(15 * 60 * 1000, 10, 'Trop de tentativ
   const pass = typeof b.pass === 'string' ? b.pass : '';
   const pw = sec.passwordProblem(pass);
   if (pw) throw new HttpError(400, pw);
-  const r = /^[a-f0-9]{64}$/.test(token) ? db.prepare('SELECT * FROM password_resets WHERE token_hash = ?').get(hashToken(token)) : null;
+  const r = /^[a-f0-9]{64}$/.test(token) ? await db.prepare('SELECT * FROM password_resets WHERE token_hash = ?').get(hashToken(token)) : null;
   if (!r || r.used_at || Date.parse(r.expires_at) < Date.now()) throw new HttpError(400, 'Ce lien n\'est plus valable (il dure 1 heure et ne sert qu\'une fois). Demandez-en un nouveau.');
   const hash = await bcrypt.hash(pass, sec.BCRYPT_COST);
-  db.transaction(() => {
-    db.prepare('UPDATE users SET pass_hash = ?, pass_changed_at = ? WHERE id = ?').run(hash, nowISO(), r.user_id);
-    db.prepare('UPDATE password_resets SET used_at = ? WHERE user_id = ?').run(nowISO(), r.user_id);
+  await db.transaction(async () => {
+    await db.prepare('UPDATE users SET pass_hash = ?, pass_changed_at = ? WHERE id = ?').run(hash, nowISO(), r.user_id);
+    await db.prepare('UPDATE password_resets SET used_at = ? WHERE user_id = ?').run(nowISO(), r.user_id);
   })();
-  sec.audit('password_reset', req, r.user_id, '');
+  await sec.audit('password_reset', req, r.user_id, '');
   res.json({ ok: true });
 }));
 
@@ -241,13 +241,13 @@ router.post('/me/password', requireUser, limits.make(15 * 60 * 1000, 10, 'Trop d
   const b = req.body || {};
   const cur = typeof b.current === 'string' ? b.current.slice(0, 200) : '';
   const pass = typeof b.pass === 'string' ? b.pass : '';
-  if (!(await bcrypt.compare(cur, req.user.pass_hash))) { sec.audit('password_change_fail', req, req.user.id, ''); throw new HttpError(403, 'Mot de passe actuel incorrect.'); }
+  if (!(await bcrypt.compare(cur, req.user.pass_hash))) { await sec.audit('password_change_fail', req, req.user.id, ''); throw new HttpError(403, 'Mot de passe actuel incorrect.'); }
   const pw = sec.passwordProblem(pass, req.user.name, req.user.contact);
   if (pw) throw new HttpError(400, pw);
   if (pass === cur) throw new HttpError(400, 'Le nouveau mot de passe doit être différent de l\'ancien.');
-  db.prepare('UPDATE users SET pass_hash = ?, pass_changed_at = ? WHERE id = ?').run(await bcrypt.hash(pass, sec.BCRYPT_COST), nowISO(), req.user.id);
-  sec.audit('password_change', req, req.user.id, '');
-  setUserCookie(res, req.user.id); // cet appareil reste connecté, les autres non
+  await db.prepare('UPDATE users SET pass_hash = ?, pass_changed_at = ? WHERE id = ?').run(await bcrypt.hash(pass, sec.BCRYPT_COST), nowISO(), req.user.id);
+  await sec.audit('password_change', req, req.user.id, '');
+  await setUserCookie(res, req.user.id); // cet appareil reste connecté, les autres non
   if (req.user.contact.includes('@')) mailUser(req.user.contact, 'Votre mot de passe MANAGER-IA a été modifié', `Bonjour ${req.user.name},\n\nVotre mot de passe vient d'être modifié. Si ce n'est pas vous, réinitialisez-le tout de suite depuis la page de connexion (« Mot de passe oublié »).\n\nL'équipe MANAGER-IA`);
   res.json({ ok: true });
 }));
@@ -260,7 +260,7 @@ router.post('/logout', (req, res) => {
 router.get('/me', requireUser, (req, res) => res.json({ user: publicUser(req.user) }));
 
 // ---- Sauvegarde de l'état (intérêts, progression, projets) ----
-router.put('/me/state', requireUser, (req, res) => {
+router.put('/me/state', requireUser, async (req, res) => {
   const b = req.body || {};
   const u = req.user;
   const interests = b.interests === undefined ? parseJSON(u.interests, []) : cleanInterests(b.interests);
@@ -280,9 +280,9 @@ router.put('/me/state', requireUser, (req, res) => {
     }
   }
 
-  db.prepare('UPDATE users SET interests = ?, progress = ?, project = ? WHERE id = ?')
+  await db.prepare('UPDATE users SET interests = ?, progress = ?, project = ? WHERE id = ?')
     .run(JSON.stringify(interests), JSON.stringify(progress), JSON.stringify(project), u.id);
-  res.json({ user: publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(u.id)) });
+  res.json({ user: publicUser(await db.prepare('SELECT * FROM users WHERE id = ?').get(u.id)) });
 });
 
 module.exports = router;

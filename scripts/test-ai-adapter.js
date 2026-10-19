@@ -18,7 +18,7 @@ function fake(handler) {
 const load = (env) => {
   Object.keys(require.cache).forEach((k) => { if (/[\\/]src[\\/]/.test(k)) delete require.cache[k]; });
   for (const k of ['AI_PROVIDER', 'AI_API_KEY', 'AI_MODEL', 'AI_MODEL_FAST', 'AI_BASE_URL', 'AI_PROMPT_CACHE', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_BASE_URL']) delete process.env[k];
-  Object.assign(process.env, { DB_PATH: ':memory:', ...env });
+  Object.assign(process.env, { DATABASE_URL: 'pglite://memory', ...env });
   return require('../src/services/claude');
 };
 
@@ -32,7 +32,7 @@ const load = (env) => {
   ok(r.url === '/v1/messages' && r.headers['x-api-key'] === 'k1', 'route et en-tête Anthropic');
   ok(Array.isArray(r.body.system) && r.body.system[0].text === 'REGLES' && r.body.system[0].cache_control?.type === 'ephemeral', 'partie stable en premier avec cache_control');
   ok(r.body.system[1].text === 'DONNEES' && !r.body.system[1].cache_control, 'données variables après, sans cache');
-  ok(c.stats().cacheRead === 900, 'lecture du cache comptée');
+  ok((await c.stats()).cacheRead === 900, 'lecture du cache comptée');
   await c.ask({ system: 'seul', messages: [{ role: 'user', content: 'x' }], tier: 'fast' });
   ok(a.seen[1].body.model === 'claude-sonnet-5-5', 'tier fast sans AI_MODEL_FAST = modèle principal');
   c = load({ ANTHROPIC_API_KEY: 'k1', ANTHROPIC_BASE_URL: `http://127.0.0.1:${a.port}`, AI_MODEL_FAST: 'claude-haiku-5-5', AI_PROMPT_CACHE: '0' });
@@ -49,7 +49,7 @@ const load = (env) => {
   r = o.seen[0];
   ok(r.url === '/v1/chat/completions' && r.headers.authorization === 'Bearer k2', 'route et en-tête OpenAI');
   ok(r.body.model === 'mistral-small' && r.body.messages[0].role === 'system' && r.body.messages[0].content === 'REGLES\n\nDONNEES', 'message système assemblé');
-  ok(c.stats().provider === 'openai' && c.stats().input === 20, 'compteurs OpenAI');
+  ok((await c.stats()).provider === 'openai' && (await c.stats()).input === 20, 'compteurs OpenAI');
   const img = [{ type: 'text', text: 'Cette robe ?' }, { type: 'image', mime: 'image/png', data: 'AAAA' }, { type: 'document', mime: 'application/pdf', data: 'BBBB' }];
   await c.ask({ messages: [{ role: 'user', content: img }] });
   const parts = o.seen[o.seen.length - 1].body.messages[0].content;

@@ -16,7 +16,7 @@ const seen = makeSeen();
 const hits = new Map();
 const NOT_TEXT = "Je peux lire les messages écrits et les messages vocaux, ainsi que les photos et les PDF. Pouvez-vous m'écrire votre demande ?";
 const CANT_OPEN = "Je n'ai pas pu ouvrir votre fichier. Pouvez-vous le renvoyer ou m'écrire votre demande ?";
-const orgOf = (token) => db.prepare('SELECT * FROM orgs WHERE intake_token = ?').get(String(token || '').slice(0, 80));
+const orgOf = async (token) => await db.prepare('SELECT * FROM orgs WHERE intake_token = ?').get(String(token || '').slice(0, 80));
 
 function tooMany(key) {
   const now = Date.now();
@@ -35,18 +35,18 @@ function validSignature(req, secret) {
 
 // ---------- Webhook public ----------
 const hook = express.Router();
-hook.get('/:token', (req, res) => {
-  const org = orgOf(req.params.token);
+hook.get('/:token', async (req, res) => {
+  const org = await orgOf(req.params.token);
   if (!org || !org.fb_verify || req.query['hub.mode'] !== 'subscribe' || !safeEqual(String(req.query['hub.verify_token'] || ''), org.fb_verify)) return res.status(403).type('text/plain').send('Vérification refusée');
   return res.status(200).type('text/plain').send(String(req.query['hub.challenge'] || ''));
 });
-hook.post('/:token', express.json({ limit: '1mb', verify: (req, res, buf) => { req.rawBody = buf; } }), (req, res) => {
-  const org = orgOf(req.params.token);
+hook.post('/:token', express.json({ limit: '1mb', verify: (req, res, buf) => { req.rawBody = buf; } }), async (req, res) => {
+  const org = await orgOf(req.params.token);
   if (!org || !metaChat.isConnected(org)) return res.status(404).json({ error: 'Introuvable.' });
   if (!validSignature(req, vault.decrypt(org.fb_secret))) { log.warn(`Messenger/Instagram (organisation ${org.id}) : signature invalide, message rejeté.`); return res.status(403).json({ error: 'Signature invalide.' }); }
   res.status(200).send('EVENT_RECEIVED');
   const body = req.body;
-  setImmediate(() => processBody(org, body).catch((e) => log.warn(`Messenger/Instagram (organisation ${org.id}) : erreur de traitement :`, oneLine(e.message, 200))));
+  setImmediate(async () => processBody(org, body).catch((e) => log.warn(`Messenger/Instagram (organisation ${org.id}) : erreur de traitement :`, oneLine(e.message, 200))));
 });
 
 async function processBody(org, body) {
@@ -90,23 +90,23 @@ async function handle(org, channel, ev) {
 const settings = express.Router({ mergeParams: true });
 const state = (o) => ({ connected: metaChat.isConnected(o), pageId: o.fb_page_id, instagramId: o.ig_id, tokenSet: Boolean(vault.decrypt(o.fb_token)), secretSet: Boolean(vault.decrypt(o.fb_secret)), verifyToken: o.fb_verify, webhookPath: `/api/ws/public/meta/${o.intake_token}` });
 settings.get('/', A.need('admin'), (req, res) => res.json(state(req.org)));
-settings.put('/', A.need('admin'), (req, res) => {
+settings.put('/', A.need('admin'), async (req, res) => {
   const b = req.body || {}; const o = req.org;
   const num = (v, cur, what) => { if (v === undefined) return cur; const t = String(v).trim(); if (t && !/^\d{5,30}$/.test(t)) throw new HttpError(400, `${what} : chiffres uniquement (5 à 30).`); return t; };
   const pageId = num(b.pageId, o.fb_page_id, 'Identifiant de la Page'); const igId = num(b.instagramId, o.ig_id, "Identifiant du compte Instagram");
   const token = b.token ? String(b.token).trim() : ''; const secret = b.appSecret ? String(b.appSecret).trim() : '';
   if (token && (token.length < 20 || token.length > 800 || /\s/.test(token))) throw new HttpError(400, "Jeton d'accès invalide (copiez-le en entier depuis Meta, sans espace).");
   if (secret && (secret.length < 8 || secret.length > 200 || /\s/.test(secret))) throw new HttpError(400, "Secret de l'application invalide (copiez-le depuis Meta, sans espace).");
-  db.prepare('UPDATE orgs SET fb_page_id = ?, ig_id = ?, fb_token = ?, fb_secret = ?, fb_verify = ? WHERE id = ?').run(pageId, igId, token ? vault.encrypt(token) : o.fb_token, secret ? vault.encrypt(secret) : o.fb_secret, o.fb_verify || crypto.randomBytes(12).toString('hex'), o.id);
-  A.logActivity(o.id, req.user.id, 'sales', 'Réglages Messenger / Instagram mis à jour');
-  res.json(state(db.prepare('SELECT * FROM orgs WHERE id = ?').get(o.id)));
+  await db.prepare('UPDATE orgs SET fb_page_id = ?, ig_id = ?, fb_token = ?, fb_secret = ?, fb_verify = ? WHERE id = ?').run(pageId, igId, token ? vault.encrypt(token) : o.fb_token, secret ? vault.encrypt(secret) : o.fb_secret, o.fb_verify || crypto.randomBytes(12).toString('hex'), o.id);
+  await A.logActivity(o.id, req.user.id, 'sales', 'Réglages Messenger / Instagram mis à jour');
+  res.json(state(await db.prepare('SELECT * FROM orgs WHERE id = ?').get(o.id)));
 });
 settings.post('/test', A.need('admin'), asyncHandler(async (req, res) => {
   if (!metaChat.isConnected(req.org)) throw new HttpError(400, "Renseignez d'abord l'identifiant de la Page, le jeton et le secret de l'application.");
   try { res.json(await metaChat.profile(req.org)); } catch (e) { throw new HttpError(502, `Meta a refusé la connexion : ${oneLine(e.message.replace(/^.*HTTP \d+ : /, ''), 160)}`); }
 }));
-settings.delete('/', A.need('admin'), (req, res) => {
-  db.prepare("UPDATE orgs SET fb_page_id = '', ig_id = '', fb_token = '', fb_secret = '', fb_verify = '' WHERE id = ?").run(req.org.id);
+settings.delete('/', A.need('admin'), async (req, res) => {
+  await db.prepare("UPDATE orgs SET fb_page_id = '', ig_id = '', fb_token = '', fb_secret = '', fb_verify = '' WHERE id = ?").run(req.org.id);
   res.json({ ok: true });
 });
 

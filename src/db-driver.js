@@ -23,6 +23,7 @@ function translate(sql) {
   }
   // PostgreSQL met les alias non guillemetés en minuscules : on garde la casse des alias « camelCase » (AS supplierId).
   out = out.replace(/(\bAS\s+)([A-Za-z_][A-Za-z0-9_]*)\b/gi, (m, as, id) => (/[a-z]/.test(id) && /[A-Z]/.test(id) ? `${as}"${id}"` : m));
+  out = out.replace(/([\w.]+)\s+COLLATE\s+NOCASE/gi, 'lower($1)'); // tri insensible à la casse
   // « end » est un mot réservé PostgreSQL : colonne leaves.end (congés)
   out = out.replace(/\b(\w+)\.end\b/g, '$1."end"').replace(/\bstart,\s*end\b/g, 'start, "end"').replace(/\b(AND|OR)\s+end\s*(>=|<=|=|<|>)/gi, '$1 "end" $2');
   // INSERT OR IGNORE (SQLite) -> ON CONFLICT DO NOTHING

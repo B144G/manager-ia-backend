@@ -50,7 +50,7 @@ function receiver(processBody, label) {
     }
     res.status(200).send('EVENT_RECEIVED'); // on répond vite à Meta...
     const body = req.body;
-    setImmediate(() => {
+    setImmediate(async () => {
       // ... puis on traite en arrière-plan.
       processBody(body).catch((e) => log.warn(`Webhook ${label} : erreur de traitement :`, String(e.message).slice(0, 200)));
     });

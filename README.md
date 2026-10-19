@@ -41,7 +41,7 @@ Le `.env` du site ne contient **aucun secret** (l'adresse du serveur est publiqu
 
 Ce dossier contient le « cerveau » du site MANAGER-IA : comptes des utilisateurs, offres Gratuit / Pro / Pro Max / Méga Pro / Illimité, paiements, assistant IA, agent de service client (WhatsApp, Messenger, Instagram), notifications pour vous, et une page d'administration (`/admin`).
 
-Il fonctionne avec **Node.js 20 ou plus** et une petite base de données SQLite (un simple fichier, rien à installer en plus).
+Il fonctionne avec **Node.js 20 ou plus** et une base de données **PostgreSQL** (gratuite et hébergée chez **Neon**, voir la section 4). Le serveur est prévu pour **Render**, le frontend React pour **Vercel**.
 
 > **Important : à lire avant de commencer**
 > - Ce code a été écrit et vérifié sans accès à vos vrais comptes (Campay, Meta/WhatsApp, e-mail, Anthropic). Faites **toujours un essai réel** de chaque service après le déploiement (voir « Check-list de mise en ligne » à la fin).
@@ -102,7 +102,8 @@ Elles sont toutes décrites et commentées dans `.env.example`. Résumé :
 | `ADMIN_USERNAME`, `ADMIN_PASSWORD` | accès à `/admin` | oui pour utiliser l'admin |
 | `ALLOWED_ORIGINS`, `COOKIE_SAMESITE`, `COOKIE_SECURE` | frontend sur un autre domaine | seulement dans ce cas |
 | `TRUST_PROXY` | `1` derrière Render/Railway/nginx (automatique en production) | non |
-| `DB_PATH` | emplacement du fichier de base de données | conseillé en ligne (disque persistant) |
+| `DATABASE_URL` | adresse PostgreSQL (Neon, « Pooled connection ») | **oui** |
+| `DATABASE_URL_UNPOOLED` | adresse directe Neon, pour les migrations | non |
 | `ADMIN_EMAIL`, `ADMIN_WHATSAPP` | où vous recevez les notifications | non (valeurs par défaut) |
 | `SMTP_*` | envoi des e-mails | non |
 | `WHATSAPP_PHONE_ID`, `WHATSAPP_TOKEN`, `WHATSAPP_TEMPLATE` | WhatsApp (notifications + agent client) | non |
@@ -162,21 +163,41 @@ Générer un `JWT_SECRET` :
 node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 ```
 
-### Option A : Render (simple)
+### Étape 1 : la base PostgreSQL sur Neon
 
-1. Mettez ce dossier dans un dépôt GitHub **privé** (le fichier `.gitignore` empêche d'y mettre `.env` et la base).
-2. Sur <https://render.com> : *New* → *Web Service* → choisissez votre dépôt.
-3. Réglages : *Runtime* = Node ; *Build Command* = `npm install` ; *Start Command* = `npm start`.
-4. Onglet *Environment* : ajoutez les variables ci-dessus.
-5. **Disque persistant (indispensable)** : la base de données est un fichier. Sans disque, tout est effacé à chaque redéploiement. Dans *Disks*, ajoutez un disque (monté sur `/var/data`, par exemple) puis ajoutez la variable `DB_PATH=/var/data/manager-ia.db`. (Les disques demandent une formule payante chez Render.)
-6. Déployez. Testez `https://votre-service.onrender.com/api/health`.
-7. Avec votre propre nom de domaine : *Settings* → *Custom Domains*, puis suivez les instructions DNS.
+1. Créez un compte gratuit sur <https://neon.tech> (vous le faites vous-même) puis *New Project*. Choisissez la région la plus proche de vos clients et de votre serveur (ex. *AWS Europe (Frankfurt)*).
+2. Sur le tableau de bord du projet, bouton **Connect** : copiez deux adresses.
+   - **Pooled connection** (contient `-pooler`) → variable `DATABASE_URL`.
+   - **Direct connection** (sans `-pooler`) → variable `DATABASE_URL_UNPOOLED` (utilisée seulement pour créer/mettre à jour les tables).
+3. Ne les envoyez à personne et ne les mettez jamais dans le dépôt GitHub : elles contiennent le mot de passe de la base.
+4. Au premier démarrage, le serveur crée **toutes les tables tout seul** (migrations numérotées, table `schema_migrations`). Rien d'autre à faire.
+5. Pour vérifier depuis votre machine : mettez les adresses dans `.env`, puis `npm run db:check`.
+
+Neon met la base en veille après quelques minutes sans activité (offre gratuite) : le premier message après une pause peut prendre 1 à 3 secondes de plus. Le serveur réessaie automatiquement la connexion pendant ce réveil.
+
+**Vous avez déjà des données dans l'ancienne base SQLite ?** Une seule fois, sur une base Neon vide :
+```bash
+npm i --no-save better-sqlite3
+npm run db:import-sqlite -- chemin/vers/manager-ia.db
+```
+L'ancien fichier n'est jamais modifié.
+
+### Étape 2 : Option A — Render (recommandé)
+
+Le fichier `render.yaml` décrit tout le service. Deux façons :
+
+- **Blueprint (le plus rapide)** : <https://render.com> → *New* → *Blueprint* → choisissez ce dépôt GitHub **privé**. Render vous demande les valeurs « secrètes » (`DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `ADMIN_PASSWORD`, `ANTHROPIC_API_KEY`…) : saisissez-les vous-même dans son tableau de bord.
+- **À la main** : *New* → *Web Service* → votre dépôt ; *Runtime* = Node ; *Build Command* = `npm ci --omit=dev --omit=optional` ; *Start Command* = `node src/server.js` ; *Health Check Path* = `/api/health` ; puis ajoutez les variables de la section 3.
+
+Variables à régler pour un frontend sur **Vercel** : `SITE_URL` et `ALLOWED_ORIGINS` = l'adresse Vercel du frontend ; `API_PUBLIC_URL` = l'adresse Render de ce serveur ; `COOKIE_SAMESITE=lax` si Vercel redirige `/api` vers Render (fichier `vercel.json` du frontend, **recommandé** : les cookies restent « du même site », ce qui marche aussi sur Safari/iPhone), sinon `none`.
+
+Aucun disque n'est nécessaire : tout est dans Neon. Testez `https://votre-service.onrender.com/api/health` (doit répondre `{"ok":true,"db":true}`). Les adresses de webhook (WhatsApp, Messenger, Campay) pointent vers l'adresse Render.
 
 ### Option B : Railway
 
 1. Dépôt GitHub privé, puis <https://railway.app> → *New Project* → *Deploy from GitHub repo*.
 2. Onglet *Variables* : ajoutez les variables.
-3. Onglet *Settings* → *Volumes* : créez un volume monté sur `/data`, puis `DB_PATH=/data/manager-ia.db`.
+3. Ajoutez `DATABASE_URL` (Neon, voir l'étape 1) : aucun volume n'est nécessaire.
 4. *Settings* → *Networking* → *Generate Domain* (ou votre domaine).
 5. Le fichier `Dockerfile` fourni est utilisé automatiquement.
 
@@ -358,18 +379,13 @@ Déposez simplement des fichiers `.md` dans ces dossiers : ils sont lus automati
 
 ## 9. Sauvegarde de la base de données
 
-Toutes vos données sont dans **un seul fichier** : `data/manager-ia.db` (ou l'emplacement `DB_PATH`). SQLite en mode WAL crée aussi `manager-ia.db-wal` et `manager-ia.db-shm` : ce sont des fichiers normaux.
+Vos données sont dans PostgreSQL (Neon). Trois niveaux de protection :
 
-- **Sauvegarde propre (conseillée)**, serveur en marche, avec l'outil `sqlite3` :
-  ```bash
-  sqlite3 data/manager-ia.db ".backup 'sauvegarde-$(date +%F).db'"
-  ```
-- Sans cet outil : arrêtez le serveur, copiez les 3 fichiers `manager-ia.db*`, redémarrez.
-- Automatique sur un VPS : ajoutez dans `crontab -e` une ligne qui exécute la commande ci-dessus chaque nuit, puis copiez les sauvegardes **ailleurs** (autre serveur, Google Drive...). Une sauvegarde sur le même disque ne protège pas d'une panne du disque.
-- Sur Render/Railway : activez les sauvegardes/instantanés du disque si disponibles, et téléchargez régulièrement une copie.
-- Exportez aussi de temps en temps la liste des inscrits en CSV depuis `/admin`.
+- **Neon, automatique** : historique des modifications (*Restore* : revenir à un instant précis, la durée dépend de votre offre) et **branches** (une copie instantanée de la base, pratique avant une grosse modification). Rien à installer.
+- **Copie chez vous** : `npm run backup` écrit un fichier `data/backups/manager-ia-AAAA-MM-JJ….json.gz` (toutes les tables, les 14 dernières sont gardées ; `BACKUP_DIR` et `BACKUP_KEEP` règlent le dossier et le nombre). Lancez-la chaque nuit (cron) et copiez le dossier **ailleurs** (autre ordinateur, Google Drive…) : une sauvegarde au même endroit que la base ne protège de rien.
+- **Sauvegarde SQL standard** (si vous avez les outils PostgreSQL) : `pg_dump "$DATABASE_URL_UNPOOLED" -Fc -f sauvegarde.dump`, restauration avec `pg_restore`.
 
-Pour restaurer : arrêtez le serveur, remplacez le fichier `.db` par la sauvegarde, redémarrez.
+Exportez aussi de temps en temps la liste des inscrits en CSV depuis `/admin`.
 
 ---
 
@@ -411,5 +427,5 @@ Tâches automatiques (toutes les heures) : les offres expirées repassent à « 
 - [ ] Un paiement de test (manuel ou Campay) active bien l'offre
 - [ ] L'assistant du site répond (clé Anthropic)
 - [ ] Message de test envoyé au numéro WhatsApp de l'entreprise : l'agent répond
-- [ ] Le disque / volume persistant est monté et une sauvegarde est programmée
+- [ ] La base Neon est reliée (`npm run db:check` répond « Connexion OK ») et `npm run backup` est programmé
 - [ ] `JWT_SECRET` et `ADMIN_PASSWORD` sont longs et secrets

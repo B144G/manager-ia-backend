@@ -19,6 +19,10 @@ class HttpError extends Error {
   }
 }
 
+/** Équivalents asynchrones de Array.map / Array.filter (les rappels qui interrogent la base). */
+const amap = (arr, fn) => Promise.all(arr.map(fn));
+const afilter = async (arr, fn) => { const keep = await Promise.all(arr.map(fn)); return arr.filter((_, i) => keep[i]); };
+
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 // ---------- Contacts ----------
@@ -116,7 +120,7 @@ function extractJSON(text) {
   try { return JSON.parse(a.slice(i, j + 1)); } catch { return null; }
 }
 
-module.exports = {
+module.exports = { amap, afilter,
   log, HttpError, asyncHandler, normalizeContact, isEmail, digitsOf, safeEqual, cleanText, oneLine,
   extractJSON, stripAccents, genReference, addDays, parseJSON, fetchJson, makeSeen,
 };

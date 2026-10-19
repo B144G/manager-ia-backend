@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
+require('express-async-errors'); // les erreurs des gestionnaires asynchrones (await) arrivent au gestionnaire d'erreurs d'Express
 const helmet = require('helmet');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
@@ -72,7 +73,7 @@ function originCheck(req, res, next) {
   throw new HttpError(403, 'Origine non autorisée.');
 }
 
-app.get('/api/health', (req, res) => res.json({ ok: true }));
+app.get('/api/health', async (req, res) => { try { await db.prepare('SELECT 1 AS ok').get(); res.json({ ok: true, db: true }); } catch (e) { res.status(503).json({ ok: false, db: false }); } });
 app.use('/api', limits.global, originCheck);
 app.use('/api', require('./routes/auth'));
 app.use('/api', require('./routes/contact'));
@@ -116,23 +117,24 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Erreur interne du serveur. Réessayez dans un instant.' });
 });
 
-function start() {
+async function start() {
   process.on('unhandledRejection', (e) => log.error('Promesse non gérée :', e && e.message ? e.message : e));
+  await db.ready; // schéma PostgreSQL à jour avant d'accepter des requêtes
   const server = app.listen(config.port, () => {
     log.info(`MANAGER-IA démarré sur le port ${config.port} (${config.isProd ? 'production' : 'développement'})`);
-    log.info(`Base de données : ${config.dbPath}`);
+    log.info(`Base de données : PostgreSQL (${db.driver === 'pglite' ? 'PGlite embarqué, tests' : 'pg'})`);
     const on = (v) => (v ? 'activé' : 'non configuré');
     log.info(`Assistant IA : ${on(config.ai.key)} | Paiement automatique Campay : ${on(config.campay.enabled)} | WhatsApp admin : ${on(config.whatsapp.phoneId && config.whatsapp.token)} | E-mail : ${on(config.smtp.host)} | Admin : ${on(config.admin.username && config.admin.password)} | Webhooks Meta : ${on(config.meta.appSecret)}`);
   });
   require('./jobs').start();
   require('./workspace/inbound').start(); // réponses différées (délai choisi par l'organisation)
   require('./workspace/sales-appt').startReminders(); // rappels de rendez-vous la veille
-  const stop = () => server.close(() => { try { db.close(); } catch { /* rien */ } process.exit(0); });
+  const stop = () => server.close(() => { Promise.resolve(db.close()).catch(() => {}).then(() => process.exit(0)); });
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
   return server;
 }
 
-if (require.main === module) start();
+if (require.main === module) start().catch((e) => { log.error('Démarrage impossible :', e && e.message ? e.message : e); process.exit(1); });
 
 module.exports = { app, start };

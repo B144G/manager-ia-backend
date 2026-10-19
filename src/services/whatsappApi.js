@@ -22,10 +22,10 @@ async function post(payload) {
 }
 
 /** Message "modèle" (obligatoire hors fenêtre de 24 h). Variable {{1}} = text. */
-function sendTemplate(to, text) {
+async function sendTemplate(to, text) {
   // Meta refuse les retours à la ligne / tabulations dans une variable de modèle.
   const clean = oneLine(text, 600);
-  return post({
+  return await post({
     to,
     type: 'template',
     template: {
@@ -37,14 +37,14 @@ function sendTemplate(to, text) {
 }
 
 /** Message texte libre (réponses aux clients, dans la fenêtre de 24 h). */
-const sendText = (to, body) => post({ to, type: 'text', text: { body: String(body).slice(0, 4000), preview_url: false } });
+const sendText = async (to, body) => await post({ to, type: 'text', text: { body: String(body).slice(0, 4000), preview_url: false } });
 
 /** Image ou vidéo par lien public https. */
-function sendMedia(to, type, link, caption) {
+async function sendMedia(to, type, link, caption) {
   const t = type === 'video' ? 'video' : 'image';
   const media = { link };
   if (caption) media.caption = String(caption).slice(0, 1000);
-  return post({ to, type: t, [t]: media });
+  return await post({ to, type: t, [t]: media });
 }
 
 module.exports = { isConfigured, sendTemplate, sendText, sendMedia };

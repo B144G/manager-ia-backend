@@ -66,20 +66,20 @@ function buildPrompt(b) {
 }
 
 // ---------- Mémoire des conversations ----------
-const addMsg = (channel, contactId, role, content) =>
-  db.prepare('INSERT INTO conversations (channel, contact_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)')
+const addMsg = async (channel, contactId, role, content) =>
+  await db.prepare('INSERT INTO conversations (channel, contact_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)')
     .run(channel, contactId, role, String(content).slice(0, 4000), nowISO());
 
-function history(channel, contactId) {
-  const rows = db.prepare(
+async function history(channel, contactId) {
+  const rows = (await db.prepare(
     "SELECT role, content FROM conversations WHERE channel = ? AND contact_id = ? AND role IN ('user','assistant') ORDER BY id DESC LIMIT 20"
-  ).all(channel, contactId).reverse();
+  ).all(channel, contactId)).reverse();
   while (rows.length && rows[0].role !== 'user') rows.shift();
   return rows;
 }
 
-function isSilenced(channel, contactId) {
-  const last = db.prepare('SELECT role, created_at FROM conversations WHERE channel = ? AND contact_id = ? ORDER BY id DESC LIMIT 1').get(channel, contactId);
+async function isSilenced(channel, contactId) {
+  const last = await db.prepare('SELECT role, created_at FROM conversations WHERE channel = ? AND contact_id = ? ORDER BY id DESC LIMIT 1').get(channel, contactId);
   if (!last || last.role !== 'handoff') return false;
   return Date.now() - new Date(last.created_at).getTime() < config.handoffSilenceHours * 3600000;
 }
@@ -108,10 +108,10 @@ function pickMedia(biz, text) {
   return out;
 }
 
-function handoff(biz, channel, contactId, text, why) {
+async function handoff(biz, channel, contactId, text, why) {
   const answer = toText(biz.handoffMessage) || DEFAULT_HANDOFF;
-  addMsg(channel, contactId, 'assistant', answer);
-  addMsg(channel, contactId, 'handoff', why); // doit rester la DERNIÈRE ligne : le bot se tait ensuite
+  await addMsg(channel, contactId, 'assistant', answer);
+  await addMsg(channel, contactId, 'handoff', why); // doit rester la DERNIÈRE ligne : le bot se tait ensuite
   notify('conseiller', `Un client a besoin d'un conseiller (${channel}, ${contactId}) - ${why} : « ${oneLine(text, 200)} »`);
   return { text: answer, media: [], handoff: true };
 }
@@ -126,18 +126,18 @@ async function reply({ channel, contactId, text }) {
   contactId = String(contactId);
   const biz = loadBusiness();
 
-  if (isSilenced(channel, contactId)) {
-    addMsg(channel, contactId, 'user', text);
+  if (await isSilenced(channel, contactId)) {
+    await addMsg(channel, contactId, 'user', text);
     return null; // un conseiller a repris la main
   }
   if (tooMany(`${channel}:${contactId}`)) return null;
 
-  const past = history(channel, contactId);
-  addMsg(channel, contactId, 'user', text);
+  const past = await history(channel, contactId);
+  await addMsg(channel, contactId, 'user', text);
 
-  if (HUMAN_RE.test(stripAccents(text.toLowerCase()))) return handoff(biz, channel, contactId, text, 'demande un humain');
+  if (HUMAN_RE.test(stripAccents(text.toLowerCase()))) return await handoff(biz, channel, contactId, text, 'demande un humain');
 
-  if (!claude.isConfigured()) return handoff(biz, channel, contactId, text, 'IA non configurée');
+  if (!claude.isConfigured()) return await handoff(biz, channel, contactId, text, 'IA non configurée');
 
   let out;
   try {
@@ -149,12 +149,12 @@ async function reply({ channel, contactId, text }) {
     });
   } catch (e) {
     log.warn('Agent : appel Claude échoué :', oneLine(e.message, 200));
-    return handoff(biz, channel, contactId, text, 'erreur technique de l\'IA');
+    return await handoff(biz, channel, contactId, text, 'erreur technique de l\'IA');
   }
 
-  if (out.includes('[[HUMAIN]]')) return handoff(biz, channel, contactId, text, 'IA incertaine');
+  if (out.includes('[[HUMAIN]]')) return await handoff(biz, channel, contactId, text, 'IA incertaine');
 
-  addMsg(channel, contactId, 'assistant', out);
+  await addMsg(channel, contactId, 'assistant', out);
   return { text: out, media: pickMedia(biz, text), handoff: false };
 }
 

@@ -1,0 +1,41 @@
+# Plan de déploiement Render (« Blueprint ») : Render > New > Blueprint > choisissez ce dépôt.
+# Les valeurs marquées sync: false vous sont demandées dans le tableau de bord Render : saisissez-les vous-même (jamais dans ce fichier).
+services:
+  - type: web
+    name: manager-ia-backend
+    runtime: node
+    plan: starter           # « free » fonctionne aussi, mais le serveur s'endort après 15 min d'inactivité (les webhooks WhatsApp peuvent alors arriver en retard)
+    region: frankfurt       # choisissez la même région que votre base Neon (ex. Francfort = aws-eu-central-1)
+    buildCommand: npm ci --omit=dev --omit=optional
+    startCommand: node src/server.js
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: NODE_ENV
+        value: production
+      - key: TRUST_PROXY
+        value: "1"
+      - key: DATABASE_URL            # Neon : adresse « Pooled connection »
+        sync: false
+      - key: DATABASE_URL_UNPOOLED   # Neon : adresse « Direct connection » (migrations)
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATA_KEY
+        generateValue: true
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SITE_URL                # adresse de votre frontend sur Vercel
+        sync: false
+      - key: ALLOWED_ORIGINS         # idem (sans « / » final) ; plusieurs adresses séparées par des virgules
+        sync: false
+      - key: API_PUBLIC_URL          # adresse publique de CE serveur (https://manager-ia-backend.onrender.com), pour les liens de médias WhatsApp
+        sync: false
+      - key: COOKIE_SAMESITE         # lax si Vercel redirige /api vers Render (recommandé), none sinon
+        value: lax
+      - key: ANTHROPIC_API_KEY       # saisissez-la vous-même dans Render
+        sync: false
