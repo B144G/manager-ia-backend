@@ -1,9 +1,12 @@
 'use strict';
 // Cookies de session : "mia_token" (utilisateur, 30 jours) et "mia_admin" (administrateur, 12 h).
+// Chaque cookie contient un jeton signé qui désigne une SESSION enregistrée en base (src/security/sessions.js) : elle peut être fermée à tout moment
+// (déconnexion, appareil perdu, mot de passe changé, compte suspect) et ne sert plus aussitôt après.
 const jwt = require('jsonwebtoken');
 const config = require('../config');
 const { db, getUserFresh } = require('../db');
 const { HttpError } = require('../util');
+const sessions = require('../security/sessions');
 
 const USER_COOKIE = 'mia_token';
 const ADMIN_COOKIE = 'mia_admin';
@@ -18,17 +21,23 @@ const cookieOpts = (maxAge) => ({
   maxAge,
 });
 
-async function setUserCookie(res, userId) {
+/** Ouvre une session pour cet utilisateur. `except` : sessions à conserver (les autres sont fermées). Renvoie l'identifiant de session. */
+async function setUserCookie(res, userId, req, { closeOthers = false } = {}) {
   // « pc » = date du dernier changement de mot de passe : un changement invalide toutes les sessions ouvertes avant lui (sans dépendre de l'horloge).
   const row = await db.prepare('SELECT pass_changed_at FROM users WHERE id = ?').get(userId);
-  const token = jwt.sign({ sub: userId, typ: 'user', pc: (row && row.pass_changed_at) || '' }, config.jwtSecret, { algorithm: 'HS256', expiresIn: '30d' });
+  const sid = await sessions.create(req, { kind: 'user', userId, maxAgeMs: USER_MAX_AGE });
+  const token = jwt.sign({ sub: userId, typ: 'user', sid, pc: (row && row.pass_changed_at) || '' }, config.jwtSecret, { algorithm: 'HS256', expiresIn: '30d' });
   res.cookie(USER_COOKIE, token, cookieOpts(USER_MAX_AGE));
+  if (closeOthers) await sessions.revokeAllForUser(userId, sid, 'mot de passe changé');
+  return sid;
 }
 const clearUserCookie = (res) => res.clearCookie(USER_COOKIE, { ...cookieOpts(0), maxAge: undefined });
 
-function setAdminCookie(res) {
-  const token = jwt.sign({ typ: 'admin' }, config.jwtSecret, { algorithm: 'HS256', expiresIn: '12h' });
+async function setAdminCookie(res, req) {
+  const sid = await sessions.create(req, { kind: 'admin', userId: null, maxAgeMs: ADMIN_MAX_AGE });
+  const token = jwt.sign({ typ: 'admin', sid }, config.jwtSecret, { algorithm: 'HS256', expiresIn: '12h' });
   res.cookie(ADMIN_COOKIE, token, cookieOpts(ADMIN_MAX_AGE));
+  return sid;
 }
 const clearAdminCookie = (res) => res.clearCookie(ADMIN_COOKIE, { ...cookieOpts(0), maxAge: undefined });
 
@@ -41,22 +50,35 @@ function verify(token, typ) {
   }
 }
 
+/** Identifiant de session du cookie (sans la vérifier) : pour la déconnexion. */
+function sessionIdOf(req, cookie, typ) {
+  const t = req.cookies && req.cookies[cookie];
+  const p = t ? verify(t, typ) : null;
+  return p && p.sid ? p.sid : '';
+}
+
 async function requireUser(req, res, next) {
   const token = req.cookies && req.cookies[USER_COOKIE];
   if (!token) throw new HttpError(401, 'Vous devez être connecté.');
   const p = verify(token, 'user');
-  if (!p) throw new HttpError(401, 'Session expirée. Veuillez vous reconnecter.');
+  if (!p || !p.sid) throw new HttpError(401, 'Session expirée. Veuillez vous reconnecter.');
+  const sess = await sessions.check(p.sid, 'user');
+  if (!sess || Number(sess.user_id) !== Number(p.sub)) throw new HttpError(401, 'Session fermée ou expirée. Veuillez vous reconnecter.');
   const row = await getUserFresh(p.sub);
   if (!row) throw new HttpError(401, 'Compte introuvable. Veuillez vous reconnecter.');
   if ((p.pc || '') !== (row.pass_changed_at || '')) throw new HttpError(401, 'Votre mot de passe a été modifié : reconnectez-vous.');
   req.user = row;
+  req.sessionId = p.sid;
   next();
 }
 
-function requireAdmin(req, res, next) {
+async function requireAdmin(req, res, next) {
   const token = req.cookies && req.cookies[ADMIN_COOKIE];
-  if (!token || !verify(token, 'admin')) throw new HttpError(401, 'Connexion administrateur requise.');
+  const p = token ? verify(token, 'admin') : null;
+  const sess = p && p.sid ? await sessions.check(p.sid, 'admin') : null;
+  if (!sess) throw new HttpError(401, 'Connexion administrateur requise.');
+  req.adminSession = sess.id;
   next();
 }
 
-module.exports = { setUserCookie, clearUserCookie, setAdminCookie, clearAdminCookie, requireUser, requireAdmin };
+module.exports = { setUserCookie, clearUserCookie, setAdminCookie, clearAdminCookie, requireUser, requireAdmin, sessionIdOf, USER_COOKIE, ADMIN_COOKIE };

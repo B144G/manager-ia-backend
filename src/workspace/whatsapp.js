@@ -46,7 +46,7 @@ router.get('/:token', async (req, res) => {
 router.post('/:token', express.json({ limit: '1mb', verify: (req, res, buf) => { req.rawBody = buf; } }), async (req, res) => {
   const org = await orgOf(req.params.token);
   if (!org || !waOrg.isConnected(org)) return res.status(404).json({ error: 'Introuvable.' });
-  if (!validSignature(req, vault.decrypt(org.wa_secret))) { log.warn(`WhatsApp (organisation ${org.id}) : signature invalide, message rejeté.`); return res.status(403).json({ error: 'Signature invalide.' }); }
+  if (!validSignature(req, vault.decrypt(org.wa_secret))) { log.warn(`WhatsApp (organisation ${org.id}) : signature invalide, message rejeté.`); require('../security').abuse.strike(req, 'bad_signature'); return res.status(403).json({ error: 'Signature invalide.' }); }
   res.status(200).send('EVENT_RECEIVED'); // on répond vite à Meta, puis on traite
   const body = req.body;
   setImmediate(async () => {

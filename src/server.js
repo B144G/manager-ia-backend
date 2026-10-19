@@ -11,12 +11,17 @@ const config = require('./config');
 const { db } = require('./db');
 const limits = require('./middleware/limits');
 const { HttpError, log } = require('./util');
+const security = require('./security');
 
 const app = express();
 app.disable('x-powered-by');
 
 const tp = config.trustProxy;
 if (tp && tp !== '0' && tp.toLowerCase() !== 'false') app.set('trust proxy', /^\d+$/.test(tp) ? Number(tp) : tp.toLowerCase() === 'true' ? 1 : tp);
+
+// Centre de sécurité : numéro de requête, puis refus immédiat des adresses bloquées (avant tout le reste).
+app.use(security.requestId);
+app.use(security.abuse.guard);
 
 // CSP désactivée ici : elle est appliquée seulement à /admin (le frontend public a ses propres scripts).
 app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } }));
@@ -46,7 +51,7 @@ app.use(cookieParser());
 app.use((req, res, next) => {
   const t = Date.now();
   res.on('finish', () => {
-    if (req.path !== '/api/health') log.info(`${req.method} ${req.path} -> ${res.statusCode} (${Date.now() - t} ms)`);
+    if (req.path !== '/api/health') log.info(`${req.method} ${req.path} -> ${res.statusCode} (${Date.now() - t} ms) [${String(req.id).slice(0, 8)}]`);
   });
   next();
 });
@@ -67,9 +72,12 @@ function originCheck(req, res, next) {
   try {
     host = new URL(o).host;
   } catch {
+    security.abuse.strike(req, 'origin_denied');
     throw new HttpError(403, 'Origine non autorisée.');
   }
   if (host === req.get('host') || sameOrigin(o)) return next();
+  security.abuse.strike(req, 'origin_denied');
+  security.audit.record(req, 'request.origin_denied', { severity: 'warn', target: req.path.slice(0, 120), detail: String(o).slice(0, 100) });
   throw new HttpError(403, 'Origine non autorisée.');
 }
 
@@ -79,10 +87,12 @@ app.use('/api', require('./routes/auth'));
 app.use('/api', require('./routes/contact'));
 app.use('/api', require('./routes/assistant'));
 app.use('/api', require('./routes/payments'));
+app.use('/api/security', require('./routes/security'));
 app.use('/api/v1', require('./workspace/public-api'));
 app.use('/api/admin', require('./routes/admin'));
 const workspace = require('./workspace');
 app.use('/api/ws/public', workspace.pub);
+app.use('/api/ws/orgs', security.sensitive.middleware); // actions sensibles -> journal d'audit
 app.use('/api/ws', workspace.router);
 app.use('/api', (req, res) => res.status(404).json({ error: 'Route introuvable.' }));
 
@@ -126,6 +136,7 @@ async function start() {
     const on = (v) => (v ? 'activé' : 'non configuré');
     log.info(`Assistant IA : ${on(config.ai.key)} | Paiement automatique Campay : ${on(config.campay.enabled)} | WhatsApp admin : ${on(config.whatsapp.phoneId && config.whatsapp.token)} | E-mail : ${on(config.smtp.host)} | Admin : ${on(config.admin.username && config.admin.password)} | Webhooks Meta : ${on(config.meta.appSecret)}`);
   });
+  security.configcheck.run().then((r) => { if (r.summary.bad || r.summary.warn) log.warn(`Sécurité : ${r.summary.bad} point(s) dangereux, ${r.summary.warn} à améliorer (npm run security:check pour le détail).`); else log.info('Sécurité : configuration solide.'); }).catch(() => {});
   require('./jobs').start();
   require('./workspace/inbound').start(); // réponses différées (délai choisi par l'organisation)
   require('./workspace/sales-appt').startReminders(); // rappels de rendez-vous la veille

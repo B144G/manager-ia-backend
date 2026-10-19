@@ -740,6 +740,77 @@ const MIGRATIONS = [
   ALTER TABLE orgs ADD COLUMN cal_token TEXT NOT NULL DEFAULT '';
   ALTER TABLE orgs ADD COLUMN appt_reminder BIGINT NOT NULL DEFAULT 1;
   `,
+  // Centre de sécurité : sessions révocables, journal d'audit chaîné, blocage d'adresses IP, limites de débit partagées, double authentification (TOTP).
+  `
+  CREATE TABLE sessions (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT 'user',
+    user_id BIGINT,
+    created_at TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    ip TEXT NOT NULL DEFAULT '',
+    ua TEXT NOT NULL DEFAULT '',
+    revoked_at TEXT,
+    revoke_reason TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX idx_sessions_user ON sessions(user_id, revoked_at);
+  CREATE INDEX idx_sessions_kind ON sessions(kind, revoked_at);
+
+  CREATE TABLE audit_trail (
+    id BIGSERIAL PRIMARY KEY,
+    at TEXT NOT NULL,
+    actor_type TEXT NOT NULL DEFAULT 'system',
+    actor_id BIGINT,
+    org_id BIGINT,
+    action TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'info',
+    target TEXT NOT NULL DEFAULT '',
+    ip TEXT NOT NULL DEFAULT '',
+    ua TEXT NOT NULL DEFAULT '',
+    request_id TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT '',
+    prev_hash TEXT NOT NULL,
+    hash TEXT NOT NULL
+  );
+  CREATE INDEX idx_audit_at ON audit_trail(at);
+  CREATE INDEX idx_audit_sev ON audit_trail(severity, id);
+  CREATE INDEX idx_audit_actor ON audit_trail(actor_type, actor_id);
+  CREATE INDEX idx_audit_org ON audit_trail(org_id, id);
+
+  CREATE TABLE ip_blocks (
+    ip TEXT PRIMARY KEY,
+    reason TEXT NOT NULL DEFAULT '',
+    blocked_until TEXT,
+    permanent BIGINT NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT 'auto'
+  );
+  CREATE TABLE ip_strikes (
+    ip TEXT PRIMARY KEY,
+    score BIGINT NOT NULL DEFAULT 0,
+    window_start TEXT NOT NULL
+  );
+  CREATE TABLE rate_hits (
+    k TEXT PRIMARY KEY,
+    hits BIGINT NOT NULL,
+    reset_at BIGINT NOT NULL
+  );
+
+  ALTER TABLE users ADD COLUMN totp_secret TEXT NOT NULL DEFAULT '';
+  ALTER TABLE users ADD COLUMN totp_enabled BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE users ADD COLUMN totp_step BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE users ADD COLUMN recovery_codes TEXT NOT NULL DEFAULT '[]';
+
+  CREATE TABLE admin_2fa (
+    id BIGINT PRIMARY KEY,
+    totp_secret TEXT NOT NULL DEFAULT '',
+    enabled BIGINT NOT NULL DEFAULT 0,
+    totp_step BIGINT NOT NULL DEFAULT 0,
+    recovery_codes TEXT NOT NULL DEFAULT '[]'
+  );
+  INSERT INTO admin_2fa (id) VALUES (1);
+  `,
 ];
 
 

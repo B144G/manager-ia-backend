@@ -41,17 +41,25 @@ async function recordFail(key) {
 }
 const clearFails = async (key) => await db.prepare('DELETE FROM login_fails WHERE k = ?').run(key);
 
-/** Journal de sécurité (jamais de mot de passe ni de code). */
+// Anciens types d'événements -> journal d'audit central (src/security/audit.js) : [action, gravité, points d'abus]
+const LEGACY = {
+  register: ['account.register', 'info'], login_ok: ['login.ok', 'info'], login_fail: ['login.fail', 'warn', 'login_fail'], login_locked: ['login.locked', 'high', 'login_locked'],
+  password_reset: ['password.reset', 'warn'], password_change: ['password.change', 'warn'], password_change_fail: ['password.change_fail', 'warn'],
+  admin_login: ['admin.login', 'warn'], admin_login_fail: ['admin.login_fail', 'high', 'admin_login_fail'], admin_locked: ['admin.locked', 'critical', 'admin_locked'],
+};
+
+/** Journal de sécurité (jamais de mot de passe ni de code) : écrit dans le journal d'audit central, et compte les points d'abus. */
 async function audit(type, req, userId, detail) {
-  try {
-    await db.prepare('INSERT INTO security_log (at, type, user_id, ip, detail) VALUES (?, ?, ?, ?, ?)')
-      .run(nowISO(), type, userId || null, String((req && req.ip) || '').slice(0, 64), String(detail || '').slice(0, 200));
-  } catch (e) { log.warn('Journal de sécurité : écriture impossible'); }
+  const m = LEGACY[type] || [String(type).replace(/_/g, '.'), 'info'];
+  const central = require('../security');
+  await central.audit.record(req, m[0], { userId, detail, severity: m[1], actor: type === 'admin_login' ? { type: 'admin', id: null } : undefined });
+  if (m[2]) await central.abuse.strike(req, m[2]);
 }
 
 async function sweep() {
   await db.prepare('DELETE FROM security_log WHERE at < ?').run(new Date(Date.now() - 180 * 86400000).toISOString());
   await db.prepare('DELETE FROM login_fails WHERE (locked_until IS NULL OR locked_until < ?) AND first_at < ?').run(nowISO(), new Date(Date.now() - FAIL_WINDOW_MS).toISOString());
+  await require('../security').sweep();
 }
 
 module.exports = { BCRYPT_COST, passwordProblem, assertNotLocked, recordFail, clearFails, audit, sweep };

@@ -148,7 +148,25 @@ Tests : `npm run smoke:ws` (412 contrôles), `npm run smoke`, `npm run smoke:sig
 - **Sauvegarde** : `npm run backup` (copie cohérente + contrôle d'intégrité + rotation `BACKUP_KEEP`, 14 par défaut). Planifiez-la chaque nuit et copiez-la ailleurs.
 - **Dépendances** : `npm audit --omit=dev` doit afficher 0 faille ; relancez-le régulièrement.
 - Tests : `npm run smoke:security`.
-- **Pas encore fait** : double authentification (2FA) de l'administrateur, journal des actions de l'administrateur, audit de sécurité par un tiers.
+- **Reste à faire de votre côté** : un audit de sécurité par un tiers avant d'accueillir beaucoup d'utilisateurs ; activer la double authentification de l'administrateur (voir « Centre de sécurité »).
+
+### Centre de sécurité (version 23)
+
+Tout est regroupé dans `src/security/` (un seul endroit, une seule logique) et visible dans **/admin → Sécurité** :
+
+| Protection | Ce que ça fait |
+|---|---|
+| **Sessions révocables** | Chaque connexion est une session enregistrée en base. On peut la fermer à tout moment : « Déconnecter cet appareil », « tous les autres », mot de passe changé ou réinitialisé (coupe tout), ou, côté administrateur, tous les appareils d'un compte suspect. Un cookie volé après déconnexion ne sert plus. |
+| **Journal d'audit chaîné** | Chaque événement important (connexions, échecs, changements de rôle, clés d'API, suppression d'organisation, actions de l'administrateur, canaux WhatsApp/Meta…) est inscrit avec qui, quand, depuis quelle adresse, quel appareil et un numéro de requête (`X-Request-Id`). Chaque ligne contient l'empreinte SHA-256 de la précédente : modifier ou effacer une ligne **casse la chaîne**, et « Vérifier l'intégrité » (ou `npm run security:check`) le détecte. |
+| **Double authentification (2FA)** | Code à 6 chiffres (Google Authenticator, Microsoft Authenticator, Authy, 2FAS…) + 10 codes de secours à usage unique, pour les utilisateurs (⚙ « Sécurité du compte » dans l'espace de travail) **et** l'administrateur (/admin → Sécurité). Secrets chiffrés (AES-256-GCM), codes rejoués refusés. |
+| **Blocage automatique d'adresses IP** | Des points d'abus s'accumulent (mots de passe faux, code 2FA faux, origine interdite, signature de webhook invalide, limites dépassées). Au-delà du seuil (`SECURITY_BAN_SCORE`, 40 par défaut), l'adresse est bloquée 1 h (24 h en cas de récidive) et l'administrateur est prévenu. Blocage / déblocage manuel dans l'administration. Les adresses locales et privées ne sont jamais bloquées automatiquement. |
+| **Limites de débit partagées** | Connexion, inscription, paiements, mot de passe, administrateur : comptées dans PostgreSQL, donc valables même avec plusieurs serveurs Render. |
+| **Actions sensibles surveillées** | Une seule table (`src/security/sensitive.js`) liste les actions à inscrire au journal : pour en surveiller une de plus, ajoutez une ligne. |
+| **Alertes** | Les événements graves ou critiques préviennent l'administrateur (e-mail / WhatsApp). |
+| **Contrôle de configuration** | `npm run security:check` (et l'écran Sécurité) liste ce qui est solide, à améliorer ou dangereux : secrets trop courts, cookies non sécurisés, 2FA administrateur absente, origines trop larges… Il ne montre jamais un secret. |
+
+**À faire en ligne** : sur `/admin → Sécurité`, activer la 2FA de l'administrateur et noter les codes de secours ; puis `npm run security:check` doit ne montrer aucun point « dangereux ». Les connexions ouvertes avant la mise à jour sont fermées une fois : chacun se reconnecte.
+
 
 ### Inscription avec code par e-mail
 
@@ -395,7 +413,7 @@ Fait par le serveur : mots de passe chiffrés (bcrypt), cookies `httpOnly` (invi
 
 À votre charge :
 - Utilisez **HTTPS** partout (Render/Railway le fournissent ; sur un VPS, certbot).
-- Choisissez un `ADMIN_PASSWORD` long et unique ; ne le partagez pas.
+- Choisissez un `ADMIN_PASSWORD` long et unique ; ne le partagez pas ; activez la double authentification de l administrateur.
 - Gardez vos clés secrètes : si l'une fuit, **changez-la immédiatement** chez le fournisseur.
 - Faites des sauvegardes (section 9) et mettez à jour les dépendances de temps en temps (`npm audit`, `npm update`).
 - Respectez la protection des données de vos inscrits (noms, numéros, e-mails).

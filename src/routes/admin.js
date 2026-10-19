@@ -4,11 +4,12 @@ const express = require('express');
 const config = require('../config');
 const { db, nowISO, publicUser } = require('../db');
 const limits = require('../middleware/limits');
-const { setAdminCookie, clearAdminCookie, requireAdmin } = require('../middleware/auth');
+const { setAdminCookie, clearAdminCookie, requireAdmin, sessionIdOf, ADMIN_COOKIE } = require('../middleware/auth');
 const { markPaid, planConflict } = require('../services/payments');
 const sec = require('../services/security');
 const { notify } = require('../services/notify');
 const { HttpError, safeEqual, cleanText, addDays, parseJSON } = require('../util');
+const central = require('../security');
 
 const fs = require('fs');
 const router = express.Router();
@@ -30,22 +31,55 @@ router.post('/login', limits.adminLogin, async (req, res) => {
     if (locked) notify('securite', "Alerte : trop d'échecs de connexion administrateur, accès bloqué 15 minutes.");
     throw new HttpError(401, 'Identifiant ou mot de passe incorrect.');
   }
+  // Double authentification : si elle est active, un code (ou un code de secours) est exigé en plus du mot de passe.
+  const t2 = await db.prepare('SELECT * FROM admin_2fa WHERE id = 1').get();
+  if (t2 && Number(t2.enabled)) {
+    const code = String(b.code || '').trim().slice(0, 20);
+    if (!code) return res.status(401).json({ error: "Entrez le code de votre application d'authentification.", needCode: true });
+    const step = central.totp.verify(central.totp.unseal(t2.totp_secret), code, t2.totp_step);
+    let ok = false;
+    if (step) { ok = true; await db.prepare('UPDATE admin_2fa SET totp_step = ? WHERE id = 1').run(step); }
+    else {
+      const left = central.totp.useRecovery(t2.recovery_codes, code);
+      if (left !== null) { ok = true; await db.prepare('UPDATE admin_2fa SET recovery_codes = ? WHERE id = 1').run(left); await central.audit.record(req, 'admin.twofa_recovery_used', { actor: { type: 'admin', id: null }, severity: 'high', detail: `${central.totp.recoveryLeft(left)} code(s) de secours restant(s)` }); }
+    }
+    if (!ok) {
+      const locked = await sec.recordFail('admin');
+      await sec.audit(locked ? 'admin_locked' : 'admin_login_fail', req, null, 'code 2FA');
+      await central.abuse.strike(req, 'twofa_fail');
+      if (locked) notify('securite', "Alerte : trop d'échecs de connexion administrateur, accès bloqué 15 minutes.");
+      throw new HttpError(401, 'Code incorrect ou expiré.');
+    }
+  }
   await sec.clearFails('admin');
-  await sec.audit('admin_login', req, null, '');
-  setAdminCookie(res);
+  await sec.audit('admin_login', req, null, t2 && Number(t2.enabled) ? '2FA' : 'sans 2FA');
+  await setAdminCookie(res, req);
   res.json({ ok: true });
 });
 
-router.post('/logout', (req, res) => {
+router.post('/logout', async (req, res) => {
+  const sid = sessionIdOf(req, ADMIN_COOKIE, 'admin');
+  if (sid) await central.sessions.revoke(sid, 'déconnexion');
   clearAdminCookie(res);
   res.json({ ok: true });
 });
 
 router.use(requireAdmin);
 
+// Toute action de modification faite par l'administrateur est inscrite au journal d'audit.
+router.use((req, res, next) => {
+  if (!req.path.startsWith('/security/audit')) {
+    const write = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
+    if (write || /export|\.csv/.test(req.path)) res.on('finish', () => { if (res.statusCode < 400) central.audit.record(req, write ? `admin.${req.method.toLowerCase()}` : 'admin.export', { target: req.originalUrl.split('?')[0].slice(0, 160), severity: 'warn' }); });
+  }
+  next();
+});
+
+router.use('/security', require('./admin-security'));
+
 router.get('/security-log', async (req, res) => {
-  const n = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500);
-  res.json({ events: await db.prepare('SELECT id, at, type, user_id AS userId, ip, detail FROM security_log ORDER BY id DESC LIMIT ?').all(n) });
+  const ev = await central.audit.list({ limit: req.query.limit });
+  res.json({ events: ev.map((e) => ({ id: e.id, at: e.at, type: e.action, userId: e.actorId, ip: e.ip, detail: e.detail })) });
 });
 
 router.get('/stats', async (req, res) => {

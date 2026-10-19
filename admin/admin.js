@@ -15,7 +15,7 @@
     notifications: 'M6 8a6 6 0 1112 0c0 7 3 9 3 9H3s3-2 3-9M10 21a2 2 0 004 0', settings: 'M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a7 7 0 000-6l2-1.5-2-3.4-2.4.9a7 7 0 00-1.7-1L14.9 1h-4l-.4 2.5a7 7 0 00-1.7 1l-2.4-.9-2 3.4 2 1.5a7 7 0 000 6l-2 1.5 2 3.4 2.4-.9a7 7 0 001.7 1l.4 2.5h4l.4-2.5a7 7 0 001.7-1l2.4.9 2-3.4z',
     shield: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z', down: 'M12 3v12M7 11l5 5 5-5M4 20h16', out: 'M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9', search: 'M11 4a7 7 0 100 14 7 7 0 000-14zM21 21l-5-5',
   };
-  const NAV = [['overview', "Vue d'ensemble"], ['users', 'Utilisateurs'], ['orgs', 'Organisations'], ['payments', 'Paiements'], ['plans', 'Offres et abonnements'], ['contacts', 'Contacts reçus'], ['ai', "Utilisation de l'IA"], ['notifications', 'Notifications']];
+  const NAV = [['overview', "Vue d'ensemble"], ['users', 'Utilisateurs'], ['orgs', 'Organisations'], ['payments', 'Paiements'], ['plans', 'Offres et abonnements'], ['contacts', 'Contacts reçus'], ['ai', "Utilisation de l'IA"], ['notifications', 'Notifications'], ['security', 'Sécurité']];
 
   const S = { view: 'overview', days: 30, ov: null, payFilter: '', admin: 'Administrateur' };
 
@@ -40,7 +40,7 @@
     let data = null;
     try { data = await res.json(); } catch (e) { /* vide */ }
     if (res.status === 401 && path !== '/login') { showLogin(); throw new Error('Session expirée'); }
-    if (!res.ok) throw new Error((data && data.error) || 'Erreur ' + res.status);
+    if (!res.ok) { const err = new Error((data && data.error) || 'Erreur ' + res.status); err.data = data; throw err; }
     return data;
   }
   let toastTimer;
@@ -85,7 +85,13 @@
   $('loginForm').addEventListener('submit', async (e) => {
     e.preventDefault(); $('loginError').textContent = '';
     const f = new FormData(e.target);
-    try { await api('/login', { method: 'POST', body: { username: f.get('username'), password: f.get('password') } }); e.target.reset(); await start(); } catch (err) { $('loginError').textContent = err.message; }
+    try {
+      await api('/login', { method: 'POST', body: { username: f.get('username'), password: f.get('password'), code: f.get('code') || undefined } });
+      e.target.reset(); $('codeRow').classList.add('hidden'); await start();
+    } catch (err) {
+      if (err.data && err.data.needCode) { $('codeRow').classList.remove('hidden'); e.target.elements.code.focus(); }
+      $('loginError').textContent = err.message;
+    }
   });
   async function logout() { try { await api('/logout', { method: 'POST' }); } catch (e) { /* ignore */ } showLogin(); }
 
@@ -298,7 +304,84 @@
     } catch (e) { fail(e); }
   }
 
-  const VIEWS = { overview, users: usersView, orgs: orgsView, payments: paymentsView, plans: plansView, contacts: contactsView, ai: aiView, notifications: notifsView, settings: settingsView };
+    // ---------- Sécurité : état, double authentification, journal d'audit, adresses bloquées, sessions ----------
+  const SEV = { info: ['Info', ''], warn: ['Attention', 'warn'], high: ['Grave', 'bad'], critical: ['Critique', 'bad'] };
+  const sevPill = (s) => h('span', { class: 'pill ' + (SEV[s] ? SEV[s][1] : '') }, SEV[s] ? SEV[s][0] : s);
+  const lvlDot = (l) => h('i', { class: l === 'ok' ? '' : 'warn', style: l === 'bad' ? 'background:#e11d48' : null });
+  async function securityView(main) {
+    main.append(head('Sécurité', 'Le centre de contrôle : configuration, accès, journal d’audit et protections automatiques.'));
+    const box = h('div', {}, h('p', { class: 'empty' }, 'Chargement…'));
+    main.append(box);
+    const reload = async () => {
+      let o;
+      try { o = await api('/security/overview'); } catch (e) { fail(e); return; }
+      const sm = o.config.summary;
+      const kpi = (t, v, sub, cls) => h('div', { class: 'kpi ' + (cls || '') }, h('small', {}, t), h('b', {}, String(v)), h('span', {}, sub));
+      const cfg = card('Configuration de sécurité', h('span', { class: 'mu' }, sm.ok + ' ok · ' + sm.warn + ' à améliorer · ' + sm.bad + ' dangereux'),
+        o.config.items.map((x) => h('div', { class: 'setrow' }, lvlDot(x.level), h('b', {}, x.title), h('span', {}, x.text))));
+      // Double authentification de l'administrateur
+      const tfaBox = h('div', {});
+      const drawTfa = () => {
+        tfaBox.replaceChildren();
+        if (o.twofa.enabled) {
+          const pw = h('input', { type: 'password', placeholder: 'Mot de passe administrateur', autocomplete: 'current-password' }); const cd = h('input', { placeholder: 'Code ou code de secours', autocomplete: 'one-time-code' });
+          tfaBox.append(h('p', {}, h('span', { class: 'pill ok' }, 'Active'), ' ' + o.twofa.recoveryLeft + ' code(s) de secours restant(s).'),
+            h('div', { class: 'row' }, pw, cd, h('button', { class: 'bt out sm', type: 'button', onclick: async () => { try { await api('/security/2fa/disable', { method: 'POST', body: { password: pw.value, code: cd.value } }); toast('Double authentification désactivée.'); reload(); } catch (e) { fail(e); } } }, 'Désactiver')));
+        } else {
+          const pw = h('input', { type: 'password', placeholder: 'Mot de passe administrateur', autocomplete: 'current-password' });
+          tfaBox.append(h('p', { class: 'mu' }, 'Non activée : un mot de passe volé suffirait à entrer. Utilisez une application d’authentification (Google Authenticator, Microsoft Authenticator, Authy, 2FAS…).'),
+            h('div', { class: 'row' }, pw, h('button', { class: 'bt solid sm', type: 'button', onclick: async () => {
+              try {
+                const j = await api('/security/2fa/setup', { method: 'POST', body: { password: pw.value } });
+                const cd = h('input', { placeholder: 'Code à 6 chiffres', inputmode: 'numeric', autocomplete: 'one-time-code' });
+                tfaBox.replaceChildren(h('p', {}, 'Dans votre application, ajoutez un compte avec cette clé (saisie manuelle, type « basé sur le temps ») :'), h('p', {}, h('b', { style: 'word-break:break-all;font-family:ui-monospace,Menlo,monospace' }, j.secret)),
+                  h('p', { class: 'mu' }, 'Ou ouvrez ce lien sur le téléphone qui a l’application : ', h('a', { href: j.uri }, 'ajouter automatiquement')),
+                  h('div', { class: 'row' }, cd, h('button', { class: 'bt solid sm', type: 'button', onclick: async () => {
+                    try {
+                      const r = await api('/security/2fa/enable', { method: 'POST', body: { code: cd.value } });
+                      tfaBox.replaceChildren(h('p', {}, h('b', {}, 'Activée.'), ' Notez ces codes de secours (chacun sert une fois, ils ne seront plus affichés) :'), h('pre', { style: 'background:var(--bg);padding:12px;border-radius:12px;columns:2' }, r.recoveryCodes.join('\n')), h('button', { class: 'bt solid sm', type: 'button', onclick: reload }, 'J’ai noté mes codes'));
+                    } catch (e) { fail(e); }
+                  } }, 'Confirmer et activer')));
+              } catch (e) { fail(e); }
+            } }, 'Activer')));
+        }
+      };
+      drawTfa();
+      // Journal d'audit
+      const sev = h('select', { 'aria-label': 'Gravité' }, h('option', { value: '' }, 'Toutes gravités'), ['info', 'warn', 'high', 'critical'].map((k) => h('option', { value: k }, SEV[k][0])));
+      const q = h('input', { type: 'search', placeholder: 'Adresse, cible, détail…', 'aria-label': 'Rechercher' });
+      const act = h('input', { type: 'search', placeholder: 'Action (ex. login, admin, apikey)', 'aria-label': 'Action' });
+      const tbl = h('div', {}, h('p', { class: 'empty' }, 'Chargement…'));
+      const verifyOut = h('span', { class: 'mu' });
+      const loadAudit = async () => {
+        try {
+          const { events } = await api('/security/audit?limit=100&severity=' + encodeURIComponent(sev.value) + '&q=' + encodeURIComponent(q.value) + '&action=' + encodeURIComponent(act.value));
+          tbl.replaceChildren(events.length ? h('div', { class: 'wrap' }, h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, ['Quand', 'Gravité', 'Action', 'Qui', 'Cible / détail', 'Adresse'].map((t) => h('th', {}, t)))),
+            h('tbody', {}, events.map((e) => h('tr', {}, h('td', { class: 'mu' }, fmtDateTime(e.at)), h('td', {}, sevPill(e.severity)), h('td', {}, h('b', {}, e.action)), h('td', { class: 'mu' }, e.actorType + (e.actorId ? ' #' + e.actorId : '') + (e.orgId ? ' · org ' + e.orgId : '')), h('td', { class: 'mu' }, [e.target, e.detail].filter(Boolean).join(' · ')), h('td', { class: 'mu' }, e.ip)))))) : h('p', { class: 'empty' }, 'Aucun événement.'));
+        } catch (e) { fail(e); }
+      };
+      let tm; for (const el of [q, act]) el.addEventListener('input', () => { clearTimeout(tm); tm = setTimeout(loadAudit, 300); }); sev.addEventListener('change', loadAudit);
+      const audit = card('Journal d’audit', h('span', {}, verifyOut, ' ', h('button', { class: 'bt out sm', type: 'button', onclick: async () => { verifyOut.textContent = 'Vérification…'; try { const r = await api('/security/audit/verify', { method: 'POST', body: {} }); verifyOut.textContent = r.ok ? '✔ Chaîne intacte (' + r.checked + ' lignes)' : '✖ Chaîne ROMPUE à la ligne ' + r.brokenAt; verifyOut.style.color = r.ok ? '' : '#e11d48'; } catch (e) { fail(e); } } }, 'Vérifier l’intégrité')),
+        h('div', { class: 'filters' }, sev, act, q), tbl);
+      loadAudit();
+      // Adresses bloquées
+      const ip = h('input', { placeholder: 'Adresse IP', 'aria-label': 'Adresse IP' }); const hrs = h('input', { type: 'number', value: '24', min: '1', style: 'width:90px', 'aria-label': 'Heures' }); const why = h('input', { placeholder: 'Motif', 'aria-label': 'Motif' });
+      const blocks = card('Adresses bloquées', h('span', { class: 'mu' }, 'Blocage automatique après des abus répétés'),
+        o.blocks.length ? h('div', { class: 'wrap' }, h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, ['Adresse', 'Motif', 'Jusqu’à', 'Par', ''].map((t) => h('th', {}, t)))), h('tbody', {}, o.blocks.map((b) => h('tr', {}, h('td', {}, h('b', {}, b.ip)), h('td', { class: 'mu' }, b.reason), h('td', { class: 'mu' }, b.permanent ? 'définitivement' : fmtDateTime(b.blockedUntil)), h('td', { class: 'mu' }, b.createdBy), h('td', { class: 'r' }, h('button', { class: 'bt out sm', type: 'button', onclick: async () => { try { await api('/security/blocks/' + encodeURIComponent(b.ip), { method: 'DELETE' }); toast('Adresse débloquée.'); reload(); } catch (e) { fail(e); } } }, 'Débloquer'))))))) : h('p', { class: 'empty' }, 'Aucune adresse bloquée.'),
+        h('div', { class: 'row', style: 'margin-top:12px' }, ip, hrs, why, h('button', { class: 'bt solid sm', type: 'button', onclick: async () => { try { await api('/security/blocks', { method: 'POST', body: { ip: ip.value, hours: Number(hrs.value), reason: why.value } }); toast('Adresse bloquée.'); reload(); } catch (e) { fail(e); } } }, 'Bloquer')));
+      // Sessions administrateur
+      const sess = card('Sessions administrateur', h('span', { class: 'mu' }, o.activeUserSessions + ' session(s) utilisateur active(s)'),
+        o.sessions.map((s) => h('div', { class: 'setrow' }, h('b', {}, s.device + (s.current ? ' (cette session)' : '')), h('span', {}, s.ip + ' · active ' + ago(s.lastSeen)), s.current ? null : h('button', { class: 'bt out sm', type: 'button', onclick: async () => { try { await api('/security/sessions/' + s.id, { method: 'DELETE' }); reload(); } catch (e) { fail(e); } } }, 'Fermer'))),
+        o.sessions.length > 1 ? h('p', {}, h('button', { class: 'bt out sm', type: 'button', onclick: async () => { try { const r = await api('/security/sessions/revoke-others', { method: 'POST', body: {} }); toast(r.closed + ' session(s) fermée(s).'); reload(); } catch (e) { fail(e); } } }, 'Fermer toutes les autres sessions')) : null,
+        h('p', { class: 'mu' }, 'Compte utilisateur suspect : ouvrez « Utilisateurs », ou appelez POST /api/admin/security/users/<id>/revoke-sessions pour déconnecter tous ses appareils.'));
+      box.replaceChildren(
+        h('div', { class: 'g4' }, kpi('Alertes 24 h (graves)', o.last24h.high + o.last24h.critical, o.last24h.critical + ' critique(s)', o.last24h.high + o.last24h.critical ? 'bad' : ''), kpi('À surveiller 24 h', o.last24h.warn, 'événements « attention »'), kpi('Adresses bloquées', o.blocks.length, 'actuellement'), kpi('Lignes d’audit', o.auditRows, 'chaîne SHA-256')),
+        h('div', { class: 'g3' }, cfg, card('Double authentification de l’administrateur', null, tfaBox), blocks), sess, audit);
+    };
+    reload();
+  }
+
+  const VIEWS = { overview, users: usersView, orgs: orgsView, payments: paymentsView, plans: plansView, contacts: contactsView, ai: aiView, notifications: notifsView, settings: settingsView, security: securityView };
   function render() {
     drawShell();
     const main = $('main'); main.replaceChildren(); window.scrollTo(0, 0);

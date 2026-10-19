@@ -4,7 +4,9 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { db, nowISO, publicUser, getUserFresh } = require('../db');
 const limits = require('../middleware/limits');
-const { setUserCookie, clearUserCookie, requireUser } = require('../middleware/auth');
+const jwt = require('jsonwebtoken');
+const { setUserCookie, clearUserCookie, requireUser, sessionIdOf, USER_COOKIE } = require('../middleware/auth');
+const central = require('../security');
 const { notify } = require('../services/notify');
 const { asyncHandler, HttpError, normalizeContact, cleanText, parseJSON } = require('../util');
 
@@ -83,7 +85,7 @@ async function sendSignupCode(row, name) {
 }
 const sweepCodes = async () => await db.prepare('DELETE FROM signup_codes WHERE expires_at < ?').run(new Date(Date.now() - 10 * 60 * 1000).toISOString());
 
-async function createUser(res, { name, contact, hash, interests }) {
+async function createUser(req, res, { name, contact, hash, interests }) {
   const dup = 'Un compte existe déjà avec ce contact. Utilisez « Me connecter ».';
   let id;
   try {
@@ -93,7 +95,7 @@ async function createUser(res, { name, contact, hash, interests }) {
     if (e.code === '23505') throw new HttpError(409, dup);
     throw e;
   }
-  await setUserCookie(res, Number(id));
+  await setUserCookie(res, Number(id), req);
   await sec.audit('register', null, Number(id), '');
   notify('inscription', `Nouvelle inscription : ${name} (${contact}) - intérêts : ${interests.join(', ') || 'aucun'}`);
   return publicUser(await db.prepare('SELECT * FROM users WHERE id = ?').get(id));
@@ -119,7 +121,7 @@ router.post('/register', limits.register, asyncHandler(async (req, res) => {
   if (await db.prepare('SELECT 1 FROM users WHERE contact = ?').get(contact.value)) throw new HttpError(409, dup);
 
   const hash = await bcrypt.hash(pass, sec.BCRYPT_COST);
-  if (!verifyOn()) return res.status(201).json({ user: await createUser(res, { name, contact: contact.value, hash, interests }) });
+  if (!verifyOn()) return res.status(201).json({ user: await createUser(req, res, { name, contact: contact.value, hash, interests }) });
 
   if (!contact.value.includes('@')) throw new HttpError(400, 'Entrez une adresse e-mail : nous vous y envoyons un code de vérification.');
   await sweepCodes();
@@ -150,7 +152,7 @@ router.post('/register/resend', limits.make(15 * 60 * 1000, 20, 'Trop de demande
   res.json({ ok: true, expiresIn: CODE_MS / 1000, resendIn: RESEND_MS / 1000 });
 }));
 
-router.post('/register/verify', limits.make(15 * 60 * 1000, 40, 'Trop de tentatives. Réessayez dans quelques minutes.'), asyncHandler(async (req, res) => {
+router.post('/register/verify', limits.make(15 * 60 * 1000, 40, 'Trop de tentatives. Réessayez dans quelques minutes.', { shared: true, prefix: 'regverify' }), asyncHandler(async (req, res) => {
   const b = req.body || {};
   const contact = normalizeContact(b.contact);
   const code = typeof b.code === 'string' ? b.code.replace(/\s/g, '') : '';
@@ -166,7 +168,7 @@ router.post('/register/verify', limits.make(15 * 60 * 1000, 40, 'Trop de tentati
     throw new HttpError(400, 'Code incorrect.');
   }
   const user = await db.transaction(async () => {
-    const u = await createUser(res, { name: row.name, contact: row.contact, hash: row.pass_hash, interests: parseJSON(row.interests, []) });
+    const u = await createUser(req, res, { name: row.name, contact: row.contact, hash: row.pass_hash, interests: parseJSON(row.interests, []) });
     await db.prepare('DELETE FROM signup_codes WHERE contact = ?').run(row.contact);
     return u;
   })();
@@ -189,8 +191,43 @@ router.post('/login', limits.login, asyncHandler(async (req, res) => {
     throw fail;
   }
   await sec.clearFails(key);
+  if (Number(row.totp_enabled)) {
+    // Mot de passe juste, mais la double authentification est active : on attend le code (étape valable 5 minutes, aucun cookie pour l'instant).
+    const ticket = jwt.sign({ typ: 'tfa', sub: row.id }, config.jwtSecret, { algorithm: 'HS256', expiresIn: '5m' });
+    return res.json({ twofa: true, ticket });
+  }
   await sec.audit('login_ok', req, row.id, '');
-  await setUserCookie(res, row.id);
+  await setUserCookie(res, row.id, req);
+  res.json({ user: publicUser(await getUserFresh(row.id)) });
+}));
+
+// ---- Connexion, étape 2 : code de l'application d'authentification (ou code de secours) ----
+router.post('/login/2fa', limits.twofa, asyncHandler(async (req, res) => {
+  const b = req.body || {};
+  let p = null;
+  try { p = jwt.verify(String(b.ticket || ''), config.jwtSecret, { algorithms: ['HS256'] }); } catch { p = null; }
+  if (!p || p.typ !== 'tfa') throw new HttpError(401, 'Cette étape a expiré : recommencez la connexion.');
+  const key = 't:' + p.sub;
+  await sec.assertNotLocked(key);
+  const row = await db.prepare('SELECT * FROM users WHERE id = ?').get(p.sub);
+  if (!row || !Number(row.totp_enabled)) throw new HttpError(401, 'Cette étape a expiré : recommencez la connexion.');
+  const code = String(b.code || '').trim().slice(0, 20);
+  let ok = false;
+  const step = central.totp.verify(central.totp.unseal(row.totp_secret), code, row.totp_step);
+  if (step) { ok = true; await db.prepare('UPDATE users SET totp_step = ? WHERE id = ?').run(step, row.id); }
+  else {
+    const left = central.totp.useRecovery(row.recovery_codes, code);
+    if (left !== null) { ok = true; await db.prepare('UPDATE users SET recovery_codes = ? WHERE id = ?').run(left, row.id); await central.audit.record(req, 'twofa.recovery_used', { userId: row.id, severity: 'warn', detail: `${central.totp.recoveryLeft(left)} code(s) de secours restant(s)` }); }
+  }
+  if (!ok) {
+    const locked = await sec.recordFail(key);
+    await central.audit.record(req, locked ? 'twofa.locked' : 'twofa.fail', { userId: row.id, severity: locked ? 'high' : 'warn' });
+    await central.abuse.strike(req, 'twofa_fail');
+    throw new HttpError(401, 'Code incorrect ou expiré.');
+  }
+  await sec.clearFails(key);
+  await sec.audit('login_ok', req, row.id, '2FA');
+  await setUserCookie(res, row.id, req);
   res.json({ user: publicUser(await getUserFresh(row.id)) });
 }));
 
@@ -206,7 +243,7 @@ async function makeResetLink(req, userId, by) {
   const base = (config.siteUrl || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
   return { link: `${base}/reinitialiser?t=${token}`, expiresAt: new Date(Date.now() + RESET_MS).toISOString() };
 }
-router.post('/password/forgot', limits.make(15 * 60 * 1000, 6, 'Trop de demandes. Réessayez dans quelques minutes.'), async (req, res) => {
+router.post('/password/forgot', limits.make(15 * 60 * 1000, 6, 'Trop de demandes. Réessayez dans quelques minutes.', { shared: true, prefix: 'pwforgot' }), async (req, res) => {
   const contact = normalizeContact((req.body || {}).contact);
   const row = contact ? await db.prepare('SELECT * FROM users WHERE contact = ?').get(contact.value) : null;
   if (row) {
@@ -219,7 +256,7 @@ router.post('/password/forgot', limits.make(15 * 60 * 1000, 6, 'Trop de demandes
   }
   res.json({ ok: true, message: "Si un compte existe avec ce contact, vous allez recevoir un lien par e-mail. Pour un compte avec téléphone, l'équipe vous contactera pour vérifier votre identité." });
 });
-router.post('/password/reset', limits.make(15 * 60 * 1000, 10, 'Trop de tentatives. Réessayez dans quelques minutes.'), asyncHandler(async (req, res) => {
+router.post('/password/reset', limits.make(15 * 60 * 1000, 10, 'Trop de tentatives. Réessayez dans quelques minutes.', { shared: true, prefix: 'pwreset' }), asyncHandler(async (req, res) => {
   const b = req.body || {};
   const token = typeof b.token === 'string' ? b.token.slice(0, 100) : '';
   const pass = typeof b.pass === 'string' ? b.pass : '';
@@ -233,11 +270,12 @@ router.post('/password/reset', limits.make(15 * 60 * 1000, 10, 'Trop de tentativ
     await db.prepare('UPDATE password_resets SET used_at = ? WHERE user_id = ?').run(nowISO(), r.user_id);
   })();
   await sec.audit('password_reset', req, r.user_id, '');
+  await central.sessions.revokeAllForUser(r.user_id, '', 'mot de passe réinitialisé');
   res.json({ ok: true });
 }));
 
 // ---- Changer son mot de passe (connecté) : les autres appareils sont déconnectés ----
-router.post('/me/password', requireUser, limits.make(15 * 60 * 1000, 10, 'Trop de tentatives. Réessayez dans quelques minutes.'), asyncHandler(async (req, res) => {
+router.post('/me/password', requireUser, limits.make(15 * 60 * 1000, 10, 'Trop de tentatives. Réessayez dans quelques minutes.', { shared: true, prefix: 'pwchange' }), asyncHandler(async (req, res) => {
   const b = req.body || {};
   const cur = typeof b.current === 'string' ? b.current.slice(0, 200) : '';
   const pass = typeof b.pass === 'string' ? b.pass : '';
@@ -247,12 +285,14 @@ router.post('/me/password', requireUser, limits.make(15 * 60 * 1000, 10, 'Trop d
   if (pass === cur) throw new HttpError(400, 'Le nouveau mot de passe doit être différent de l\'ancien.');
   await db.prepare('UPDATE users SET pass_hash = ?, pass_changed_at = ? WHERE id = ?').run(await bcrypt.hash(pass, sec.BCRYPT_COST), nowISO(), req.user.id);
   await sec.audit('password_change', req, req.user.id, '');
-  await setUserCookie(res, req.user.id); // cet appareil reste connecté, les autres non
+  await setUserCookie(res, req.user.id, req, { closeOthers: true }); // cet appareil reste connecté, les autres sont déconnectés immédiatement
   if (req.user.contact.includes('@')) mailUser(req.user.contact, 'Votre mot de passe MANAGER-IA a été modifié', `Bonjour ${req.user.name},\n\nVotre mot de passe vient d'être modifié. Si ce n'est pas vous, réinitialisez-le tout de suite depuis la page de connexion (« Mot de passe oublié »).\n\nL'équipe MANAGER-IA`);
   res.json({ ok: true });
 }));
 
-router.post('/logout', (req, res) => {
+router.post('/logout', async (req, res) => {
+  const sid = sessionIdOf(req, USER_COOKIE, 'user');
+  if (sid) await central.sessions.revoke(sid, 'déconnexion');
   clearUserCookie(res);
   res.json({ ok: true });
 });

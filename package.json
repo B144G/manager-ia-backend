@@ -11,7 +11,7 @@
     "setup": "node scripts/setup.js",
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "npm run test:ai && npm run test:webhooks && npm run smoke && npm run smoke:signup && npm run smoke:security && npm run smoke:ws",
+    "test": "npm run test:ai && npm run test:webhooks && npm run smoke && npm run smoke:signup && npm run smoke:security && npm run smoke:central && npm run smoke:ws",
     "smoke": "node scripts/smoke.js",
     "smoke:ws": "node scripts/smoke-workspace.js",
     "smoke:signup": "node scripts/smoke-signup.js",
@@ -21,7 +21,9 @@
     "db:check": "node scripts/db-check.js",
     "test:ai": "node scripts/test-ai-adapter.js",
     "test:webhooks": "node scripts/test-webhooks.js",
-    "eval:ai": "node scripts/eval-ai.js"
+    "eval:ai": "node scripts/eval-ai.js",
+    "security:check": "node scripts/security-check.js",
+    "smoke:central": "node scripts/smoke-central.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
