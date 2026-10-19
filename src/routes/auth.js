@@ -204,7 +204,7 @@ async function makeResetLink(req, userId, by) {
   await db.prepare("DELETE FROM password_resets WHERE user_id = ? AND used_at IS NULL").run(userId);
   await db.prepare('INSERT INTO password_resets (user_id, token_hash, expires_at, created_by, created_at) VALUES (?, ?, ?, ?, ?)').run(userId, hashToken(token), new Date(Date.now() + RESET_MS).toISOString(), by, nowISO());
   const base = (config.siteUrl || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
-  return { link: `${base}/reinitialiser.html?t=${token}`, expiresAt: new Date(Date.now() + RESET_MS).toISOString() };
+  return { link: `${base}/reinitialiser?t=${token}`, expiresAt: new Date(Date.now() + RESET_MS).toISOString() };
 }
 router.post('/password/forgot', limits.make(15 * 60 * 1000, 6, 'Trop de demandes. Réessayez dans quelques minutes.'), async (req, res) => {
   const contact = normalizeContact((req.body || {}).contact);

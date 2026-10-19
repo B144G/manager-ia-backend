@@ -1688,8 +1688,8 @@ async function main() {
     const a2 = await anon('POST', '/api/password/forgot', { contact: 'inconnu@exemple.com' });
     check('« mot de passe oublié » : même réponse que le compte existe ou non (pas de fuite d\'information)', a1.status === 200 && a2.status === 200 && a1.json.message === a2.json.message, [a1.json, a2.json]);
     await sleep(500);
-    const resetMail = mailbox.find((m) => new RegExp('To: .*' + emailC.replace('.', '\\.')).test(m) && /reinitialiser\.html\?t=3D|reinitialiser\.html\?t=/.test(m));
-    const tokenM = resetMail && /reinitialiser\.html\?t=3?D?([a-f0-9]{64})/.exec(resetMail.replace(/=\r?\n/g, ''));
+    const resetMail = mailbox.find((m) => new RegExp('To: .*' + emailC.replace('.', '\\.')).test(m) && /reinitialiser\?t=3D|reinitialiser\?t=/.test(m));
+    const tokenM = resetMail && /reinitialiser\?t=3?D?([a-f0-9]{64})/.exec(resetMail.replace(/=\r?\n/g, ''));
     check('e-mail de réinitialisation reçu avec un lien à usage unique', !!tokenM, resetMail && resetMail.slice(0, 300));
     const tk1 = tokenM && tokenM[1];
     r = await anon('POST', '/api/password/reset', { token: 'a'.repeat(64), pass: 'nouveau123' });
