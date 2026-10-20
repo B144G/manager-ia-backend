@@ -208,6 +208,138 @@ npm run dev                   # http://localhost:5173
 
 Vite renvoie les appels `/api` vers le serveur local : le navigateur ne voit qu'un seul site, la connexion fonctionne sans réglage. Les tests automatiques (`npm test` dans le backend) démarrent leur propre base PostgreSQL jetable : rien à installer.
 
+## GUIDE WHATSAPP : obtenir les identifiants (Phone number ID, jeton, secret) et brancher MANAGER-IA
+
+> **Les écrans de Meta changent souvent** : les noms des menus ci-dessous sont ceux de la dernière version connue, vos écrans peuvent différer légèrement. Tout se fait avec **votre** compte Meta. Ne collez jamais un jeton ou un secret dans un chat, un e-mail ou GitHub : seulement dans les champs prévus (Render, ou l'écran *Canaux* de l'application).
+
+### Deux usages de WhatsApp dans MANAGER-IA (ne les confondez pas)
+
+| | **A. Notifications pour vous (administrateur)** | **B. Assistant commercial d'une entreprise** |
+|---|---|---|
+| À quoi ça sert | vous recevez un message WhatsApp à chaque inscription, contact, paiement | l'IA répond aux clients de l'entreprise, prend les commandes, relance |
+| Où se saisissent les valeurs | variables d'environnement du serveur (Render) | écran **Assistant commercial → Canaux → WhatsApp** de l'application |
+| Adresse de rappel (webhook) | `https://VOTRE-SERVEUR/webhooks/whatsapp` (jeton = `META_VERIFY_TOKEN`) | affichée dans l'écran *Canaux* (un jeton propre à chaque organisation) |
+
+Vous pouvez faire A seul, B seul, ou les deux. Pour **A**, il faut en plus créer le modèle `nouvelle_notification` (voir la section 5 du README du dépôt `manager-ia-backend`) et renseigner `ADMIN_WHATSAPP` et `WHATSAPP_TEMPLATE`.
+
+> **À savoir (important)** : une application Meta n'a **qu'une seule adresse de rappel** pour WhatsApp. Chaque organisation qui active l'assistant commercial utilise donc **sa propre application Meta** (ou celle de son entreprise), avec son propre secret et son propre numéro. Pour vos clients, ce sont eux qui créent leur application en suivant ce guide.
+
+---
+
+### Étape 1 : le compte Meta Business (10 min)
+
+1. Créez ou ouvrez votre compte sur <https://business.facebook.com> (« portefeuille d'entreprise » / *Business portfolio*). Renseignez le nom légal de l'entreprise, son adresse et son site : Meta les revérifie plus tard.
+2. Créez un compte développeur sur <https://developers.facebook.com> (avec le même compte Facebook), et acceptez les conditions.
+
+### Étape 2 : créer l'application Meta avec WhatsApp (10 min)
+
+1. <https://developers.facebook.com/apps> → **Créer une application**.
+2. Cas d'utilisation : choisissez **« Se connecter avec les clients sur WhatsApp »** (ou, selon l'écran, type **Entreprise** puis **Ajouter le produit WhatsApp**). Nommez-la (ex. `MANAGER-IA Boutique Awa`) et **rattachez-la à votre portefeuille d'entreprise**.
+3. Dans le menu de gauche : **WhatsApp → Configuration de l'API** (*API Setup*). Cette page est votre tableau de bord de départ. Meta vous y donne **gratuitement** :
+   - un **numéro de test** ;
+   - le **Phone number ID** (identifiant du numéro) ;
+   - le **WhatsApp Business Account ID** ;
+   - un **jeton temporaire** (valable ~24 h : bon pour un premier essai seulement).
+4. Dans le même écran, section **« À »** (*To*) : ajoutez **votre numéro personnel** comme destinataire de test. Meta vous envoie un code par WhatsApp pour le confirmer. **Tant que l'application est en mode développement, le numéro de test ne peut écrire qu'à ces numéros** (5 maximum).
+
+### Étape 3 : où trouver chaque valeur
+
+| Valeur demandée par MANAGER-IA | Où la trouver chez Meta | Où la mettre dans MANAGER-IA |
+|---|---|---|
+| **Phone number ID** (chiffres, ex. `106540352242922`) | WhatsApp → Configuration de l'API, sous le numéro d'envoi (ne confondez pas avec le *numéro de téléphone* ni avec le *WhatsApp Business Account ID*) | A : `WHATSAPP_PHONE_ID` · B : champ « Identifiant du numéro » |
+| **Numéro WhatsApp** | le numéro lui-même, avec l'indicatif, sans `+` ni espaces : `237677112233` | B : champ « Numéro » |
+| **Jeton d'accès permanent** | voir l'étape 4 ci-dessous | A : `WHATSAPP_TOKEN` · B : champ « Jeton d'accès » |
+| **Secret de l'application** | Paramètres de l'application → **Paramètres → Général** → *Clé secrète de l'application* → **Afficher** (Meta peut redemander votre mot de passe) | A : `META_APP_SECRET` · B : champ « Secret de l'application » |
+| **Jeton de vérification du webhook** | **vous l'inventez** (phrase longue, lettres et chiffres) pour A ; pour B, il est **généré et affiché** par l'écran *Canaux* | A : `META_VERIFY_TOKEN` (et le même chez Meta) · B : à copier chez Meta |
+| **Adresse de rappel (webhook)** | c'est MANAGER-IA qui la fournit (voir l'étape 6) | à coller chez Meta |
+
+### Étape 4 : le jeton d'accès PERMANENT (10 min)
+
+Le jeton de la page « Configuration de l'API » **expire en 24 heures** : ne l'utilisez que pour tester. Pour un vrai usage, créez un jeton permanent :
+
+1. <https://business.facebook.com/settings> → **Utilisateurs → Utilisateurs système** → **Ajouter** → nom `manager-ia`, rôle **Administrateur**.
+2. Sélectionnez cet utilisateur système → **Ajouter des actifs** :
+   - **Applications** : votre application → contrôle total (*Gérer l'application*) ;
+   - **Comptes WhatsApp** : votre compte WhatsApp Business → contrôle total.
+3. **Générer un jeton** → choisissez votre application → durée **Jamais** (*Never expires*) → cochez les autorisations **`whatsapp_business_messaging`** et **`whatsapp_business_management`** → **Générer**.
+4. **Copiez le jeton tout de suite** (Meta ne le réaffiche plus) et mettez-le directement dans Render (A) ou dans l'écran *Canaux* (B). S'il fuit : supprimez-le et régénérez-en un.
+
+### Étape 5 : brancher votre vrai numéro (quelques jours)
+
+Pour répondre à de **vrais clients** (et non plus seulement à 5 numéros de test) :
+
+1. **WhatsApp → Configuration de l'API → Ajouter un numéro de téléphone** (ou *WhatsApp Manager → Numéros de téléphone*). Le numéro **ne doit pas être inscrit dans l'application WhatsApp classique** (ni WhatsApp Business sur téléphone) : sinon, supprimez d'abord ce compte WhatsApp.
+2. Choisissez le **nom d'affichage** (le nom de votre entreprise, qui doit correspondre à votre site/marque) : Meta l'approuve.
+3. **Vérifiez le numéro** par SMS ou appel (code à 6 chiffres), puis créez un **code PIN à 6 chiffres** (validation en deux étapes) : notez-le.
+4. Mettez à jour dans MANAGER-IA le **Phone number ID** et le **numéro** (ceux du numéro réel, pas ceux du numéro de test).
+5. **Passez l'application en mode « Live »** (interrupteur en haut du tableau de bord de l'application) et **vérifiez votre entreprise** : *Business Settings → Centre de sécurité → Vérification de l'entreprise* (documents d'immatriculation). Sans cette vérification, le nombre de clients contactés par jour reste limité.
+6. **Moyen de paiement** : *WhatsApp Manager → Paramètres de paiement* : Meta facture ses « conversations ». Vérifiez les tarifs de votre pays sur le site de Meta avant toute campagne.
+
+### Étape 6 : l'adresse de rappel (webhook) : recevoir les messages
+
+C'est ce qui permet à Meta d'envoyer chaque message de client à votre serveur. **Le serveur doit être en ligne, en https.**
+
+1. **Usage B (assistant d'une entreprise)** : dans l'application, **Assistant commercial → Canaux → WhatsApp**, saisissez le Phone number ID, le numéro, le jeton permanent et le secret de l'application, puis **Enregistrer**. L'écran affiche alors l'**adresse de rappel** et le **jeton de vérification**. (Pour que l'adresse soit la bonne, `API_PUBLIC_URL` doit valoir l'adresse Render.)
+   **Usage A (notifications pour vous)** : adresse `https://VOTRE-SERVEUR.onrender.com/webhooks/whatsapp` et le jeton `META_VERIFY_TOKEN` que vous avez inventé.
+2. Chez Meta : **WhatsApp → Configuration** → section **Webhook** → **Modifier** → collez l'**adresse de rappel** et le **jeton de vérification** → **Vérifier et enregistrer**.
+   - Si Meta refuse : adresse non https, serveur endormi (réveillez-le en ouvrant `/api/health`), ou jeton différent.
+3. Sous **Champs du webhook**, cliquez **Gérer** et **abonnez le champ `messages`** (c'est lui qui apporte les messages des clients).
+4. Dans MANAGER-IA, cliquez **Tester la connexion** : le nom affiché du numéro doit apparaître.
+
+### Étape 7 : premier essai (5 min)
+
+1. Dans *Réglages* de l'assistant commercial : **activez l'assistant public**. Vérifiez que le serveur a la clé d'IA (`ANTHROPIC_API_KEY`) : sans elle, l'assistant ne répond pas.
+2. Depuis **votre téléphone** (numéro ajouté à la liste de test), écrivez au numéro WhatsApp de l'entreprise : « Bonjour, c'est combien ? ». L'IA doit répondre avec les prix du catalogue.
+3. Essayez un **message vocal** et une **photo** : ils sont compris (transcription et lecture de l'image).
+4. Faites une commande : elle apparaît dans *Commandes* « à valider ».
+
+### Étape 8 : les modèles de message (obligatoires pour les relances)
+
+WhatsApp interdit d'écrire à un client **plus de 24 heures après son dernier message**, sauf avec un **modèle approuvé par Meta**. MANAGER-IA en utilise trois (créez-les dans *WhatsApp Manager → Modèles de message → Créer un modèle*, langue **Français**, un nom en minuscules sans espace) :
+
+| Usage dans MANAGER-IA | Catégorie Meta | Texte du modèle (variables `{{1}}`…) |
+|---|---|---|
+| **Relance d'un prospect** (2 variables) | Utilitaire ou Marketing | `Bonjour {{1}}, c'est {{2}}. Vous nous avez écrit récemment : souhaitez-vous que nous reprenions votre demande ?` |
+| **Rappel de facture impayée** (4 variables) | Utilitaire | `Bonjour {{1}}, la facture {{2}} de {{4}} présente un reste à payer de {{3}}. Merci de régulariser dès que possible.` |
+| **Rappel de rendez-vous** (4 variables) | Utilitaire | `Bonjour {{1}}, rappel : votre rendez-vous est prévu le {{2}} à {{3}} chez {{4}}.` |
+
+1. Meta demande un **exemple** de chaque variable (ex. `Awa`, `F-2026-0007`, `15 000 FCFA`, `Boutique Awa`).
+2. Attendez le statut **Approuvé** (minutes à quelques heures).
+3. Dans MANAGER-IA : **Assistant commercial → Relances → Ajouter un modèle** : saisissez **le nom exact**, la langue, l'usage et le texte (aperçu). Le nombre de variables est contrôlé.
+4. Le client qui écrit **STOP** n'est plus jamais relancé.
+
+### Étape 9 : suivre la qualité et les limites
+
+- **Palier d'envoi** : au départ, un nombre limité de clients « nouveaux » par jour ; il augmente avec la vérification de l'entreprise et la qualité de vos messages. Si trop de clients bloquent ou signalent vos messages, Meta réduit vos droits : **ne relancez que ceux qui ont écrit**.
+- **Pas d'appels vocaux** : seuls les messages (écrits, vocaux, images, PDF) sont gérés.
+- **Fenêtre de 24 h** : l'IA répond librement pendant 24 h après le message du client ; après, seulement avec un modèle approuvé.
+
+### Dépannage WhatsApp
+
+| Symptôme | Cause probable | Que faire |
+|---|---|---|
+| Meta refuse l'adresse de rappel | serveur endormi / non https / mauvais jeton de vérification | ouvrez `/api/health` pour réveiller Render ; recopiez le jeton exact |
+| Aucun message n'arrive | champ **`messages`** non abonné, application pas en « Live », ou numéro de l'expéditeur absent de la liste de test | abonnez `messages` ; ajoutez le numéro à la liste de test ; passez l'app en Live |
+| Journal du serveur : « signature invalide » | **secret de l'application** faux (ou celui d'une autre application) | recopiez la *clé secrète* depuis Paramètres → Général |
+| « Meta a refusé la connexion » au test | jeton expiré (24 h) ou sans les autorisations `whatsapp_business_*`, ou mauvais Phone number ID | régénérez un jeton permanent (étape 4) ; vérifiez l'identifiant |
+| Erreur « destinataire non autorisé » (#131030) | application en développement et numéro hors liste de test | ajoutez-le à la liste, ou passez en Live |
+| Erreur « hors fenêtre de 24 h » (#131047) | le client n'a pas écrit depuis plus de 24 h | utilisez un **modèle approuvé** (étape 8) |
+| Modèle refusé par Meta | texte promotionnel dans un modèle « Utilitaire », variable collée au début/à la fin | reformulez, ou choisissez la catégorie Marketing |
+| L'IA ne répond pas | assistant public désactivé, clé d'IA absente, quota de messages IA atteint | Réglages de l'assistant ; `ANTHROPIC_API_KEY` ; écran Abonnement |
+| Les réponses arrivent avec du retard | délai de réponse réglé, ou serveur Render qui se réveille | Réglages : délai de réponse ; offre Render toujours réveillée |
+
+### Check-list WhatsApp
+
+- [ ] Compte Meta Business et application créés, WhatsApp ajouté
+- [ ] Phone number ID, numéro, **jeton permanent** et **secret de l'application** notés en lieu sûr
+- [ ] Webhook vérifié chez Meta, champ **`messages`** abonné
+- [ ] Valeurs saisies dans l'écran *Canaux* (ou dans Render pour les notifications) ; « Tester la connexion » réussi
+- [ ] Essai réel : texte, vocal, photo, commande
+- [ ] Trois modèles de message approuvés et ajoutés dans *Relances*
+- [ ] Application en mode Live, entreprise vérifiée, moyen de paiement renseigné (pour de vrais clients)
+
+---
+
 ---
 
 ## 1. Installation sur votre ordinateur (essai)
