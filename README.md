@@ -1,51 +1,212 @@
 # MANAGER-IA : serveur (backend)
 
-## Liaison site (frontend) ↔ serveur (backend)
+## GUIDE COMPLET : mettre MANAGER-IA en ligne (base de données, serveur, site)
 
-Deux dossiers, deux adresses. Le site doit connaître l'adresse du serveur, et le serveur doit autoriser l'adresse du site.
+Trois services, tous créés par **vous** avec **vos** comptes (ne donnez jamais vos mots de passe ni vos clés à personne, ni dans un chat) :
 
-| | Dossier | Adresse en essai local | Où se règle le lien |
-|---|---|---|---|
-| **Serveur (API)** | `manager-ia-backend` | `http://localhost:3000` | fichier `.env` du serveur : `PORT`, `SITE_URL`, `ALLOWED_ORIGINS` |
-| **Site** | `manager-ia-frontend` | `http://localhost:5173` | fichier `.env` du site : `API_BASE` (puis `npm run config`) |
-
-## Essayer sur votre ordinateur (3 commandes de chaque côté)
-
-```bash
-# 1) Le serveur
-cd manager-ia-backend
-npm run setup      # crée .env avec des secrets aléatoires et affiche le mot de passe administrateur
-npm install
-npm start          # http://localhost:3000
-
-# 2) Le site (autre terminal)
-cd manager-ia-frontend
-npm start          # écrit config.js depuis .env puis sert le site sur http://localhost:5173
+```
+Visiteurs ──► Vercel (le site React : manager-ia-frontend)
+                │  tout ce qui commence par /api est transmis au serveur
+                ▼
+              Render (le serveur Node.js : manager-ia-backend) ──► Neon (la base PostgreSQL)
 ```
 
-Ouvrez <http://localhost:5173>. Si le port 3000 est déjà pris sur votre machine, changez `PORT` dans le `.env` du serveur **et** `API_BASE` dans le `.env` du site (puis `npm run config`).
+| Service | Rôle | Dépôt GitHub | Prix de départ |
+|---|---|---|---|
+| **Neon** | base de données PostgreSQL | — | offre gratuite (sans carte) ; la base se met en veille quand elle n'est pas utilisée |
+| **Render** | serveur (API, assistant, WhatsApp, paiements) | `manager-ia-backend` | offre gratuite (le serveur s'endort après ~15 min sans visite) ; offre payante « Starter » pour un serveur toujours réveillé |
+| **Vercel** | le site que voient les visiteurs | `manager-ia-frontend` | offre gratuite « Hobby » (réservée à un usage **non commercial** : pour une activité commerciale, prévoyez l'offre Pro) |
 
-## En ligne
+> Les prix et limites changent : vérifiez-les sur les sites de chaque service avant de choisir. Pour une vraie activité (clients, paiements, WhatsApp), prévoyez un serveur Render payant : un serveur qui dort répond lentement et peut rater des messages WhatsApp.
 
-| Situation | `.env` du site | `.env` du serveur |
-|---|---|---|
-| **Même domaine** (recommandé : copiez le site dans `manager-ia-backend/public`) | `API_BASE=` (vide) | `ALLOWED_ORIGINS` vide, `COOKIE_SAMESITE=lax` |
-| **Deux domaines** (site `https://manager-ia.com`, serveur `https://api.manager-ia.com`) | `API_BASE=https://api.manager-ia.com` | `ALLOWED_ORIGINS=https://manager-ia.com`, `SITE_URL=https://manager-ia.com`, `COOKIE_SAMESITE=none`, `COOKIE_SECURE=true` (HTTPS obligatoire) |
-
-Vérifications : `https://<serveur>/api/health` doit répondre `{"ok":true}` ; dans le navigateur, la connexion crée un cookie `mia_token`. Une erreur « Origine non autorisée » signifie que `ALLOWED_ORIGINS` ne contient pas l'adresse exacte du site (avec `http`/`https` et sans `/` final).
-
-Le `.env` du site ne contient **aucun secret** (l'adresse du serveur est publique). Celui du serveur en contient : ne le publiez jamais (il est exclu des zips et de Git).
+Durée : environ 45 minutes la première fois. **Suivez l'ordre : Neon → Render → Vercel → réglages finaux.**
 
 ---
 
+### Étape 0 : préparer (10 min)
 
-Ce dossier contient le « cerveau » du site MANAGER-IA : comptes des utilisateurs, offres Gratuit / Pro / Pro Max / Méga Pro / Illimité, paiements, assistant IA, agent de service client (WhatsApp, Messenger, Instagram), notifications pour vous, et une page d'administration (`/admin`).
+1. **Fusionnez le code sur GitHub.** Pour chaque dépôt (`manager-ia-backend` et `manager-ia-frontend`) : onglet *Pull requests* → la demande de la branche `claude/postgres-react` → **Merge pull request**. Sans cela, Render et Vercel déploieraient l'ancienne version.
+2. **Créez vos comptes** (inscription avec votre e-mail, vous-même) : <https://neon.tech>, <https://render.com>, <https://vercel.com>. Choisissez « Continue with GitHub » pour Render et Vercel : cela leur permet de lire vos dépôts.
+3. **Préparez 3 secrets** (sur votre ordinateur, dans un terminal). Notez-les dans un gestionnaire de mots de passe, jamais dans un fichier du projet :
+   ```bash
+   node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"   # à lancer 2 fois : JWT_SECRET puis DATA_KEY
+   ```
+   - `JWT_SECRET` : protège les connexions.
+   - `DATA_KEY` : chiffre les jetons WhatsApp/Meta et les secrets de double authentification. **Ne la changez plus jamais ensuite** (les jetons déjà enregistrés deviendraient illisibles).
+   - `ADMIN_PASSWORD` : choisissez une phrase longue (12 caractères minimum, mélangés) et un `ADMIN_USERNAME` pas trop prévisible (évitez « admin »).
 
-Il fonctionne avec **Node.js 20 ou plus** et une base de données **PostgreSQL** (gratuite et hébergée chez **Neon**, voir la section 4). Le serveur est prévu pour **Render**, le frontend React pour **Vercel**.
+---
 
-> **Important : à lire avant de commencer**
-> - Ce code a été écrit et vérifié sans accès à vos vrais comptes (Campay, Meta/WhatsApp, e-mail, Anthropic). Faites **toujours un essai réel** de chaque service après le déploiement (voir « Check-list de mise en ligne » à la fin).
-> - Les appels vocaux (téléphone) **ne sont pas gérés** par ce serveur : voir la section « Agent de service client ».
+### Étape 1 : la base de données sur Neon (5 min)
+
+1. Sur <https://console.neon.tech> : **New Project**. Nom : `manager-ia`. Région : choisissez la plus proche de vos clients, par exemple **AWS Europe (Francfort)**. Notez-la : vous prendrez la même région sur Render.
+2. Une fois le projet créé, cliquez sur le bouton **Connect**. Une fenêtre affiche une adresse commençant par `postgresql://…`.
+3. Il vous faut **deux adresses**, en basculant l'option **« Connection pooling »** :
+   - **Pooled connection** (option activée, l'adresse contient `-pooler`) → ce sera `DATABASE_URL`.
+   - **Direct connection** (option désactivée, sans `-pooler`) → ce sera `DATABASE_URL_UNPOOLED`.
+   Copiez-les dans votre gestionnaire de mots de passe. **Elles contiennent le mot de passe de la base : ne les publiez jamais** (ni dans GitHub, ni dans un message).
+4. (Facultatif mais conseillé) Testez depuis votre ordinateur, dans le dossier `manager-ia-backend` :
+   ```bash
+   npm install
+   DATABASE_URL='collez-ici-l-adresse-pooled' JWT_SECRET=test npm run db:check
+   ```
+   Vous devez voir « Connexion OK ». Les tables se créeront toutes seules au premier démarrage du serveur : **rien à créer à la main**.
+
+> Vous avez déjà des données dans l'ancienne base SQLite ? Une seule fois, sur une base Neon vide : `npm i --no-save better-sqlite3` puis `npm run db:import-sqlite -- chemin/vers/manager-ia.db`. L'ancien fichier n'est jamais modifié.
+
+---
+
+### Étape 2 : le serveur sur Render (15 min)
+
+**Méthode rapide (recommandée) : Blueprint.** Le fichier `render.yaml` du dépôt décrit tout.
+
+1. Sur <https://dashboard.render.com> : **New +** → **Blueprint** → choisissez le dépôt `manager-ia-backend` → **Connect**.
+2. Render lit `render.yaml` et vous demande les valeurs « secrètes ». Saisissez-les **vous-même** :
+
+| Variable | Valeur à saisir |
+|---|---|
+| `DATABASE_URL` | l'adresse **Pooled** de Neon |
+| `DATABASE_URL_UNPOOLED` | l'adresse **Direct** de Neon |
+| `ADMIN_PASSWORD` | votre mot de passe administrateur (12+ caractères) |
+| `SITE_URL`, `ALLOWED_ORIGINS`, `API_PUBLIC_URL` | laissez vide pour l'instant : vous les remplirez à l'étape 4 |
+| `ANTHROPIC_API_KEY` | votre clé d'IA (facultatif pour démarrer ; vous pourrez l'ajouter plus tard) |
+
+   `JWT_SECRET` et `DATA_KEY` sont **générés automatiquement** par Render (vous pouvez les remplacer par ceux de l'étape 0). Déjà réglés pour vous : `NODE_ENV=production`, `TRUST_PROXY=2`, `COOKIE_SAMESITE=lax`, `ADMIN_USERNAME`.
+3. Choisissez la **région** (la même que Neon, par exemple Francfort) et l'offre (voir le tableau plus haut). Cliquez **Apply** / **Deploy**.
+
+**Méthode manuelle (si vous ne voulez pas du Blueprint) :** **New +** → **Web Service** → dépôt `manager-ia-backend`. Runtime **Node**, *Build Command* `npm ci --omit=dev --omit=optional`, *Start Command* `node src/server.js`, *Health Check Path* `/api/health`. Ajoutez ensuite les variables du tableau ci-dessus et celles de l'étape 4 dans l'onglet **Environment**.
+
+4. Attendez que l'état passe à **Live** (3 à 5 minutes la première fois). Le journal (*Logs*) doit afficher « MANAGER-IA démarré… » puis « Base de données : PostgreSQL ».
+5. **Notez l'adresse de votre serveur**, en haut de la page du service, par exemple `https://manager-ia-backend.onrender.com`.
+6. **Testez** en ouvrant dans le navigateur `https://VOTRE-SERVEUR.onrender.com/api/health` : la réponse doit être `{"ok":true,"db":true}`. (Si le serveur dormait, la première réponse peut prendre 30 à 60 secondes.)
+
+---
+
+### Étape 3 : le site sur Vercel (10 min)
+
+1. **Indiquez l'adresse de votre serveur Render au site.** Dans le dépôt `manager-ia-frontend`, ouvrez le fichier `vercel.json` et remplacez `https://VOTRE-SERVEUR.onrender.com` par l'adresse notée à l'étape 2 (ligne `"destination": "https://…/api/:path*"`). Modifiez-le directement sur GitHub (icône crayon → *Commit changes*) ou chez vous, puis :
+   ```bash
+   cd ~/Downloads/manager-ia-frontend
+   git add vercel.json && git commit -m "Adresse du serveur" && git push
+   ```
+   C'est ce réglage qui permet au site et au serveur de se comporter comme **un seul site** (indispensable pour que la connexion fonctionne partout, y compris sur iPhone/Safari).
+2. Sur <https://vercel.com/new> : **Import** le dépôt `manager-ia-frontend`.
+3. Vercel détecte **Vite** tout seul (commande `npm run build`, dossier `dist`). Ne changez rien. **Aucune variable n'est obligatoire.** Cliquez **Deploy**.
+4. À la fin, Vercel affiche l'adresse de votre site, par exemple `https://manager-ia-frontend.vercel.app`. **Notez-la.**
+
+---
+
+### Étape 4 : relier le serveur et le site (5 min)
+
+Retournez sur **Render** → votre service → **Environment** et renseignez (sans `/` à la fin) :
+
+| Variable | Valeur | Pourquoi |
+|---|---|---|
+| `SITE_URL` | `https://votre-site.vercel.app` | liens des e-mails (mot de passe oublié…) |
+| `ALLOWED_ORIGINS` | `https://votre-site.vercel.app` | le serveur n'accepte que les requêtes venant de votre site |
+| `API_PUBLIC_URL` | `https://VOTRE-SERVEUR.onrender.com` | liens de médias et adresses de webhook affichées dans l'application |
+| `TRUST_PROXY` | `2` | Vercel puis Render : sans cela, tous les visiteurs auraient la même adresse IP et les protections seraient faussées |
+| `COOKIE_SAMESITE` | `lax` | connexion fiable (cookies « du même site ») |
+
+Enregistrez : Render redéploie automatiquement (1 à 3 minutes).
+
+---
+
+### Étape 5 : vérifier que tout marche (10 min)
+
+1. Ouvrez `https://votre-site.vercel.app/api/health` : `{"ok":true,"db":true}` (cette réponse vient du serveur *à travers* Vercel : le lien fonctionne).
+2. Ouvrez `https://votre-site.vercel.app` : la page de présentation s'affiche.
+3. **Créez un compte** (Inscription), puis créez votre organisation : vous arrivez dans l'espace de travail.
+4. Ouvrez-le **sur votre téléphone** (iPhone et Android si possible) : menu ☰, une page, un formulaire.
+5. **Administration** : `https://VOTRE-SERVEUR.onrender.com/admin` (l'administration est servie par le serveur, pas par Vercel). Identifiant et mot de passe de l'étape 0.
+6. Dans **Sécurité**, activez la **double authentification** de l'administrateur (scannez avec Google Authenticator, Microsoft Authenticator, Authy…) et **notez les 10 codes de secours** hors ligne.
+
+---
+
+### Étape 6 : brancher les services (quand vous êtes prêt)
+
+À faire **dans Render → Environment** (les clés se saisissent là, jamais dans un chat ni dans GitHub) :
+
+| Fonction | Variables | Détail |
+|---|---|---|
+| **IA (Anthropic)** | `ANTHROPIC_API_KEY` | l'assistant et les propositions de l'IA ; le coût dépend de l'usage |
+| **E-mails** (code d'inscription, mot de passe oublié) | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | avec Gmail : mot de passe d'application (voir la section 5 du README du dépôt `manager-ia-backend`) ; active la vérification de l'e-mail à l'inscription |
+| **Paiement manuel / Mobile Money** | `MTN_NUMBER`, `ORANGE_NUMBER`, `PAYMENT_HOLDER_NAME` | les numéros affichés aux clients |
+| **Paiement automatique** | `CAMPAY_USERNAME`, `CAMPAY_PASSWORD` | voir la section 6 du README du dépôt `manager-ia-backend` |
+| **Notifications administrateur** | `ADMIN_EMAIL`, `WHATSAPP_PHONE_ID`, `WHATSAPP_TOKEN`, `WHATSAPP_TEMPLATE` | voir la section 5 du README du dépôt `manager-ia-backend` |
+| **WhatsApp, Messenger, Instagram** | `META_APP_SECRET`, `META_VERIFY_TOKEN` | voir la section 7 du README du dépôt `manager-ia-backend` |
+
+**Adresses de webhook** (à coller chez Meta / Campay) : elles pointent vers **Render**, pas vers Vercel. Exemples : `https://VOTRE-SERVEUR.onrender.com/webhooks/whatsapp` et `https://VOTRE-SERVEUR.onrender.com/webhooks/meta`. Pour le WhatsApp **de chaque organisation**, l'adresse exacte s'affiche dans l'application (sous-application *Assistant commercial* → *Canaux*), à condition que `API_PUBLIC_URL` soit réglée.
+
+---
+
+### Étape 7 : votre propre nom de domaine (facultatif)
+
+1. Achetez un domaine (chez le registrar de votre choix).
+2. **Vercel** → votre projet → **Settings → Domains** → ajoutez `votre-domaine.com` et suivez les enregistrements DNS indiqués (le certificat HTTPS est automatique).
+3. Sur **Render**, remplacez `SITE_URL` et `ALLOWED_ORIGINS` par `https://votre-domaine.com` (et `https://www.votre-domaine.com` si vous l'utilisez, séparés par une virgule).
+4. Sur **Render** → **Settings → Custom Domains**, vous pouvez aussi donner un domaine au serveur (ex. `api.votre-domaine.com`) : mettez-le dans `API_PUBLIC_URL` et dans `vercel.json`.
+
+---
+
+### Étape 8 : mises à jour, sauvegardes, surveillance
+
+- **Mettre à jour le site ou le serveur** : poussez le code sur la branche principale de GitHub (`git push`) ; Render et Vercel redéploient tout seuls. Les tables de la base se mettent à jour automatiquement au démarrage (migrations numérotées).
+- **Revenir en arrière** : Render → *Events/Deploys* → *Rollback* ; Vercel → *Deployments* → *Promote to Production* sur une version précédente.
+- **Sauvegardes** : Neon garde un historique restaurable (*Restore* : revenir à un instant précis) et permet de créer une **branche** (copie instantanée) avant une grosse modification. En plus, `npm run backup` écrit une copie compressée de toutes les tables dans `data/backups/` : programmez-la chaque nuit si vous avez un ordinateur toujours allumé, et copiez le dossier **ailleurs**.
+- **Surveillance** : Render → *Logs*. Dans l'administration, l'écran **Sécurité** montre le journal d'audit, les adresses bloquées et l'état de la configuration (`npm run security:check` donne le même contrôle en ligne de commande).
+
+---
+
+### Dépannage
+
+| Symptôme | Cause probable | Que faire |
+|---|---|---|
+| Le serveur ne démarre pas, journal : « DATABASE_URL manquant » | variable absente ou mal collée | Render → Environment : recollez l'adresse **Pooled** de Neon (commence par `postgresql://`) |
+| « Origine non autorisée » à l'inscription ou à la connexion | `ALLOWED_ORIGINS` ne contient pas l'adresse exacte du site | mettez l'adresse Vercel **sans** `/` à la fin (et avec `https://`) |
+| La connexion ne « tient » pas (déconnecté tout de suite) | `vercel.json` ne renvoie pas `/api` vers Render, ou `COOKIE_SAMESITE`/`TRUST_PROXY` mal réglés | vérifiez l'adresse dans `vercel.json`, puis `COOKIE_SAMESITE=lax` et `TRUST_PROXY=2` |
+| Premier chargement très lent (30–60 s) | serveur Render gratuit endormi, ou base Neon en veille | normal sur l'offre gratuite ; prenez l'offre payante pour un serveur toujours réveillé |
+| `/api/health` répond `db:false` | base inaccessible | vérifiez les adresses Neon (pooled), que le projet n'est pas suspendu, et la région |
+| Page blanche ou 404 en ouvrant directement `/app/…` | le site n'a pas été déployé depuis le bon dépôt | le fichier `vercel.json` (redirections) doit être à la racine du dépôt déployé |
+| Message « Trop de requêtes » (429) | limite de débit atteinte (ou adresse bloquée) | attendez quelques minutes ; administration → Sécurité → *Adresses bloquées* pour débloquer |
+| Les e-mails n'arrivent pas | SMTP non configuré | renseignez les variables `SMTP_*` (section 5 du README du backend) ; l'inscription fonctionne sans e-mail, mais sans vérification |
+| Les messages WhatsApp n'arrivent pas | adresse de webhook ou jeton incorrects, ou serveur endormi | vérifiez l'adresse (Render, pas Vercel), `META_APP_SECRET`, et prenez un serveur toujours réveillé |
+
+---
+
+### Check-list finale
+
+- [ ] Les deux dépôts sont fusionnés dans la branche principale
+- [ ] Neon : projet créé, deux adresses (pooled et directe) notées en lieu sûr
+- [ ] Render : service **Live**, `/api/health` répond `{"ok":true,"db":true}`
+- [ ] Vercel : site déployé, `vercel.json` pointe vers l'adresse Render
+- [ ] Render : `SITE_URL`, `ALLOWED_ORIGINS`, `API_PUBLIC_URL`, `TRUST_PROXY=2`, `COOKIE_SAMESITE=lax` réglés
+- [ ] Inscription, création d'organisation et connexion testées, sur ordinateur **et** téléphone
+- [ ] Administration : double authentification activée, codes de secours notés
+- [ ] `npm run security:check` : aucun point « dangereux »
+- [ ] Les jetons GitHub utilisés pour pousser le code sont supprimés
+- [ ] Un essai réel de chaque service branché (IA, e-mail, WhatsApp, paiement) a été fait
+
+---
+
+### Annexe : essayer sur votre ordinateur (sans rien mettre en ligne)
+
+```bash
+# 1) Le serveur (dossier manager-ia-backend) : il a besoin d'une base PostgreSQL (un projet Neon gratuit suffit pour les essais)
+cd manager-ia-backend
+npm run setup                 # crée .env avec des secrets aléatoires et affiche le mot de passe administrateur
+# ouvrez .env et collez DATABASE_URL (adresse Neon), puis :
+npm install
+npm start                     # http://localhost:3000   (si le port 3000 est pris : PORT=3100 dans .env)
+
+# 2) Le site (autre terminal, dossier manager-ia-frontend)
+cd manager-ia-frontend
+npm install
+cp .env.example .env          # DEV_API_TARGET = adresse du serveur local
+npm run dev                   # http://localhost:5173
+```
+
+Vite renvoie les appels `/api` vers le serveur local : le navigateur ne voit qu'un seul site, la connexion fonctionne sans réglage. Les tests automatiques (`npm test` dans le backend) démarrent leur propre base PostgreSQL jetable : rien à installer.
 
 ---
 
@@ -57,8 +218,9 @@ Il fonctionne avec **Node.js 20 ou plus** et une base de données **PostgreSQL**
    npm install
    cp .env.example .env        # sous Windows : copy .env.example .env
    ```
-3. Ouvrez le fichier `.env` avec un éditeur de texte et remplissez au minimum :
+3. Ouvrez le fichier `.env` avec un éditeur de texte et remplissez au minimum (ou lancez `npm run setup`, qui crée `.env` avec des secrets aléatoires) :
    ```
+   DATABASE_URL=l'adresse PostgreSQL de votre projet Neon (voir le guide ci-dessus, étape 1)
    ADMIN_USERNAME=votre_identifiant
    ADMIN_PASSWORD=un_mot_de_passe_long_et_unique
    ```
@@ -67,7 +229,7 @@ Il fonctionne avec **Node.js 20 ou plus** et une base de données **PostgreSQL**
    ```bash
    npm start
    ```
-5. Ouvrez <http://localhost:3000/api/health> : vous devez voir `{"ok":true}`. La page d'administration est sur <http://localhost:3000/admin>.
+5. Ouvrez <http://localhost:3000/api/health> : vous devez voir `{"ok":true,"db":true}`. La page d'administration est sur <http://localhost:3000/admin>.
 
 Sans aucune clé externe, le serveur démarre quand même : les notifications s'affichent dans le terminal, les paiements sont en mode manuel et l'assistant IA répond « indisponible » (le site a un plan B).
 
@@ -80,12 +242,9 @@ Sans aucune clé externe, le serveur démarre quand même : les notifications s'
 
 ## 2. Brancher le frontend
 
-**Cas simple (recommandé) : même adresse.** Copiez les fichiers de votre site (le `index.html` et ses fichiers) dans le dossier `public/`. Le serveur les affiche à la racine (`/`), et l'API est sur `/api/...`. Rien d'autre à régler : les cookies de connexion fonctionnent directement.
+Le site est une application React (dépôt `manager-ia-frontend`, hébergée sur Vercel). Il appelle le serveur par des adresses `/api/...` **sur son propre domaine** ; c'est le fichier `vercel.json` du site qui transmet ces appels à ce serveur (cookies « du même site », donc fiables partout, y compris sur iPhone). Réglages côté serveur : `SITE_URL` et `ALLOWED_ORIGINS` = adresse du site, `API_PUBLIC_URL` = adresse de ce serveur, `COOKIE_SAMESITE=lax`, `TRUST_PROXY=2`. Tout est expliqué pas à pas dans le **guide complet** en haut de ce fichier.
 
-**Frontend sur un autre domaine** (par exemple le site sur `https://manager-ia.com` et le serveur sur `https://api.manager-ia.com`) :
-1. Dans les variables : `ALLOWED_ORIGINS=https://manager-ia.com,https://www.manager-ia.com`
-2. `COOKIE_SAMESITE=none` et `COOKIE_SECURE=true` (le HTTPS est obligatoire).
-3. Côté frontend, chaque appel doit envoyer les cookies : `fetch(url, { credentials: "include", ... })`.
+Variante (non recommandée, cookies tiers bloqués par Safari) : le site appelle directement le serveur (`VITE_API_BASE` côté site, `COOKIE_SAMESITE=none` et `COOKIE_SECURE=true` côté serveur).
 
 Le serveur renvoie toujours les erreurs sous la forme `{"error":"message en français"}`.
 
@@ -172,44 +331,9 @@ Tout est regroupé dans `src/security/` (un seul endroit, une seule logique) et 
 
 Dès que l'envoi d'e-mails est configuré (`SMTP_HOST`…), l'inscription demande une vérification : le visiteur reçoit un code à 6 chiffres **valable 1 minute** (5 essais maximum par code, 5 codes par heure et par adresse, renvoi possible après 20 s). Le compte n'est créé qu'après la saisie du bon code, puis la personne arrive directement dans son espace. Un téléphone seul n'est alors plus accepté à l'inscription (il n'y a pas d'envoi de SMS). Variable `SIGNUP_VERIFY` : `auto` (par défaut), `on` ou `off` (pour des essais en local sans e-mail). Test : `npm run smoke:signup`.
 
-## 4. Mise en ligne, pas à pas
+## 4. Mise en ligne : autres hébergeurs
 
-Dans tous les cas, définissez au minimum : `NODE_ENV=production`, `JWT_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, et vos numéros de paiement (`MTN_NUMBER`, `ORANGE_NUMBER`, `PAYMENT_HOLDER_NAME`).
-
-Générer un `JWT_SECRET` :
-```bash
-node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
-```
-
-### Étape 1 : la base PostgreSQL sur Neon
-
-1. Créez un compte gratuit sur <https://neon.tech> (vous le faites vous-même) puis *New Project*. Choisissez la région la plus proche de vos clients et de votre serveur (ex. *AWS Europe (Frankfurt)*).
-2. Sur le tableau de bord du projet, bouton **Connect** : copiez deux adresses.
-   - **Pooled connection** (contient `-pooler`) → variable `DATABASE_URL`.
-   - **Direct connection** (sans `-pooler`) → variable `DATABASE_URL_UNPOOLED` (utilisée seulement pour créer/mettre à jour les tables).
-3. Ne les envoyez à personne et ne les mettez jamais dans le dépôt GitHub : elles contiennent le mot de passe de la base.
-4. Au premier démarrage, le serveur crée **toutes les tables tout seul** (migrations numérotées, table `schema_migrations`). Rien d'autre à faire.
-5. Pour vérifier depuis votre machine : mettez les adresses dans `.env`, puis `npm run db:check`.
-
-Neon met la base en veille après quelques minutes sans activité (offre gratuite) : le premier message après une pause peut prendre 1 à 3 secondes de plus. Le serveur réessaie automatiquement la connexion pendant ce réveil.
-
-**Vous avez déjà des données dans l'ancienne base SQLite ?** Une seule fois, sur une base Neon vide :
-```bash
-npm i --no-save better-sqlite3
-npm run db:import-sqlite -- chemin/vers/manager-ia.db
-```
-L'ancien fichier n'est jamais modifié.
-
-### Étape 2 : Option A — Render (recommandé)
-
-Le fichier `render.yaml` décrit tout le service. Deux façons :
-
-- **Blueprint (le plus rapide)** : <https://render.com> → *New* → *Blueprint* → choisissez ce dépôt GitHub **privé**. Render vous demande les valeurs « secrètes » (`DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `ADMIN_PASSWORD`, `ANTHROPIC_API_KEY`…) : saisissez-les vous-même dans son tableau de bord.
-- **À la main** : *New* → *Web Service* → votre dépôt ; *Runtime* = Node ; *Build Command* = `npm ci --omit=dev --omit=optional` ; *Start Command* = `node src/server.js` ; *Health Check Path* = `/api/health` ; puis ajoutez les variables de la section 3.
-
-Variables à régler pour un frontend sur **Vercel** : `SITE_URL` et `ALLOWED_ORIGINS` = l'adresse Vercel du frontend ; `API_PUBLIC_URL` = l'adresse Render de ce serveur ; `COOKIE_SAMESITE=lax` si Vercel redirige `/api` vers Render (fichier `vercel.json` du frontend, **recommandé** : les cookies restent « du même site », ce qui marche aussi sur Safari/iPhone), sinon `none`.
-
-Aucun disque n'est nécessaire : tout est dans Neon. Testez `https://votre-service.onrender.com/api/health` (doit répondre `{"ok":true,"db":true}`). Les adresses de webhook (WhatsApp, Messenger, Campay) pointent vers l'adresse Render.
+La méthode recommandée (Neon + Render + Vercel) est le **guide complet** en haut de ce fichier. Les variantes ci-dessous sont pour d'autres hébergeurs : dans tous les cas, définissez au minimum `NODE_ENV=production`, `DATABASE_URL` (PostgreSQL, par exemple Neon), `JWT_SECRET`, `DATA_KEY`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, et vos numéros de paiement (`MTN_NUMBER`, `ORANGE_NUMBER`, `PAYMENT_HOLDER_NAME`).
 
 ### Option B : Railway
 
