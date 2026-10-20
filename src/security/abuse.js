@@ -4,6 +4,7 @@
 // Les adresses locales et privées ne sont jamais bloquées automatiquement (développement, réseau interne), sauf SECURITY_BAN_PRIVATE=1.
 const { db, nowISO } = require('../db');
 const { log } = require('../util');
+const config = require('../config');
 const audit = require('./audit');
 
 const WINDOW_MS = 15 * 60 * 1000;
@@ -18,6 +19,17 @@ const isPrivate = (ip) => {
 };
 const cleanIp = (ip) => String(ip || '').replace(/^::ffff:/, '').slice(0, 64);
 
+// Si le serveur est derrière plus de relais que TRUST_PROXY ne le dit (ex. Vercel puis Render : il faut 2), « req.ip » serait l'adresse du relais
+// et TOUS les visiteurs auraient la même : on ne bloque alors rien automatiquement (un seul abus bloquerait tout le monde) et on prévient.
+let proxyDoubt = false;
+function checkProxy(req) {
+  const hops = Number(config.trustProxy);
+  if (!Number.isFinite(hops) || hops < 1) return;
+  const n = String(req.headers['x-forwarded-for'] || '').split(',').filter((x) => x.trim()).length;
+  if (n > hops && !proxyDoubt) { proxyDoubt = true; log.warn(`Sécurité : ${n} relais devant le serveur mais TRUST_PROXY=${hops} : les adresses IP ne sont pas fiables, le blocage automatique est suspendu. Réglez TRUST_PROXY=${n} (Vercel + Render : 2).`); }
+}
+const proxyUncertain = () => proxyDoubt;
+
 let blocked = new Map(); // ip -> { until: ms | Infinity, reason }
 let loadedAt = 0;
 async function refresh() {
@@ -29,6 +41,7 @@ async function refresh() {
 /** Premier rempart : toute requête d'une adresse bloquée est refusée avant tout le reste (sauf /api/health). */
 async function guard(req, res, next) {
   if (req.path === '/api/health') return next();
+  checkProxy(req);
   if (Date.now() - loadedAt > 10000) { try { await refresh(); } catch (e) { log.warn('Blocage IP : liste illisible'); loadedAt = Date.now(); } }
   const b = blocked.get(cleanIp(req.ip));
   if (b && b.until > Date.now()) {
@@ -63,7 +76,7 @@ async function strike(req, kind, weight) {
   try {
     const ip = cleanIp(req && req.ip);
     const w = weight || WEIGHTS[kind] || 1;
-    if (!ip || (isPrivate(ip) && process.env.SECURITY_BAN_PRIVATE !== '1')) return;
+    if (!ip || proxyDoubt || (isPrivate(ip) && process.env.SECURITY_BAN_PRIVATE !== '1')) return;
     const cut = new Date(Date.now() - WINDOW_MS).toISOString();
     const r = await db.prepare('INSERT INTO ip_strikes (ip, score, window_start) VALUES (?, ?, ?) ON CONFLICT (ip) DO UPDATE SET score = CASE WHEN ip_strikes.window_start < ? THEN excluded.score ELSE ip_strikes.score + excluded.score END, window_start = CASE WHEN ip_strikes.window_start < ? THEN excluded.window_start ELSE ip_strikes.window_start END RETURNING score')
       .get(ip, w, nowISO(), cut, cut);
@@ -83,4 +96,4 @@ async function sweep() {
   await db.prepare('DELETE FROM rate_hits WHERE reset_at < ?').run(Date.now() - 60000);
 }
 
-module.exports = { guard, strike, block, unblock, list, refresh, sweep, isPrivate, WEIGHTS, THRESHOLD };
+module.exports = { proxyUncertain, guard, strike, block, unblock, list, refresh, sweep, isPrivate, WEIGHTS, THRESHOLD };

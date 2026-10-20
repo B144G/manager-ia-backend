@@ -15,8 +15,8 @@ services:
         value: 20
       - key: NODE_ENV
         value: production
-      - key: TRUST_PROXY
-        value: "1"
+      - key: TRUST_PROXY            # 2 = Vercel (redirection /api) puis Render. Sans Vercel devant (appel direct de Render) : 1.
+        value: "2"
       - key: DATABASE_URL            # Neon : adresse « Pooled connection »
         sync: false
       - key: DATABASE_URL_UNPOOLED   # Neon : adresse « Direct connection » (migrations)

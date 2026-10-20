@@ -101,7 +101,7 @@ Elles sont toutes décrites et commentées dans `.env.example`. Résumé :
 | `JWT_SECRET` | secret qui protège les connexions | **oui en production** (le serveur refuse de démarrer sans) |
 | `ADMIN_USERNAME`, `ADMIN_PASSWORD` | accès à `/admin` | oui pour utiliser l'admin |
 | `ALLOWED_ORIGINS`, `COOKIE_SAMESITE`, `COOKIE_SECURE` | frontend sur un autre domaine | seulement dans ce cas |
-| `TRUST_PROXY` | `1` derrière Render/Railway/nginx (automatique en production) | non |
+| `TRUST_PROXY` | nombre de relais devant le serveur : `1` derrière Render/Railway/nginx seul, **`2` avec Vercel (redirection `/api`) puis Render**. Trop bas, tous les visiteurs auraient la même adresse IP (limites et blocages faussés) : le serveur le détecte et suspend alors le blocage automatique | **oui derrière Vercel** |
 | `DATABASE_URL` | adresse PostgreSQL (Neon, « Pooled connection ») | **oui** |
 | `DATABASE_URL_UNPOOLED` | adresse directe Neon, pour les migrations | non |
 | `ADMIN_EMAIL`, `ADMIN_WHATSAPP` | où vous recevez les notifications | non (valeurs par défaut) |

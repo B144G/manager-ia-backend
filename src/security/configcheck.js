@@ -19,6 +19,8 @@ async function run() {
   add('env', prod ? 'ok' : 'warn', 'Mode production', prod ? 'NODE_ENV=production.' : 'NODE_ENV n\'est pas « production » : normal en développement, jamais en ligne.');
   add('cookie', config.cookie.secure ? 'ok' : (prod ? 'bad' : 'warn'), 'Cookies de connexion', config.cookie.secure ? `Marqués Secure, SameSite=${config.cookie.sameSite}.` : 'Non marqués Secure : en ligne, ils pourraient circuler en clair.');
   add('proxy', !prod || (config.trustProxy && config.trustProxy !== '0') ? 'ok' : 'warn', 'Adresse IP réelle des visiteurs (TRUST_PROXY)', !prod || (config.trustProxy && config.trustProxy !== '0') ? 'Réglé : les blocages et limites utilisent la vraie adresse.' : 'Non réglé derrière Render/Vercel : toutes les requêtes auraient la même adresse.');
+  const doubt = require('./abuse').proxyUncertain();
+  if (doubt) add('proxy-hops', 'bad', 'Relais devant le serveur (TRUST_PROXY)', 'Plus de relais que TRUST_PROXY : tous les visiteurs auraient la même adresse. Avec Vercel puis Render, réglez TRUST_PROXY=2.');
   const origins = config.allowedOrigins || [];
   add('origins', origins.some((o) => o === '*') ? 'bad' : (prod && !origins.length ? 'warn' : 'ok'), 'Sites autorisés (ALLOWED_ORIGINS)',
     origins.some((o) => o === '*') ? 'Joker « * » : tout site pourrait appeler l\'API.' : origins.length ? `${origins.length} adresse(s) autorisée(s).` : 'Aucune : seules les requêtes du même domaine sont acceptées (correct avec la redirection /api de Vercel).');
