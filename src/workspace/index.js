@@ -235,6 +235,7 @@ orgRouter.use('/sales-mine', require('./sales').mine);
 orgRouter.use('/hr', require('./hr'));
 orgRouter.use('/accounting', require('./accounting'));
 orgRouter.use('/integrations', require('./integrations'));
+for (const id of ['payroll', 'fiscal', 'marketing', 'logistics', 'production', 'construction', 'maintenance', 'legal', 'memory', 'agents']) orgRouter.use('/' + id, require('./' + id));
 orgRouter.use('/structure', require('./structure'));
 orgRouter.use('/ai', require('./ai').router);
 

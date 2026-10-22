@@ -811,6 +811,18 @@ const MIGRATIONS = [
   );
   INSERT INTO admin_2fa (id) VALUES (1);
   `,
+  /* SLOT finance : migration réservée */ `
+  SELECT 1;
+  `,
+  /* SLOT commerce : migration réservée */ `
+  SELECT 1;
+  `,
+  /* SLOT ops : migration réservée */ `
+  SELECT 1;
+  `,
+  /* SLOT intelligence : migration réservée */ `
+  SELECT 1;
+  `,
 ];
 
 

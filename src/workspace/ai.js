@@ -134,7 +134,12 @@ async function ctxHr(req) {
     '\nDemandes de congé à traiter :\n' + (pending.map((l) => `- ${oneLine(l.name, 60)} du ${l.start} au ${l.end}`).join('\n') || '(aucune)');
 }
 
-const BUILDERS = { sales: ctxSales, stock: ctxStock, crm: ctxCrm, hr: ctxHr, alerts: ctxAlerts, support: ctxSupport, projects: ctxProjects, budget: ctxBudget, structure: ctxStructure, processes: ctxProcesses, team: ctxTeam };
+// Modules ajoutés par fichier : chacun exporte ctx(req) (données pour l'IA), prompt (consignes) et min (rôle minimal).
+const EXT = ['payroll', 'fiscal', 'marketing', 'logistics', 'production', 'construction', 'maintenance', 'legal', 'memory'];
+const ext = (id) => async (req) => { const m = require('./' + id); return m.ctx ? await m.ctx(req) : ''; };
+for (const id of EXT) { const m = require('./' + id); if (m.min) MODULE_MIN[id] = m.min; }
+const extPrompt = (id) => (EXT.includes(id) ? require('./' + id).prompt || '' : '');
+const BUILDERS = { ...Object.fromEntries(EXT.map((id) => [id, ext(id)])), sales: ctxSales, stock: ctxStock, crm: ctxCrm, hr: ctxHr, alerts: ctxAlerts, support: ctxSupport, projects: ctxProjects, budget: ctxBudget, structure: ctxStructure, processes: ctxProcesses, team: ctxTeam };
 
 async function buildData(req, module) {
   const parts = [await ctxOrg(req)];
@@ -148,7 +153,7 @@ async function buildData(req, module) {
 async function buildParts(req, module, extra) {
   const k = knowledge.load('workspace', module);
   return {
-    stable: [P.BASE, P.MODULE[module] || '', extra || '', k ? `Connaissances de référence (fournies par MANAGER-IA) :\n${k}` : ''].filter(Boolean).join('\n\n'),
+    stable: [P.BASE, P.MODULE[module] || extPrompt(module), extra || '', k ? `Connaissances de référence (fournies par MANAGER-IA) :\n${k}` : ''].filter(Boolean).join('\n\n'),
     system: `<donnees>\n${await buildData(req, module)}\n</donnees>`,
   };
 }
