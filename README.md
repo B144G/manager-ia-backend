@@ -651,6 +651,24 @@ Déposez simplement des fichiers `.md` dans ces dossiers : ils sont lus automati
 
 ---
 
+## 8 ter. Les modules ERP (paie, fiscalité, marketing, logistique, production, chantiers, maintenance, juridique, mémoire, agents)
+
+Tous sont dans l'espace de travail (`/app`), réservés selon le rôle (voir `src/workspace/modules.js`). Chaque module a ses tables (préfixées), ses routes sous `/api/ws/orgs/:orgId/<module>`, un test (`npm run test:finance`, `test:commerce`, `test:ops`, `test:intelligence`) et fournit à l'IA ses données (`ctx`) filtrées par rôle.
+
+| Module | Rôle minimal | Ce qu'il fait | Limites à connaître |
+|---|---|---|---|
+| Paie | administrateur | Bulletins mensuels (brouillon, validé, payé), retenues et charges **paramétrables**, bulletin imprimable, export CSV, écriture au budget | Les taux fournis sont des **exemples** : confirmez-les auprès de votre administration. Pas d'écriture comptable automatique. |
+| Fiscalité et liasse | administrateur | Bilan, compte de résultat, soldes de gestion, contrôles de cohérence, TVA estimée, calendrier des déclarations paramétrable | Document de travail à **faire valider par un expert-comptable** : ce n'est pas une liasse officielle. Les reports d'exercices précédents ne sont pas ajoutés automatiquement. |
+| Marketing | membre | Campagnes liées aux conversations et commandes de l'assistant commercial, coût par prospect, calendrier de contenu, offres | L'aide à la rédaction est un conseil de l'IA, rien n'est publié automatiquement. |
+| Logistique | membre | Livraisons (statuts, historique, preuve), transporteurs, zones, tournées, lien WhatsApp « prévenir le client » | Le lien ouvre WhatsApp avec un message prérempli : aucun envoi automatique. |
+| Production | membre | Nomenclatures, coût de revient, ordres de fabrication (matières sorties et produit fini entré en stock, en une transaction) | Une seule nomenclature par produit. |
+| Maintenance | membre | Équipements, plans préventifs, interventions, pièces prélevées du stock, indicateurs d'arrêt | — |
+| Chantiers (BTP) | membre | Chantiers, phases, dépenses et budget, pointages, rapports, incidents, situations de travaux | Pas de photos, un seul budget par chantier. |
+| Juridique et conformité | responsable | Contrats et alertes de fin, obligations, litiges, registre des données personnelles, modèles de documents | Aide-mémoire et modèles **à faire relire par un professionnel du droit**. |
+| Mémoire de l'entreprise | membre | Décisions, incidents, procédures, recherche, question en langage naturel (réponse tirée uniquement des notes, avec sources) | Non filtrée par antenne. |
+| Agents spécialisés | membre | Une équipe d'agents par domaine et un mode « réunion » avec synthèse (4 messages IA au plus par question) | Les agents ne modifient jamais les données. |
+| Résumé WhatsApp | responsable | Résumé du matin et alertes urgentes, avec consentement, désabonnement et journal des envois | **Contrainte Meta** : un message libre n'est livré que si la personne a écrit au numéro de l'entreprise dans les 24 dernières heures. Sinon l'envoi bascule sur l'e-mail, ou utilise un modèle de message approuvé si vous renseignez son nom. |
+
 ## 9. Sauvegarde de la base de données
 
 Vos données sont dans PostgreSQL (Neon). Trois niveaux de protection :

@@ -812,16 +812,552 @@ const MIGRATIONS = [
   INSERT INTO admin_2fa (id) VALUES (1);
   `,
   /* SLOT finance : migration réservée */ `
-  SELECT 1;
+  CREATE TABLE payroll_settings (
+    org_id BIGINT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    rules TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE payroll_slips (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    employee_id BIGINT NOT NULL,
+    employee_name TEXT NOT NULL,
+    job TEXT NOT NULL DEFAULT '',
+    month TEXT NOT NULL,
+    base BIGINT NOT NULL DEFAULT 0,
+    bonuses BIGINT NOT NULL DEFAULT 0,
+    overtime BIGINT NOT NULL DEFAULT 0,
+    advances BIGINT NOT NULL DEFAULT 0,
+    other_deductions BIGINT NOT NULL DEFAULT 0,
+    gross BIGINT NOT NULL DEFAULT 0,
+    employee_deductions BIGINT NOT NULL DEFAULT 0,
+    employer_charges BIGINT NOT NULL DEFAULT 0,
+    net BIGINT NOT NULL DEFAULT 0,
+    employer_cost BIGINT NOT NULL DEFAULT 0,
+    lines TEXT NOT NULL DEFAULT '[]',
+    note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'draft',
+    validated_at TEXT,
+    validated_by BIGINT,
+    paid_date TEXT,
+    pay_method TEXT NOT NULL DEFAULT '',
+    budget_entry_id BIGINT,
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, employee_id, month)
+  );
+  CREATE INDEX idx_payroll_slips_month ON payroll_slips(org_id, month);
+  CREATE TABLE fiscal_obligations (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'other',
+    period TEXT NOT NULL DEFAULT '',
+    due_date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'todo',
+    amount BIGINT NOT NULL DEFAULT 0,
+    reference TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    recurrence TEXT NOT NULL DEFAULT 'none',
+    done_date TEXT,
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_fiscal_obligations_due ON fiscal_obligations(org_id, due_date);
   `,
   /* SLOT commerce : migration réservée */ `
-  SELECT 1;
+  CREATE TABLE marketing_campaigns (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    channel TEXT NOT NULL DEFAULT 'other',
+    objective TEXT NOT NULL DEFAULT '',
+    budget BIGINT NOT NULL DEFAULT 0,
+    start_date TEXT,
+    end_date TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    code TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_mkt_campaigns_org ON marketing_campaigns(org_id, status);
+  CREATE TABLE marketing_expenses (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    campaign_id BIGINT NOT NULL REFERENCES marketing_campaigns(id) ON DELETE CASCADE,
+    label TEXT NOT NULL DEFAULT '',
+    amount BIGINT NOT NULL,
+    date TEXT NOT NULL,
+    budget_entry_id BIGINT,
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_mkt_expenses_org ON marketing_expenses(org_id, date);
+  CREATE TABLE marketing_posts (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    campaign_id BIGINT REFERENCES marketing_campaigns(id) ON DELETE SET NULL,
+    date TEXT NOT NULL,
+    channel TEXT NOT NULL DEFAULT 'other',
+    text TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'idea',
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_mkt_posts_org ON marketing_posts(org_id, date);
+  CREATE TABLE marketing_offers (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'percent',
+    value BIGINT NOT NULL DEFAULT 0,
+    start_date TEXT,
+    end_date TEXT,
+    description TEXT NOT NULL DEFAULT '',
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_mkt_offers_org ON marketing_offers(org_id);
+
+  CREATE TABLE logistics_carriers (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    contact TEXT NOT NULL DEFAULT '',
+    zones TEXT NOT NULL DEFAULT '',
+    rate BIGINT NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    active BIGINT NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_log_carriers_org ON logistics_carriers(org_id);
+  CREATE TABLE logistics_zones (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    fee BIGINT NOT NULL DEFAULT 0,
+    delay_days BIGINT NOT NULL DEFAULT 1,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_log_zones_org ON logistics_zones(org_id);
+  CREATE TABLE logistics_rounds (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    date TEXT NOT NULL,
+    carrier_id BIGINT REFERENCES logistics_carriers(id) ON DELETE SET NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_log_rounds_org ON logistics_rounds(org_id, date);
+  CREATE TABLE logistics_deliveries (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    branch_id BIGINT REFERENCES branches(id) ON DELETE SET NULL,
+    doc_id BIGINT REFERENCES documents(id) ON DELETE SET NULL,
+    customer_name TEXT NOT NULL,
+    phone TEXT NOT NULL DEFAULT '',
+    address TEXT NOT NULL DEFAULT '',
+    zone_id BIGINT REFERENCES logistics_zones(id) ON DELETE SET NULL,
+    carrier_id BIGINT REFERENCES logistics_carriers(id) ON DELETE SET NULL,
+    round_id BIGINT REFERENCES logistics_rounds(id) ON DELETE SET NULL,
+    round_pos BIGINT NOT NULL DEFAULT 0,
+    fee BIGINT NOT NULL DEFAULT 0,
+    planned_date TEXT,
+    status TEXT NOT NULL DEFAULT 'to_prepare',
+    tracking TEXT NOT NULL DEFAULT '',
+    received_by TEXT NOT NULL DEFAULT '',
+    proof TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_log_deliveries_org ON logistics_deliveries(org_id, status, planned_date);
+  CREATE INDEX idx_log_deliveries_round ON logistics_deliveries(round_id);
+  CREATE TABLE logistics_events (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    delivery_id BIGINT NOT NULL REFERENCES logistics_deliveries(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    user_id BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_log_events_delivery ON logistics_events(delivery_id, id);
+
+  CREATE TABLE legal_contracts (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    type TEXT NOT NULL DEFAULT 'other',
+    title TEXT NOT NULL,
+    parties TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    amount BIGINT NOT NULL DEFAULT 0,
+    start_date TEXT,
+    end_date TEXT,
+    tacit BIGINT NOT NULL DEFAULT 0,
+    notice_days BIGINT NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    doc_ref TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_legal_contracts_org ON legal_contracts(org_id, status, end_date);
+  CREATE TABLE legal_obligations (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'other',
+    title TEXT NOT NULL,
+    due_date TEXT,
+    recurrence_months BIGINT NOT NULL DEFAULT 0,
+    responsible_id BIGINT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    proof TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    last_done TEXT,
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_legal_obligations_org ON legal_obligations(org_id, status, due_date);
+  CREATE TABLE legal_disputes (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'dispute',
+    title TEXT NOT NULL,
+    counterparty TEXT NOT NULL DEFAULT '',
+    opened_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    amount BIGINT NOT NULL DEFAULT 0,
+    description TEXT NOT NULL DEFAULT '',
+    next_step TEXT NOT NULL DEFAULT '',
+    next_date TEXT,
+    outcome TEXT NOT NULL DEFAULT '',
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_legal_disputes_org ON legal_disputes(org_id, status);
+  CREATE TABLE legal_privacy (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    data_kind TEXT NOT NULL,
+    people TEXT NOT NULL DEFAULT '',
+    stored_where TEXT NOT NULL DEFAULT '',
+    purpose TEXT NOT NULL DEFAULT '',
+    retention TEXT NOT NULL DEFAULT '',
+    shared_with TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_legal_privacy_org ON legal_privacy(org_id);
   `,
   /* SLOT ops : migration réservée */ `
-  SELECT 1;
+  CREATE TABLE production_boms (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    product_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    labor_cost BIGINT NOT NULL DEFAULT 0,
+    other_cost BIGINT NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE(product_id)
+  );
+  CREATE INDEX idx_production_boms_org ON production_boms(org_id);
+  CREATE TABLE production_bom_lines (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    bom_id BIGINT NOT NULL REFERENCES production_boms(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    quantity DOUBLE PRECISION NOT NULL
+  );
+  CREATE INDEX idx_production_bom_lines_bom ON production_bom_lines(bom_id);
+  CREATE TABLE production_orders (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    seq BIGINT NOT NULL,
+    code TEXT NOT NULL,
+    bom_id BIGINT REFERENCES production_boms(id) ON DELETE SET NULL,
+    product_id BIGINT REFERENCES stock_items(id) ON DELETE SET NULL,
+    product_name TEXT NOT NULL DEFAULT '',
+    quantity DOUBLE PRECISION NOT NULL,
+    due_date TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    produced_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    scrap_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    unit_cost BIGINT NOT NULL DEFAULT 0,
+    total_cost BIGINT NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    launched_at TEXT,
+    closed_at TEXT,
+    UNIQUE(org_id, seq)
+  );
+  CREATE INDEX idx_production_orders_org ON production_orders(org_id, status);
+
+  CREATE TABLE maintenance_equipment (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    branch_id BIGINT REFERENCES branches(id) ON DELETE SET NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'machine',
+    reference TEXT NOT NULL DEFAULT '',
+    location TEXT NOT NULL DEFAULT '',
+    purchased_at TEXT,
+    value BIGINT NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'running',
+    meter DOUBLE PRECISION NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_maintenance_equipment_org ON maintenance_equipment(org_id);
+  CREATE TABLE maintenance_plans (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    equipment_id BIGINT NOT NULL REFERENCES maintenance_equipment(id) ON DELETE CASCADE,
+    task TEXT NOT NULL,
+    period_kind TEXT NOT NULL DEFAULT 'days',
+    period_value DOUBLE PRECISION NOT NULL,
+    last_done_at TEXT,
+    last_meter DOUBLE PRECISION NOT NULL DEFAULT 0,
+    next_due_at TEXT,
+    next_meter DOUBLE PRECISION,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_maintenance_plans_eq ON maintenance_plans(equipment_id);
+  CREATE TABLE maintenance_orders (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    seq BIGINT NOT NULL,
+    code TEXT NOT NULL,
+    equipment_id BIGINT NOT NULL REFERENCES maintenance_equipment(id) ON DELETE CASCADE,
+    plan_id BIGINT REFERENCES maintenance_plans(id) ON DELETE SET NULL,
+    kind TEXT NOT NULL DEFAULT 'corrective',
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    priority TEXT NOT NULL DEFAULT 'normal',
+    assignee_id BIGINT,
+    contractor TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    opened_at TEXT NOT NULL,
+    started_at TEXT,
+    closed_at TEXT,
+    downtime_hours DOUBLE PRECISION NOT NULL DEFAULT 0,
+    labor_cost BIGINT NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    UNIQUE(org_id, seq)
+  );
+  CREATE INDEX idx_maintenance_orders_org ON maintenance_orders(org_id, status);
+  CREATE INDEX idx_maintenance_orders_eq ON maintenance_orders(equipment_id);
+  CREATE TABLE maintenance_parts (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    order_id BIGINT NOT NULL REFERENCES maintenance_orders(id) ON DELETE CASCADE,
+    item_id BIGINT REFERENCES stock_items(id) ON DELETE SET NULL,
+    name TEXT NOT NULL,
+    quantity DOUBLE PRECISION NOT NULL,
+    unit_cost BIGINT NOT NULL DEFAULT 0,
+    from_stock BIGINT NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_maintenance_parts_order ON maintenance_parts(order_id);
+
+  CREATE TABLE construction_sites (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    branch_id BIGINT REFERENCES branches(id) ON DELETE SET NULL,
+    name TEXT NOT NULL,
+    client TEXT NOT NULL DEFAULT '',
+    location TEXT NOT NULL DEFAULT '',
+    foreman_id BIGINT,
+    start_date TEXT,
+    end_date TEXT,
+    budget BIGINT NOT NULL DEFAULT 0,
+    cost_budget BIGINT NOT NULL DEFAULT 0,
+    remaining_estimate BIGINT NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'preparation',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_construction_sites_org ON construction_sites(org_id, status);
+  CREATE TABLE construction_phases (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    site_id BIGINT NOT NULL REFERENCES construction_sites(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    weight DOUBLE PRECISION NOT NULL DEFAULT 1,
+    progress DOUBLE PRECISION NOT NULL DEFAULT 0,
+    planned_start TEXT,
+    planned_end TEXT,
+    actual_start TEXT,
+    actual_end TEXT,
+    notes TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX idx_construction_phases_site ON construction_phases(site_id);
+  CREATE TABLE construction_expenses (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    site_id BIGINT NOT NULL REFERENCES construction_sites(id) ON DELETE CASCADE,
+    category TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    amount BIGINT NOT NULL,
+    date TEXT NOT NULL,
+    budget_entry_id BIGINT,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_construction_expenses_site ON construction_expenses(site_id, date);
+  CREATE TABLE construction_timesheets (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    site_id BIGINT NOT NULL REFERENCES construction_sites(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    worker TEXT NOT NULL DEFAULT '',
+    headcount BIGINT NOT NULL DEFAULT 1,
+    hours DOUBLE PRECISION NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_construction_timesheets_site ON construction_timesheets(site_id, date);
+  CREATE TABLE construction_reports (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    site_id BIGINT NOT NULL REFERENCES construction_sites(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    weather TEXT NOT NULL DEFAULT '',
+    work TEXT NOT NULL DEFAULT '',
+    headcount BIGINT NOT NULL DEFAULT 0,
+    incidents TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_construction_reports_site ON construction_reports(site_id, date);
+  CREATE TABLE construction_issues (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    site_id BIGINT NOT NULL REFERENCES construction_sites(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'incident',
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    resolved_at TEXT,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_construction_issues_site ON construction_issues(site_id, status);
+  CREATE TABLE construction_billings (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    site_id BIGINT NOT NULL REFERENCES construction_sites(id) ON DELETE CASCADE,
+    label TEXT NOT NULL,
+    amount BIGINT NOT NULL,
+    billed_at TEXT NOT NULL,
+    due_date TEXT,
+    paid_amount BIGINT NOT NULL DEFAULT 0,
+    paid_at TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_construction_billings_site ON construction_billings(site_id);
   `,
   /* SLOT intelligence : migration réservée */ `
-  SELECT 1;
+  CREATE TABLE memory_entries (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'other',
+    title TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '',
+    event_date TEXT NOT NULL,
+    author_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    link_kind TEXT NOT NULL DEFAULT '',
+    link_id BIGINT,
+    link_label TEXT NOT NULL DEFAULT '',
+    restricted BIGINT NOT NULL DEFAULT 0,
+    search_text TEXT NOT NULL DEFAULT '',
+    version BIGINT NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_memory_org ON memory_entries(org_id, event_date);
+  CREATE INDEX idx_memory_fts ON memory_entries USING GIN (to_tsvector('french', search_text));
+  CREATE TABLE memory_versions (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    entry_id BIGINT NOT NULL REFERENCES memory_entries(id) ON DELETE CASCADE,
+    version BIGINT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    tags TEXT NOT NULL DEFAULT '',
+    edited_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_memory_versions ON memory_versions(entry_id, version);
+  CREATE TABLE agents_config (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    agent_key TEXT NOT NULL,
+    enabled BIGINT NOT NULL DEFAULT 1,
+    extra_prompt TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    UNIQUE (org_id, agent_key)
+  );
+  CREATE TABLE agents_log (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    mode TEXT NOT NULL,
+    question TEXT NOT NULL,
+    result TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_agents_log ON agents_log(org_id, user_id, id);
+  CREATE TABLE digest_settings (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL UNIQUE REFERENCES orgs(id) ON DELETE CASCADE,
+    tz_offset BIGINT NOT NULL DEFAULT 60,
+    urgent_max_day BIGINT NOT NULL DEFAULT 5,
+    handoff_hours BIGINT NOT NULL DEFAULT 4,
+    invoice_late_days BIGINT NOT NULL DEFAULT 30,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE digest_subs (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    phone TEXT NOT NULL DEFAULT '',
+    morning BIGINT NOT NULL DEFAULT 0,
+    urgent BIGINT NOT NULL DEFAULT 0,
+    send_minute BIGINT NOT NULL DEFAULT 480,
+    template_name TEXT NOT NULL DEFAULT '',
+    consent_at TEXT,
+    consent_text TEXT NOT NULL DEFAULT '',
+    unsub_at TEXT,
+    updated_at TEXT NOT NULL,
+    UNIQUE (org_id, user_id)
+  );
+  CREATE TABLE digest_log (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL,
+    batch TEXT NOT NULL DEFAULT '',
+    channel TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    wa_error TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, user_id, kind, dedupe_key)
+  );
+  CREATE INDEX idx_digest_log ON digest_log(org_id, user_id, id);
   `,
 ];
 

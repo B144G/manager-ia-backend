@@ -311,4 +311,20 @@ router.post('/apply', async (req, res) => {
   }
 });
 
-module.exports = { router, buildSystem, buildData, extractJSON };
+// ---------- Pour les agents spécialisés et la mémoire (lecture seule) ----------
+/** Données de plusieurs modules, SANS dépasser le rôle de la personne : renvoie { text, used } (used = modules réellement lus). */
+async function dataFor(req, mods, perModule = 3500) {
+  const parts = [await ctxOrg(req)];
+  const used = [];
+  for (const m of mods) {
+    if (!BUILDERS[m]) continue;
+    if (MODULE_MIN[m] && !A.can(req, MODULE_MIN[m])) continue;
+    parts.push(String(await BUILDERS[m](req) || '').slice(0, perModule));
+    used.push(m);
+  }
+  return { text: parts.join('\n\n'), used };
+}
+/** Compte un message IA dans le quota de l'organisation (sans écrire dans l'historique de discussion). */
+const countUsage = async (req) => { await db.prepare('INSERT INTO ai_usage (org_id, user_id, created_at) VALUES (?, ?, ?)').run(req.org.id, req.user.id, nowISO()); };
+
+module.exports = { router, buildSystem, buildData, extractJSON, dataFor, countUsage, checkQuota, remaining, ask, MODULE_MIN, hasBuilder: (m) => Boolean(BUILDERS[m]) };

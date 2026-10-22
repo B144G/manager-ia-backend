@@ -44,9 +44,18 @@ async function safeRun() {
   }
 }
 
+// Résumé du matin et alertes WhatsApp : vérification chaque minute (sans bloquer ; verrou en base contre les doublons, même avec plusieurs serveurs).
+function startDigest() {
+  const every = (process.env.NODE_ENV !== 'production' && Number(process.env.DIGEST_TICK_MS)) || 60 * 1000;
+  const run = () => { require('./workspace/digest').tick().catch((e) => log.warn('Résumé du matin :', oneLine(e.message, 160))); };
+  setTimeout(run, 30 * 1000).unref();
+  setInterval(run, every).unref();
+}
+
 function start() {
   setTimeout(safeRun, 20 * 1000).unref();
   setInterval(safeRun, 3600 * 1000).unref();
+  startDigest();
 }
 
 module.exports = { start, runOnce };

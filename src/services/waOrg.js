@@ -6,7 +6,13 @@ const { fetchJson, oneLine } = require('../util');
 
 const creds = (org) => ({ phoneId: org.wa_phone_id, token: vault.decrypt(org.wa_token) });
 const isConnected = (org) => Boolean(org.wa_phone_id && vault.decrypt(org.wa_token) && vault.decrypt(org.wa_secret));
-const fail = (r, what) => new Error(`${what} HTTP ${r.status} : ${oneLine(String((r.data && r.data.error && (r.data.error.message || r.data.error)) || 'réponse inattendue'), 160)}`);
+const fail = (r, what) => {
+  const err = new Error(`${what} HTTP ${r.status} : ${oneLine(String((r.data && r.data.error && (r.data.error.message || r.data.error)) || 'réponse inattendue'), 160)}`);
+  // Code d'erreur de Meta (ex. 131047 = fenêtre de 24 h fermée) : permet de distinguer les refus, sans jamais exposer de secret.
+  if (r.data && r.data.error && typeof r.data.error === 'object') { err.metaCode = Number(r.data.error.code) || 0; err.metaSubcode = Number(r.data.error.error_subcode) || 0; }
+  err.httpStatus = r.status;
+  return err;
+};
 
 async function sendText(org, to, body) {
   const c = creds(org);

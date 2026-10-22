@@ -187,7 +187,12 @@ async function main() {
     r = await o('POST', `/api/ws/orgs/${org}/integrations/keys`, { name: 'test' });
     check('clé d\'API créée', r.status === 201 || r.status === 200, r.json);
     r = await o('PUT', `/api/ws/orgs/${org}`, { name: 'Boutique Audit 2' });
-    r = await adm('GET', `/api/admin/security/audit?orgId=${org}&limit=20`);
+    // Le journal est écrit juste après l'envoi de la réponse : on laisse un court instant avant de le lire.
+    for (let i = 0; i < 20; i++) {
+      r = await adm('GET', `/api/admin/security/audit?orgId=${org}&limit=20`);
+      if (r.json.events.some((e) => e.action === 'org.update')) break;
+      await new Promise((ok) => setTimeout(ok, 100));
+    }
     const oa = r.json.events.map((e) => e.action);
     check('création de clé d\'API au journal (gravité haute)', r.json.events.some((e) => e.action === 'apikey.create' && e.severity === 'high' && e.actorType === 'user'), oa);
     check('modification de l\'organisation au journal', oa.includes('org.update'), oa);
