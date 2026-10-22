@@ -234,6 +234,40 @@ async function main() {
     check('bilan équilibré : actif = passif = 2 229 500', L.bilan.equilibre === true && L.bilan.totalActif === 2229500 && L.bilan.totalPassif === 2229500, [L.bilan.totalActif, L.bilan.totalPassif]);
     check('aucune erreur bloquante : prête à relire', L.ready === true && L.toFix === 0 && L.entryCount === 9, L.issues);
 
+    console.log('Fiscalité : reports, classement SYSCOHADA complet, TVA par compte');
+    r = await owner('GET', `${F}/classification`);
+    check('classement : 8 classes, sous-comptes usuels et table de correspondance', r.status === 200 && r.json.classes.length === 8 && r.json.usual.length > 20 && r.json.sigRules.some((x) => x.prefix === '6031' && x.key === 'varStockMarch') && /expert-comptable/.test(r.json.notice), r.json.notice);
+    r = await mgr('GET', `${F}/classification`);
+    check('responsable : classement -> 403', r.status === 403, r.json);
+    for (const [code, label] of [['731', 'Production stockée'], ['871', 'Participation des travailleurs']]) await owner('POST', `/api/ws/orgs/${org}/accounting/accounts`, { code, label });
+    const sts27 = [
+      await ent('2027-02-01', 'Vente 2027', [{ account: '411', debit: 100000 }, { account: '701', credit: 100000 }]),
+      await ent('2027-02-02', 'Production stockée', [{ account: '351', debit: 50000 }, { account: '731', credit: 50000 }]),
+      await ent('2027-02-03', 'Achat matières et variation de stock', [{ account: '602', debit: 30000 }, { account: '6031', debit: 10000 }, { account: '401', credit: 40000 }]),
+      await ent('2027-02-04', 'Autres produits', [{ account: '571', debit: 20000 }, { account: '754', credit: 20000 }]),
+      await ent('2027-02-05', 'Participation des travailleurs', [{ account: '871', debit: 7000 }, { account: '521', credit: 7000 }]),
+      await ent('2027-02-06', 'Cession', [{ account: '571', debit: 8000 }, { account: '821', credit: 8000 }]),
+    ];
+    check('6 écritures 2027 enregistrées', sts27.every((x) => x === 201), sts27);
+    r = await owner('GET', `${F}/liasse?year=2027`);
+    const L27 = r.json; const g27 = Object.fromEntries(L27.sig.lines.map((x) => [x.key, x.amount]));
+    check('SIG complets : marge 90 000, production 50 000, valeur ajoutée 110 000', g27.margeCommerciale === 90000 && g27.production === 50000 && g27.consoMatieres === -30000 && g27.valeurAjoutee === 110000, g27);
+    check("SIG : résultat d'exploitation 130 000 (autres produits 75), HAO 8 000, participation -7 000, résultat net 131 000", g27.resultatExploitation === 130000 && g27.hao === 8000 && g27.participation === -7000 && g27.resultatNet === 131000 && L27.resultat.resultat === 131000, g27);
+    check('report : résultat 2026 (375 000) non affecté repris dans le bilan 2027', L27.carry.priorResult === 375000 && L27.carry.hasPriorEntries === true && L27.bilan.passif.find((x) => x.key === 'report').amount === 375000, L27.carry);
+    check('bilan 2027 cumulé depuis l\'ouverture : équilibré, actif = passif = 2 372 500', L27.bilan.equilibre === true && L27.bilan.totalActif === 2372500 && L27.bilan.totalPassif === 2372500, [L27.bilan.totalActif, L27.bilan.totalPassif]);
+    check('information sur le report (affectation non automatique)', L27.issues.some((i) => i.code === 'carry-result' && /n'affecte|ne passe pas/.test(i.text)), L27.issues);
+    r = await owner('GET', `${F}/liasse?year=2026`);
+    check('le bilan 2026 ne reprend pas les écritures 2027', r.json.bilan.totalActif === 2229500 && r.json.carry.priorResult === 0, [r.json.bilan.totalActif, r.json.carry]);
+    r = await boss2('GET', `${F2}/liasse?year=2027`);
+    check("autre organisation : aucun report d'Awa", r.json.carry.priorResult === 0 && r.json.bilan.totalActif === 0, r.json.carry);
+    for (const [code, label] of [['443101', 'TVA facturée 18 %'], ['443102', 'TVA facturée 9 %']]) await owner('POST', `/api/ws/orgs/${org}/accounting/accounts`, { code, label });
+    await ent('2027-03-10', 'Vente taux normal', [{ account: '411', debit: 118000 }, { account: '701', credit: 100000 }, { account: '443101', credit: 18000 }]);
+    await ent('2027-03-11', 'Vente taux réduit', [{ account: '411', debit: 10900 }, { account: '701', credit: 10000 }, { account: '443102', credit: 900 }]);
+    r = await owner('GET', `${F}/vat?month=2027-03`);
+    check('TVA : plusieurs taux additionnés (18 900) et listés par compte avec leur taux', r.json.collected === 18900 && r.json.byAccount.collected.length === 2 && r.json.byAccount.collected.find((x) => x.account === '443101').rate === 18 && r.json.byAccount.collected.find((x) => x.account === '443102').rate === 9, r.json);
+    r = await owner('GET', `${F}/vat?month=2026-09`);
+    check('TVA : explication claire quand les comptes ne distinguent pas les taux', /pas par taux/.test(r.json.rateNote) && r.json.byAccount.collected.length === 1 && r.json.byAccount.collected[0].account === '4431', r.json);
+
     // Écritures anormales insérées directement (l'API refuse de les créer) : exercice 2025
     const dbx = await pgt.open();
     const eid = (await dbx.prepare("INSERT INTO acc_entries (org_id, journal, number, date, label, created_at) VALUES (?, 'OD', 'OD-2025-99999', '2025-03-01', 'Anomalie', ?)").run(org, new Date().toISOString())).lastInsertRowid;
@@ -307,18 +341,210 @@ async function main() {
     r = await owner('DELETE', `${F}/obligations/${oSoon}`);
     check('supprimer deux fois -> 404', r.status === 404, r.json);
 
+    console.log('Fiscalité : échéance suivante automatique (« Répéter »)');
+    r = await owner('POST', `${F}/obligations`, { title: 'Sans périodicité', dueDate: plus(30), repeat: true });
+    check('« Répéter » sans périodicité -> 400', r.status === 400, r.json);
+    const oRep = await mk({ title: 'TVA mensuelle auto', kind: 'tva', dueDate: '2099-03-15', recurrence: 'monthly', repeat: true });
+    r = await owner('PUT', `${F}/obligations/${oRep}`, { status: 'filed', reference: 'Récépissé 1' });
+    check("marquée déposée : l'échéance suivante est créée (15 avril)", r.status === 200 && r.json.next && r.json.next.dueDate === '2099-04-15', r.json);
+    r = await owner('GET', `${F}/obligations`);
+    const kids = r.json.items.filter((o) => o.title === 'TVA mensuelle auto');
+    check('la suivante est à faire, avec « Répéter » et le lien vers la précédente, sans justificatif recopié', kids.length === 2 && kids.some((o) => o.dueDate === '2099-04-15' && o.status === 'todo' && o.repeat === true && o.parentId === oRep && o.reference === ''), kids);
+    r = await owner('PUT', `${F}/obligations/${oRep}`, { status: 'paid' });
+    check('déposée puis payée : pas de nouvelle échéance (une seule fois)', r.json.next === null, r.json);
+    await owner('PUT', `${F}/obligations/${oRep}`, { status: 'todo' });
+    r = await owner('PUT', `${F}/obligations/${oRep}`, { status: 'filed' });
+    check('repasser à faire puis déposée : pas de doublon', r.json.next === null && (await owner('GET', `${F}/obligations`)).json.items.filter((o) => o.title === 'TVA mensuelle auto').length === 2, r.json);
+    const oQr = await mk({ title: 'Acompte trimestriel auto', dueDate: '2099-11-30', recurrence: 'quarterly', repeat: true });
+    r = await owner('PUT', `${F}/obligations/${oQr}`, { status: 'paid' });
+    check('trimestrielle : suivante 3 mois plus tard (28 février)', r.json.next && r.json.next.dueDate === '2100-02-28', r.json);
+    const oNo = await mk({ title: 'Mensuelle sans répétition', dueDate: '2099-05-10', recurrence: 'monthly' });
+    r = await owner('PUT', `${F}/obligations/${oNo}`, { status: 'paid' });
+    check('sans « Répéter » : rien de créé automatiquement', r.json.next === null && (await owner('GET', `${F}/obligations`)).json.items.filter((o) => o.title === 'Mensuelle sans répétition').length === 1, r.json);
+    r = await boss2('PUT', `${F2}/obligations/${oRep}`, { status: 'todo' });
+    check("modifier une échéance répétée d'une autre organisation -> 404", r.status === 404, r.json);
+
     console.log('Fiscalité : IA');
     r = await owner('POST', `/api/ws/orgs/${org}/ai/chat`, { module: 'fiscal', message: 'Où en suis-je ?' });
     check("l'administrateur voit le résultat provisoire et les échéances", r.status === 200 && /FISCALITÉ/.test(fake.seen.last.system) && /375/.test(fake.seen.last.system) && /Échéances/.test(fake.seen.last.system), fake.seen.last.system.slice(0, 300));
+    check('IA : rappel sur les échéances récurrentes et « Répéter »', /Échéances récurrentes ouvertes/.test(fake.seen.last.system) && /Répéter/.test(fake.seen.last.system), fake.seen.last.system.slice(-700));
     check('consignes : document de travail, jamais « liasse officielle »', /DOCUMENT DE TRAVAIL/.test(fake.seen.last.system) && /jamais une liasse officielle/.test(fake.seen.last.system));
     r = await mgr('POST', `/api/ws/orgs/${org}/ai/chat`, { module: 'fiscal', message: 'Résultat ?' });
     check('responsable : IA fiscale refusée -> 403', r.status === 403, r.json);
+    console.log('Paie : modèles de pays, options, heures supplémentaires, 13e mois');
+    r = await mgr('GET', `${P}/templates`);
+    check('responsable : modèles de pays -> 403', r.status === 403, r.json);
+    r = await owner('GET', `${P}/templates`);
+    const TP = r.json.templates;
+    check('11 modèles (Cameroun, Côte d\'Ivoire, Sénégal, Congo, Gabon, RDC, Bénin, Togo, Mali, Burkina Faso, générique), mention à vérifier, date « à jour au » vide', TP.length === 11 && ['cm', 'ci', 'sn', 'cg', 'ga', 'cd', 'bj', 'tg', 'ml', 'bf', 'other'].every((id) => TP.some((t) => t.id === id)) && TP.every((t) => t.notice === 'À vérifier auprès de votre administration' && t.asOf === ''), TP.map((t) => t.id));
+    check("aucun taux inventé : chaque rubrique est « à compléter » (taux vide)", TP.every((t) => t.rules.length >= 6 && t.rules.every((x) => x.rate === null && x.todo === true && ['social', 'tax'].includes(x.target))) && /aucun taux officiel/.test(r.json.warning), r.json.warning);
+    const cm = TP.find((t) => t.id === 'cm');
+    const R4 = [{ kind: 'employee', target: 'social', label: 'Retenue sociale', rate: 4.2, ceiling: 750000 }, { kind: 'employee', target: 'tax', label: 'Impôt', rate: 5, ceiling: 0 }, { kind: 'employer', target: 'social', label: 'Cotisation patronale', rate: 11.2, ceiling: 750000 }, { kind: 'employer', target: 'tax', label: 'Taxe patronale', rate: 1, ceiling: 0 }];
+    r = await owner('PUT', `${P}/settings`, { rules: cm.rules });
+    check('un modèle appliqué tel quel (rubriques sans taux) est enregistrable mais signalé « à compléter »', r.status === 200 && r.json.incomplete.length === 1 && /sans taux/.test(r.json.incomplete[0]), r.json);
+    r = await owner('PUT', `${P}/settings`, { rules: [{ kind: 'employee', label: 'X', rate: null }] });
+    check('rubrique sans taux et sans marque « à compléter » -> 400', r.status === 400, r.json);
+    for (const [name, o] of [['heures mensuelles nulles', { monthlyHours: 0 }], ['majoration > 300 %', { tiers: [{ label: 'x', rate: 500 }] }], ['modèle de pays inconnu', { templateId: 'zz' }], ['date « à jour au » invalide', { ratesAsOf: '31/12/2026' }]]) {
+      r = await owner('PUT', `${P}/settings`, { options: o });
+      check(`options : ${name} -> 400`, r.status === 400, r.json);
+    }
+    r = await owner('PUT', `${P}/settings`, { rules: R4, options: { templateId: 'cm' } });
+    check('modèle choisi sans date « à jour au » : à compléter', r.status === 200 && r.json.incomplete.length === 1 && /à jour au/.test(r.json.incomplete[0]), r.json);
+    r = await owner('PUT', `${P}/settings`, { options: { ratesAsOf: '2026-10-01' } });
+    check('date « à jour au » saisie : plus rien à compléter', r.status === 200 && r.json.incomplete.length === 0, r.json);
+    r = await owner('GET', `${P}/settings`);
+    check('options relues : comptabilisation désactivée par défaut, 2 paliers d\'exemple, 173,33 h, natures des rubriques', r.json.options.autoAccount === false && r.json.options.tiers.length === 2 && r.json.options.monthlyHours === 173.33 && r.json.options.ratesAsOf === '2026-10-01' && r.json.rules[1].target === 'tax' && r.json.rules.length === 4, r.json);
+
+    r = await owner('POST', `${P}/slips`, { employeeId: eCarl, month: '2027-01', base: 173330, overtimeHours: [{ rate: 25, hours: 4 }, { rate: 50, hours: 2 }] });
+    const sH = r.json.id;
+    r = await owner('GET', `${P}/slips/${sH}`);
+    check('heures sup : taux horaire 1 000 (base ÷ 173,33), 4 h à +25 % et 2 h à +50 % = 8 000, brut 181 330', r.json.slip.overtime === 8000 && r.json.slip.gross === 181330 && r.json.slip.overtimeHours.length === 2 && r.json.slip.overtimeHours[0].hourly === 1000 && r.json.slip.overtimeHours[0].amount === 5000, r.json.slip);
+    await owner('PUT', `${P}/slips/${sH}`, { hourlyRate: 2000 });
+    r = await owner('GET', `${P}/slips/${sH}`);
+    check('taux horaire saisi (2 000) : 10 000 + 6 000 = 16 000', r.json.slip.overtime === 16000 && r.json.slip.hourlyRate === 2000, r.json.slip);
+    r = await owner('PUT', `${P}/slips/${sH}`, { overtimeHours: [] , overtime: 5000 });
+    check('sans heures : retour au montant saisi (5 000)', r.status === 200 && (await owner('GET', `${P}/slips/${sH}`)).json.slip.overtime === 5000, r.json);
+    for (const [name, v] of [['heures négatives', [{ rate: 25, hours: -1 }]], ['plus de 400 heures', [{ rate: 25, hours: 500 }]], ['majoration 400 %', [{ rate: 400, hours: 2 }]], ['liste invalide', 'x'], ['plus de 10 lignes', Array.from({ length: 11 }, () => ({ rate: 25, hours: 1 }))]]) {
+      r = await owner('PUT', `${P}/slips/${sH}`, { overtimeHours: v });
+      check(`heures sup : ${name} -> 400`, r.status === 400, r.json);
+    }
+    await owner('PUT', `${P}/slips/${sH}`, { thirteenth: true });
+    r = await owner('GET', `${P}/slips/${sH}`);
+    check('13e mois : une fois le salaire de base ajouté au brut (173 330 + 5 000 + 173 330)', r.json.slip.annualBonus === 173330 && r.json.slip.annualBonusLabel === '13e mois' && r.json.slip.gross === 351660, r.json.slip);
+    await owner('PUT', `${P}/slips/${sH}`, { thirteenth: false });
+    r = await owner('PUT', `${P}/slips/${sH}`, { annualBonus: 50000, annualBonusLabel: 'Prime de fin d\'année' });
+    const sh = (await owner('GET', `${P}/slips/${sH}`)).json.slip;
+    check('prime annuelle libre (50 000) : brut 228 330, retenues calculées sur ce brut', r.status === 200 && sh.annualBonus === 50000 && sh.annualBonusLabel === "Prime de fin d'année" && sh.gross === 228330 && sh.lines[0].basis === 228330, sh);
+    r = await owner('PUT', `${P}/slips/${sH}`, { annualBonus: -5 });
+    check('prime annuelle négative -> 400', r.status === 400, r.json);
+    await owner('DELETE', `${P}/slips/${sH}`);
+
+    console.log('Paie : écritures comptables');
+    r = await owner('POST', `${P}/slips/${sA.id}/accounting`, {});
+    check("à la demande (option désactivée) : écritures de validation et de paiement créées pour le bulletin d'Aminata", r.status === 201 && r.json.validation.status === 'posted' && r.json.payment.status === 'posted', r.json);
+    r = await owner('GET', `/api/ws/orgs/${org}/accounting/entries?q=PAIE-${sA.id}`);
+    const eV = r.json.entries.find((e) => e.label.startsWith('Paie ')); const eP = r.json.entries.find((e) => e.label.startsWith('Paiement'));
+    const amt = (e, acc, side) => e.lines.filter((l) => l.account === acc).reduce((a, l) => a + l[side], 0);
+    check('écriture de validation : 661 débit 370 000, 664 débit 41 440, 431 crédit 56 980, 447 crédit 18 500, 421 crédit 30 000, 422 crédit 305 960, équilibrée', r.json.entries.length === 2 && eV && amt(eV, '661', 'debit') === 370000 && amt(eV, '664', 'debit') === 41440 && amt(eV, '431', 'credit') === 56980 && amt(eV, '447', 'credit') === 18500 && amt(eV, '421', 'credit') === 30000 && amt(eV, '422', 'credit') === 305960 && eV.lines.reduce((a, l) => a + l.debit, 0) === eV.lines.reduce((a, l) => a + l.credit, 0), eV);
+    check('écriture de paiement (mobile money) : 422 débit 305 960 contre 589, journal MM, à la date du paiement', eP && eP.journal === 'MM' && eP.date === '2026-09-30' && amt(eP, '422', 'debit') === 305960 && amt(eP, '589', 'credit') === 305960 && eV.date === '2026-09-30', eP);
+    r = await owner('POST', `${P}/slips/${sA.id}/accounting`, {});
+    check('idempotent : relancer ne crée rien', r.status === 200 && r.json.validation.status === 'exists' && r.json.payment.status === 'exists' && (await owner('GET', `/api/ws/orgs/${org}/accounting/entries?q=PAIE-${sA.id}`)).json.entries.length === 2, r.json);
+    r = await owner('GET', `${P}/slips/${sA.id}`);
+    check('le bulletin est lié à ses deux écritures', r.json.slip.accEntryId > 0 && r.json.slip.accPayEntryId > 0, r.json.slip);
+    r = await mgr('POST', `${P}/slips/${sA.id}/accounting`, {});
+    check('responsable : comptabiliser la paie -> 403', r.status === 403, r.json);
+    r = await boss2('POST', `${P2}/slips/${sA.id}/accounting`, {});
+    check("autre organisation : comptabiliser le bulletin d'Awa -> 404", r.status === 404, r.json);
+
+    // Option « Comptabiliser automatiquement » désactivée : la validation ne crée aucune écriture
+    const eAwa2 = await owner('POST', `${P}/slips`, { employeeId: eAwa, month: '2027-02', base: 100000 });
+    r = await owner('POST', `${P}/slips/${eAwa2.json.id}/validate`, {});
+    check('option désactivée : validation sans écriture (accounting nul)', r.status === 200 && r.json.accounting === null, r.json);
+    r = await owner('POST', `${P}/slips/${eAwa2.json.id}/budget`, {});
+    check('bulletin enregistré au budget', r.status === 201, r.json);
+    r = await owner('POST', `${P}/slips/${eAwa2.json.id}/reopen`, { reason: 'Erreur sur la prime' });
+    check('rouvrir un bulletin déjà enregistré au budget -> 409', r.status === 409, r.json);
+    r = await owner('POST', `${P}/slips/${(await owner('POST', `${P}/slips`, { employeeId: eBob, month: '2027-05' })).json.id}/reopen`, { reason: 'Erreur de saisie' });
+    check('rouvrir un brouillon -> 400', r.status === 400, r.json);
+
+    r = await owner('PUT', `${P}/settings`, { options: { autoAccount: true } });
+    check('activation de « Comptabiliser automatiquement »', r.status === 200 && (await owner('GET', `${P}/settings`)).json.options.autoAccount === true, r.json);
+    const sC = (await owner('POST', `${P}/slips`, { employeeId: eCarl, month: '2027-02', base: 300000, advances: 10000, otherDeductions: 5000 })).json.id;
+    r = await owner('POST', `${P}/slips/${sC}/validate`, {});
+    check('option activée : la validation crée automatiquement une écriture (journal OD)', r.status === 200 && r.json.accounting.status === 'posted' && /^OD-2027-/.test(r.json.accounting.number), r.json);
+    r = await owner('GET', `/api/ws/orgs/${org}/accounting/entries?q=PAIE-${sC}`);
+    const eC = r.json.entries[0];
+    check('écriture : 661 300 000, 664 33 600, 641 3 000 au débit ; 431 46 200, 447 18 000, 421 15 000 (avances + retenues), 422 257 400 au crédit', r.json.entries.length === 1 && amt(eC, '661', 'debit') === 300000 && amt(eC, '664', 'debit') === 33600 && amt(eC, '641', 'debit') === 3000 && amt(eC, '431', 'credit') === 46200 && amt(eC, '447', 'credit') === 18000 && amt(eC, '421', 'credit') === 15000 && amt(eC, '422', 'credit') === 257400 && eC.date === '2027-02-28', eC);
+    r = await owner('POST', `${P}/slips/${sC}/validate`, {});
+    check('valider deux fois -> 400 (pas de seconde écriture)', r.status === 400, r.json);
+    r = await owner('POST', `${P}/slips/${sC}/accounting`, {});
+    check('comptabiliser à la demande après coup : déjà fait, rien de créé', r.status === 200 && r.json.validation.status === 'exists', r.json);
+    r = await owner('POST', `${P}/slips/${sC}/pay`, { method: 'bank', date: '2027-02-28' });
+    check('paiement bancaire : écriture de paiement créée (validation déjà comptabilisée)', r.status === 200 && r.json.accounting.validation.status === 'exists' && r.json.accounting.payment.status === 'posted', r.json);
+    r = await owner('GET', `/api/ws/orgs/${org}/accounting/entries?q=PAIE-${sC}`);
+    const pC = r.json.entries.find((e) => e.label.startsWith('Paiement'));
+    check('une écriture par événement (2 en tout) ; paiement : 422 débit contre 521, journal BQ', r.json.entries.length === 2 && pC.journal === 'BQ' && amt(pC, '422', 'debit') === 257400 && amt(pC, '521', 'credit') === 257400, r.json.entries);
+    r = await owner('POST', `${P}/slips/${sC}/pay`, { method: 'cash' });
+    check('payer deux fois -> 400', r.status === 400, r.json);
+    r = await owner('POST', `${P}/slips/${sC}/reopen`, { reason: 'Erreur sur la prime' });
+    check('rouvrir un bulletin payé -> 400', r.status === 400 && /payé/.test(r.json.error), r.json);
+
+    console.log('Paie : réouverture avec motif et contre-passation');
+    const sD = (await owner('POST', `${P}/slips`, { employeeId: eBob, month: '2027-06', base: 400000 })).json.id;
+    r = await owner('POST', `${P}/slips/${sD}/validate`, {});
+    const numD = r.json.accounting.number;
+    check('bulletin validé et comptabilisé automatiquement', r.status === 200 && r.json.accounting.status === 'posted', r.json);
+    r = await owner('POST', `${P}/slips/${sD}/reopen`, {});
+    check('réouverture sans motif -> 400', r.status === 400 && /motif/.test(r.json.error), r.json);
+    r = await owner('POST', `${P}/slips/${sD}/reopen`, { reason: 'abc' });
+    check('motif trop court -> 400', r.status === 400, r.json);
+    r = await mgr('POST', `${P}/slips/${sD}/reopen`, { reason: 'Erreur de salaire de base' });
+    check('responsable : réouverture -> 403', r.status === 403, r.json);
+    r = await boss2('POST', `${P2}/slips/${sD}/reopen`, { reason: 'Erreur de salaire de base' });
+    check("autre organisation : réouverture d'un bulletin d'Awa -> 404", r.status === 404, r.json);
+    r = await owner('POST', `${P}/slips/${sD}/reopen`, { reason: 'Erreur de salaire de base' });
+    check("réouverture par l'administrateur : écriture annulée par contre-passation", r.status === 200 && r.json.reversedEntry === numD, r.json);
+    r = await owner('GET', `${P}/slips/${sD}`);
+    check('bulletin redevenu brouillon, motif et compteur conservés, lien comptable retiré', r.json.slip.status === 'draft' && r.json.slip.reopenedCount === 1 && r.json.slip.reopenReason === 'Erreur de salaire de base' && r.json.slip.accEntryId === null && r.json.slip.validatedAt === null, r.json.slip);
+    r = await owner('GET', `/api/ws/orgs/${org}/accounting/entries?q=${numD}`);
+    check("l'écriture d'origine est conservée et une écriture inverse équilibrée existe", r.json.entries.length === 2 && r.json.entries.some((e) => e.reversedOf) && r.json.entries.every((e) => e.lines.reduce((a, l) => a + l.debit, 0) === e.lines.reduce((a, l) => a + l.credit, 0)), r.json.entries);
+    r = await owner('PUT', `${P}/slips/${sD}`, { base: 420000 });
+    check('le brouillon rouvert est modifiable', r.status === 200, r.json);
+    r = await owner('POST', `${P}/slips/${sD}/validate`, {});
+    check('nouvelle validation : nouvelle écriture (aucun doublon avec l\'ancienne)', r.status === 200 && r.json.accounting.status === 'posted' && r.json.accounting.number !== numD, r.json);
+    r = await owner('GET', `/api/ws/orgs/${org}/accounting/entries?q=PAIE-${sD}`);
+    check('au total : 2 écritures de paie (ancienne annulée + nouvelle)', r.json.entries.length === 2, r.json.entries.length);
+    const aud = await dbx.prepare("SELECT detail, severity FROM audit_trail WHERE org_id = ? AND action = 'payroll.slip_reopen'").all(org);
+    check("journal d'audit : réouverture enregistrée avec le motif", aud.length === 1 && /Erreur de salaire de base/.test(aud[0].detail) && aud[0].severity === 'warn', aud);
+
+    console.log('Fiscalité : clôture et réouverture d\'exercice');
+    const E2 = `/api/ws/orgs/${org2}/accounting/entries`;
+    r = await boss2('POST', E2, { journal: 'OD', date: '2023-05-01', label: 'Capital', lines: [{ account: '521', debit: 500000 }, { account: '101', credit: 500000 }] });
+    check("entrée de l'autre organisation en 2023", r.status === 201, r.json);
+    r = await mgr('POST', `${F}/exercises/2023/close`, {});
+    check('responsable : clôturer -> 403', r.status === 403, r.json);
+    r = await boss2('POST', `${F2}/exercises/${new Date().getFullYear()}/close`, {});
+    check("exercice en cours : clôture refusée (pas terminé) -> 400", r.status === 400 && /pas terminé/.test(r.json.error), r.json);
+    r = await boss2('POST', `${F2}/exercises/2023/close`, {});
+    check('clôture de 2023 : verrou au 31 décembre', r.status === 200 && r.json.lockedUntil === '2023-12-31' && r.json.notes.some((n) => /ne génère PAS/.test(n)), r.json);
+    r = await boss2('POST', `${F2}/exercises/2023/close`, {});
+    check('clôturer deux fois -> 409', r.status === 409, r.json);
+    r = await boss2('GET', `${F2}/exercises`);
+    check('liste des exercices : 2023 clôturé, réouvrable, notes honnêtes', r.json.lockedUntil === '2023-12-31' && r.json.years.find((y) => y.year === '2023').closed === true && r.json.years.find((y) => y.year === '2023').canReopen === true && r.json.notes.length >= 3, r.json);
+    r = await owner('GET', `${F}/exercises`);
+    check("isolation : l'organisation d'Awa n'est pas verrouillée", r.json.lockedUntil === '' && r.json.years.every((y) => y.closed === false), r.json);
+    r = await boss2('POST', E2, { journal: 'OD', date: '2023-06-01', label: 'Trop tard', lines: [{ account: '521', debit: 1000 }, { account: '101', credit: 1000 }] });
+    check('écriture dans un exercice clôturé -> 400 (verrouillée)', r.status === 400 && /verrouill/.test(r.json.error), r.json);
+    r = await boss2('PUT', `/api/ws/orgs/${org2}/accounting/settings`, { lockedUntil: '' });
+    check('la Comptabilité ne permet pas de rouvrir (renvoie vers Fiscalité)', r.status === 400 && /Fiscalité/.test(r.json.error), r.json);
+    r = await boss2('PUT', `${P2}/settings`, { options: { autoAccount: true } });
+    const eO2 = (await boss2('POST', `${P2}/slips`, { employeeId: eOther, month: '2023-03' })).json.id;
+    r = await boss2('POST', `${P2}/slips/${eO2}/validate`, {});
+    check('période clôturée : la validation réussit mais la comptabilisation est refusée (et expliquée)', r.status === 200 && r.json.accounting.status === 'skipped' && /verrouill/.test(r.json.accounting.reason), r.json);
+    r = await boss2('POST', `${P2}/slips/${eO2}/accounting`, {});
+    check('comptabilisation à la demande dans une période clôturée -> 400', r.status === 400, r.json);
+    r = await boss2('POST', `${F2}/exercises/2023/reopen`, {});
+    check('réouverture sans motif -> 400', r.status === 400, r.json);
+    r = await boss2('POST', `${F2}/exercises/2022/reopen`, { reason: 'Correction demandée' });
+    check("réouvrir un exercice qui n'est pas le dernier clôturé -> 409", r.status === 409, r.json);
+    r = await boss2('POST', `${F2}/exercises/2023/reopen`, { reason: 'Correction demandée par le comptable' });
+    check('réouverture avec motif : verrou levé', r.status === 200 && r.json.lockedUntil === '', r.json);
+    r = await boss2('POST', `${P2}/slips/${eO2}/accounting`, {});
+    check('après réouverture : comptabilisation du bulletin possible (écriture datée du 31 mars 2023)', r.status === 201 && r.json.validation.status === 'posted', r.json);
+    r = await boss2('GET', `${F2}/exercises`);
+    check('historique : clôture puis réouverture avec motif', r.json.history.length === 2 && r.json.history[0].action === 'reopen' && /comptable/.test(r.json.history[0].reason) && r.json.history[1].action === 'close', r.json.history);
+    const aud2 = await dbx.prepare("SELECT action FROM audit_trail WHERE org_id = ? AND action LIKE 'fiscal.exercise_%' ORDER BY id").all(org2);
+    check("journal d'audit : clôture et réouverture", aud2.length === 2 && aud2[1].action === 'fiscal.exercise_reopen', aud2);
+    r = await owner('POST', `${F}/exercises/2023/reopen`, { reason: 'Test isolation' });
+    check("réouvrir un exercice non clôturé -> 409", r.status === 409, r.json);
+
     await dbx.close();
   } catch (e) {
     failed++;
     console.log('  ECHEC exception : ' + (e && e.stack || e));
   }
 
+  if (failed) console.log('--- Journal du serveur (fin) ---\n' + out.split('\n').slice(-25).join('\n'));
   child.kill();
   fake.srv.close();
   await pgt.stop();

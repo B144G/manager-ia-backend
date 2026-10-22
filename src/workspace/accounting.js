@@ -67,6 +67,40 @@ async function post(org, userId, { journal, date, label, piece, lines, source, s
   })();
 }
 
+/**
+ * Fonction réutilisable par les autres modules (paie, etc.) : enregistre UNE écriture équilibrée dans le journal.
+ *  entry : { journal, date, label, piece, lines:[{account, debit|credit, memo}], source, sourceId }
+ *  - Une seule écriture par (source, sourceId) tant qu'elle n'est pas annulée : un second appel renvoie l'écriture existante (existing: true).
+ *  - Les comptes absents du plan de l'organisation sont ajoutés seulement s'ils font partie du plan SYSCOHADA de base (syscohada.js).
+ *  - Mêmes contrôles que la saisie manuelle : équilibre, montants entiers, période non clôturée (sinon HttpError 400).
+ */
+async function recordEntry(org, userId, entry) {
+  const settings = await ensure(org);
+  if (entry.source && entry.sourceId) {
+    const old = await db.prepare(`SELECT e.id, e.number FROM acc_entries e WHERE e.org_id = ? AND e.source = ? AND e.source_id = ?
+      AND NOT EXISTS (SELECT 1 FROM acc_entries r WHERE r.org_id = e.org_id AND r.reversed_of = e.id) ORDER BY e.id DESC LIMIT 1`).get(org.id, entry.source, entry.sourceId);
+    if (old) return { id: Number(old.id), number: old.number, existing: true };
+  }
+  const std = new Map(PLAN);
+  for (const code of new Set((entry.lines || []).map((l) => String(l.account || '').trim()))) {
+    if (code && std.has(code) && !await accountExists(org.id, code)) await db.prepare('INSERT OR IGNORE INTO acc_accounts (org_id, code, label, custom) VALUES (?, ?, ?, 0)').run(org.id, code, std.get(code));
+  }
+  const r = await post(org, userId, entry, settings);
+  return { ...r, existing: false };
+}
+
+/** Annule une écriture par une écriture inverse (contre-passation) : jamais de modification ni de suppression. Idempotent : refuse une seconde annulation. */
+async function reverseEntry(org, userId, entryId, date) {
+  const settings = await ensure(org);
+  const e = await db.prepare('SELECT * FROM acc_entries WHERE id = ? AND org_id = ?').get(entryId, org.id);
+  if (!e) throw new HttpError(404, 'Écriture introuvable.');
+  if (e.reversed_of) throw new HttpError(400, "Cette écriture est déjà une annulation.");
+  if (await db.prepare('SELECT 1 FROM acc_entries WHERE org_id = ? AND reversed_of = ?').get(org.id, e.id)) throw new HttpError(409, 'Cette écriture a déjà été annulée.');
+  const lines = (await db.prepare('SELECT * FROM acc_lines WHERE entry_id = ?').all(e.id)).map((l) => ({ account: l.account, debit: l.credit, credit: l.debit, memo: l.memo }));
+  const r = await post(org, userId, { journal: 'OD', date: isDate(date) ? date : today(), label: `Annulation de ${e.number} : ${e.label}`.slice(0, 200), piece: e.number, lines, reversedOf: e.id }, settings);
+  return { ...r, reversed: e.number };
+}
+
 const entryView = (e, lines) => ({ id: e.id, journal: e.journal, number: e.number, date: e.date, label: e.label, piece: e.piece, source: e.source, reversedOf: e.reversed_of, lines: lines.filter((l) => l.entry_id === e.id).map((l) => ({ account: l.account, debit: l.debit, credit: l.credit, memo: l.memo })) });
 
 async function entries(org, { journal, from, to, q, limit = 200 }) {
@@ -191,8 +225,8 @@ router.put('/settings', async (req, res) => {
   if (!['571', '521', '589'].includes(pay)) throw new HttpError(400, 'Compte de règlement : caisse (571), banque (521) ou mobile money (589).');
   let lock = b.lockedUntil === undefined ? cur.locked_until : (b.lockedUntil || null);
   if (lock && !isDate(lock)) throw new HttpError(400, 'Date de clôture invalide.');
-  if (cur.locked_until && lock && lock < cur.locked_until) throw new HttpError(400, 'Une période clôturée ne peut pas être rouverte.');
-  if (cur.locked_until && !lock) throw new HttpError(400, 'Une période clôturée ne peut pas être rouverte.');
+  if (cur.locked_until && lock && lock < cur.locked_until) throw new HttpError(400, 'Une période clôturée ne peut pas être rouverte ici : la réouverture se fait dans Fiscalité (Exercices), avec un motif.');
+  if (cur.locked_until && !lock) throw new HttpError(400, 'Une période clôturée ne peut pas être rouverte ici : la réouverture se fait dans Fiscalité (Exercices), avec un motif.');
   await db.prepare('UPDATE acc_settings SET vat_rate = ?, pay_account = ?, purchase_vat = ?, locked_until = ? WHERE org_id = ?').run(vat, pay, b.purchaseVat === undefined ? cur.purchase_vat : (b.purchaseVat ? 1 : 0), lock, req.org.id);
   await A.logActivity(req.org.id, req.user.id, 'accounting', 'Réglages de comptabilité modifiés');
   res.json({ ok: true });
@@ -211,15 +245,9 @@ router.post('/entries', async (req, res) => {
 });
 // Aucune écriture ne se modifie ni ne se supprime : on l'annule par une écriture inverse (traçabilité).
 router.post('/entries/:id/reverse', async (req, res) => {
-  const e = await db.prepare('SELECT * FROM acc_entries WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
-  if (!e) throw new HttpError(404, 'Écriture introuvable.');
-  if (e.reversed_of) throw new HttpError(400, "Cette écriture est déjà une annulation.");
-  if (await db.prepare('SELECT 1 FROM acc_entries WHERE org_id = ? AND reversed_of = ?').get(req.org.id, e.id)) throw new HttpError(409, 'Cette écriture a déjà été annulée.');
-  const date = isDate((req.body || {}).date) ? req.body.date : today();
-  const lines = (await db.prepare('SELECT * FROM acc_lines WHERE entry_id = ?').all(e.id)).map((l) => ({ account: l.account, debit: l.credit, credit: l.debit, memo: l.memo }));
-  const r = await post(req.org, req.user.id, { journal: 'OD', date, label: `Annulation de ${e.number} : ${e.label}`.slice(0, 200), piece: e.number, lines, reversedOf: e.id }, req.acc);
-  await A.logActivity(req.org.id, req.user.id, 'accounting', `Écriture ${e.number} annulée`);
-  res.status(201).json(r);
+  const r = await reverseEntry(req.org, req.user.id, A.id(req.params.id), (req.body || {}).date);
+  await A.logActivity(req.org.id, req.user.id, 'accounting', `Écriture ${r.reversed} annulée`);
+  res.status(201).json({ id: r.id, number: r.number });
 });
 
 router.post('/generate', async (req, res) => {
@@ -283,3 +311,6 @@ Règles : journaux possibles : ${Object.keys(JOURNALS).join(', ')} (CA = caisse,
 module.exports = router;
 module.exports.statements = statements;
 module.exports.balance = balance;
+module.exports.recordEntry = recordEntry;
+module.exports.reverseEntry = reverseEntry;
+module.exports.ensure = ensure;

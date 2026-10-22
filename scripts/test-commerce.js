@@ -19,15 +19,16 @@ const day = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10
 function client(base) {
   const jar = {};
   return async (method, url, body) => {
-    const headers = body !== undefined ? { 'content-type': 'application/json' } : {};
+    const raw = Buffer.isBuffer(body);
+    const headers = body !== undefined ? { 'content-type': raw ? 'application/octet-stream' : 'application/json' } : {};
     const cookie = Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; ');
     if (cookie) headers.cookie = cookie;
-    const res = await fetch(base + url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    const res = await fetch(base + url, { method, headers, body: body === undefined ? undefined : (raw ? body : JSON.stringify(body)) });
     for (const sc of res.headers.getSetCookie()) { const [pair] = sc.split(';'); const i = pair.indexOf('='); jar[pair.slice(0, i).trim()] = pair.slice(i + 1).trim(); }
     const t = await res.text();
     let json = null;
     try { json = JSON.parse(t); } catch { /* non JSON */ }
-    return { status: res.status, json, text: t };
+    return { status: res.status, json, text: t, headers: res.headers };
   };
 }
 
@@ -383,6 +384,160 @@ async function main() {
     check('suppression de contrat', r.status === 200);
     r = await mgr('GET', `${J}/contracts/${k1}`);
     check('route inexistante -> 404', r.status === 404);
+
+    // ---- Juridique : modèles, pièces jointes, historique, signature, rappels ----
+    console.log('Juridique : modèles, pièces jointes, historique, signature, rappels');
+    for (const [m, p] of [['GET', '/templates'], ['GET', '/files?parentType=contract&parentId=1'], ['POST', '/templates']]) { r = await mem(m, J + p, m === 'GET' ? undefined : {}); check(`membre -> 403 sur ${m} /legal${p.split('?')[0]}`, r.status === 403, r.json); }
+    r = await mgr('GET', `${J}/templates`);
+    const ids = r.json.templates.map((t) => t.id);
+    const docs = r.json.templates.filter((t) => t.kind === 'document');
+    check('11 modèles de documents fournis, marqués « fournis »', docs.length === 11 && docs.every((t) => t.builtin === true), docs.length);
+    check('chaque modèle fourni porte la mention de relecture et des champs', docs.every((t) => t.body.includes('Modèle informatif à faire relire par un professionnel du droit') && t.fields.length >= 3));
+    check('aucun modèle fourni ne prétend être conforme', docs.every((t) => !/\bconforme?s?\b|officiel/i.test(t.body)));
+    check('exemples d\'obligations et de registre fournis, identifiants uniques', r.json.templates.some((t) => t.kind === 'obligation') && r.json.templates.some((t) => t.kind === 'privacy') && new Set(ids).size === ids.length);
+    for (const t of ['demande', 'termination', 'lease', 'amendment', 'settlement', 'proxy', 'rules', 'privacy-policy']) if (t !== 'demande') check(`modèle b:${t} présent`, ids.includes('b:' + t));
+    r = await mgr('PUT', `${J}/templates/b:demand`, { title: 'Pirate', body: 'x' });
+    check('modifier un modèle fourni -> 403', r.status === 403, r.json);
+    r = await mgr('DELETE', `${J}/templates/b:demand`);
+    check('supprimer un modèle fourni -> 403', r.status === 403, r.json);
+    r = await mgr('POST', `${J}/templates`, { title: '', body: 'x' });
+    check('modèle sans nom -> 400', r.status === 400, r.json);
+    r = await mgr('POST', `${J}/templates`, { title: 'Vide', body: '   ' });
+    check('modèle sans texte -> 400', r.status === 400, r.json);
+    r = await mgr('POST', `${J}/templates`, { title: 'Long', body: 'a'.repeat(12001) });
+    check('texte de modèle trop long -> 400', r.status === 400, r.json);
+    r = await mgr('POST', `${J}/templates`, { title: 'X', kind: 'magique', body: 'a' });
+    check('type de modèle inconnu -> 400', r.status === 400, r.json);
+    r = await mgr('POST', `${J}/templates`, { kind: 'obligation', title: 'Y', data: { title: 'Z', recurrenceMonths: 999 } });
+    check('récurrence hors limites dans un modèle d\'obligation -> 400', r.status === 400, r.json);
+    r = await mgr('POST', `${J}/templates`, { title: 'Lettre de rappel', body: 'Bonjour {{client_nom}},\nMerci de régler {{montant}} avant le {{date_limite}}. {{montant}}' });
+    const tpl = r.json.id;
+    check('modèle de l\'organisation créé', r.status === 201 && tpl, r.json);
+    r = await mgr('GET', `${J}/templates`);
+    const myT = r.json.templates.find((t) => t.id === tpl);
+    check('champs {{nom}} détectés une seule fois, dans l\'ordre', myT && !myT.builtin && myT.fields.map((x) => x.key).join(',') === 'client_nom,montant,date_limite', myT);
+    r = await mgr('PUT', `${J}/templates/${tpl}`, { title: 'Lettre de rappel v2', body: 'Bonjour {{nom}}' });
+    r = await mgr('GET', `${J}/templates`);
+    check('modèle modifié', r.json.templates.find((t) => t.id === tpl).title === 'Lettre de rappel v2' && r.json.templates.find((t) => t.id === tpl).fields.length === 1);
+    r = await other('GET', `${ws(org2)}/legal/templates`);
+    check('isolation : l\'autre organisation ne voit que les modèles fournis', r.status === 403 || !r.json.templates.some((t) => t.id === tpl), r.status);
+    r = await mgr('POST', `${J}/templates/b:lease/duplicate`);
+    const dup = r.json.id;
+    check('dupliquer un modèle fourni', r.status === 201 && dup, r.json);
+    r = await mgr('GET', `${J}/templates`);
+    const dupT = r.json.templates.find((t) => t.id === dup);
+    check('la copie est modifiable et garde le texte', dupT && dupT.builtin === false && dupT.title.includes('(copie)') && dupT.body.includes('{{landlord}}') && dupT.body.includes('relire par un professionnel'), dupT && dupT.title);
+    r = await mgr('POST', `${J}/templates/${tpl}/duplicate`);
+    check('dupliquer un modèle de l\'organisation', r.status === 201, r.json);
+    r = await mgr('POST', `${J}/templates/b:inconnu/duplicate`);
+    check('dupliquer un modèle inexistant -> 404', r.status === 404, r.json);
+    r = await mgr('DELETE', `${J}/templates/${dup}`);
+    check('supprimer un modèle de l\'organisation', r.status === 200, r.json);
+    r = await mgr('POST', `${J}/templates`, { kind: 'privacy', title: 'Lignes RH', data: { dataKind: 'Photos du personnel', people: 'Employés' } });
+    check('modèle de ligne du registre créé', r.status === 201, r.json);
+
+    // Pièces jointes
+    const PDF = Buffer.concat([Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\n'), Buffer.alloc(300, 65)]);
+    const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(100, 1)]);
+    const upl = (c, base, type, id, name, buf) => c('POST', `${base}/files?parentType=${type}&parentId=${id}&name=${encodeURIComponent(name)}`, buf);
+    r = await mgr('POST', `${J}/contracts`, { title: 'Bail pour pièces jointes', type: 'lease', endDate: day(100), assigneeId: mgrId });
+    const kf = r.json.id;
+    r = await upl(mgr, J, 'contract', kf, 'bail signé.pdf', PDF);
+    const f1 = r.json && r.json.id;
+    check('PDF ajouté au contrat', r.status === 201 && r.json.mime === 'application/pdf' && r.json.name === 'bail signé.pdf', r.json);
+    r = await upl(mgr, J, 'contract', kf, 'scan.png', PNG);
+    check('image PNG ajoutée', r.status === 201 && r.json.mime === 'image/png', r.json);
+    r = await upl(mgr, J, 'contract', kf, 'virus.pdf', Buffer.from('MZ\x90\x00 programme dangereux, pas un pdf du tout'));
+    check('fichier d\'un autre type (même nommé .pdf) refusé -> 400', r.status === 400, r.json);
+    r = await upl(mgr, J, 'contract', kf, 'page.pdf', Buffer.from('<html><script>alert(1)</script></html>'));
+    check('HTML refusé -> 400', r.status === 400, r.json);
+    r = await upl(mgr, J, 'contract', kf, 'gros.pdf', Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(2 * 1024 * 1024 + 10, 66)]));
+    check('fichier de plus de 2 Mo -> 413', r.status === 413, r.json);
+    r = await upl(mgr, J, 'contract', 999999, 'x.pdf', PDF);
+    check('pièce jointe sur un contrat inexistant -> 404', r.status === 404, r.json);
+    r = await upl(mgr, J, 'chose', kf, 'x.pdf', PDF);
+    check('type de dossier inconnu -> 400', r.status === 400, r.json);
+    r = await upl(other, `${ws(org2)}/legal`, 'contract', kf, 'x.pdf', PDF);
+    check('ajouter un fichier au contrat d\'une autre organisation -> 404', r.status === 404, r.json);
+    r = await upl(mem, J, 'contract', kf, 'x.pdf', PDF);
+    check('membre : envoi refusé -> 403', r.status === 403, r.json);
+    r = await mgr('GET', `${J}/files?parentType=contract&parentId=${kf}`);
+    check('liste des fichiers du contrat (2)', r.json.files.length === 2 && r.json.limits.maxBytes === 2097152, r.json);
+    r = await mgr('GET', `${J}/contracts`);
+    check('le contrat affiche 2 pièces jointes', r.json.contracts.find((c) => c.id === kf).filesCount === 2);
+    r = await mgr('GET', `${J}/files/${f1}/file`);
+    check('téléchargement : contenu identique, type vérifié, en-têtes de sécurité', r.status === 200 && r.text.startsWith('%PDF-') && r.headers.get('content-type') === 'application/pdf' && r.headers.get('x-content-type-options') === 'nosniff' && r.headers.get('content-security-policy').includes('sandbox') && r.headers.get('cache-control').includes('no-store') && r.headers.get('content-disposition').startsWith('attachment'), [...r.headers.entries()]);
+    r = await mem('GET', `${J}/files/${f1}/file`);
+    check('membre : téléchargement refusé -> 403', r.status === 403, r.json);
+    r = await other('GET', `${ws(org2)}/legal/files/${f1}/file`);
+    check('téléchargement d\'un fichier d\'une autre organisation -> 404', r.status === 404, r.json);
+    r = await other('DELETE', `${ws(org2)}/legal/files/${f1}`);
+    check('suppression d\'un fichier d\'une autre organisation -> 404', r.status === 404, r.json);
+    r = await owner('POST', `${ws(org)}/legal/obligations`, { title: 'Obligation avec fichier', dueDate: day(40) });
+    const of1 = r.json.id;
+    r = await upl(mgr, J, 'obligation', of1, 'recu', PDF);
+    check('fichier sur une obligation (extension ajoutée au nom)', r.status === 201 && r.json.name === 'recu.pdf', r.json);
+    r = await mgr('POST', `${J}/disputes`, { title: 'Dossier avec fichier', assigneeId: mgrId, docRef: 'Classeur B' });
+    const df1 = r.json.id;
+    r = await upl(mgr, J, 'dispute', df1, 'courrier.png', PNG);
+    check('fichier sur un litige', r.status === 201, r.json);
+    r = await mgr('GET', `${J}/disputes`);
+    check('litige : pièce jointe, référence et personne attribuée', r.json.disputes.find((d) => d.id === df1).filesCount === 1 && r.json.disputes.find((d) => d.id === df1).docRef === 'Classeur B' && r.json.disputes.find((d) => d.id === df1).assignee === 'Marc');
+    r = await mgr('POST', `${J}/disputes`, { title: 'Z', assigneeId: 99999 });
+    check('litige attribué à quelqu\'un d\'une autre organisation -> 400', r.status === 400, r.json);
+    r = await mgr('DELETE', `${J}/disputes/${df1}`);
+    r = await mgr('GET', `${J}/files?parentType=dispute&parentId=${df1}`);
+    check('supprimer un litige supprime ses fichiers (liste -> 404)', r.status === 404, r.json);
+
+    // Historique et signature
+    r = await mgr('PUT', `${J}/contracts/${kf}`, { title: 'Bail renouvelé', amount: 200000, signStatus: 'to_sign', signers: 'Awa, M. Njoya' });
+    check('contrat modifié', r.status === 200, r.json);
+    r = await mgr('PUT', `${J}/contracts/${kf}`, { signStatus: 'signed' });
+    r = await mgr('GET', `${J}/contracts`);
+    const kc = r.json.contracts.find((c) => c.id === kf);
+    check('signature : signé, date du jour par défaut, signataires, pas de valeur légale affichée', kc.signStatus === 'signed' && kc.signedAt === day(0) && kc.signers === 'Awa, M. Njoya' && kc.assignee === 'Marc', kc);
+    r = await mgr('PUT', `${J}/contracts/${kf}`, { signStatus: 'signed', signedAt: day(3) });
+    check('date de signature dans le futur -> 400', r.status === 400, r.json);
+    r = await mgr('PUT', `${J}/contracts/${kf}`, { signStatus: 'peut-etre' });
+    check('statut de signature inconnu -> 400', r.status === 400, r.json);
+    r = await mgr('PUT', `${J}/contracts/${kf}`, { assigneeId: 99999 });
+    check('rappel attribué hors organisation -> 400', r.status === 400, r.json);
+    r = await mgr('PUT', `${J}/contracts/${kf}`, { signStatus: 'none' });
+    r = await mgr('GET', `${J}/contracts`);
+    check('retour « sans suivi » : date effacée', r.json.contracts.find((c) => c.id === kf).signedAt === null);
+    r = await mgr('PUT', `${J}/contracts/${kf}`, { title: 'Bail renouvelé' });
+    r = await mgr('GET', `${J}/contracts/${kf}/history`);
+    const h = r.json.history;
+    check('historique : création + 4 modifications, plus récent en premier, sans modification vide', r.status === 200 && h.length === 4 && h[h.length - 1].action === 'Contrat créé', h.map((x) => x.action));
+    const hc = h.flatMap((x) => x.changes);
+    check('historique : qui, quoi (ancienne et nouvelle valeur) et quand', h.every((x) => x.userName === 'Marc' && x.at) && hc.some((c) => c.field === 'title' && c.from === 'Bail pour pièces jointes' && c.to === 'Bail renouvelé') && hc.some((c) => c.field === 'sign_status' && c.to === 'Signé') && hc.some((c) => c.field === 'amount' && c.to === '200000'), hc);
+    r = await other('GET', `${ws(org2)}/legal/contracts/${kf}/history`);
+    check('historique d\'une autre organisation -> 404', r.status === 404, r.json);
+    r = await mem('GET', `${J}/contracts/${kf}/history`);
+    check('historique : membre -> 403', r.status === 403, r.json);
+
+    // Rappels : une seule alerte par élément, attribuée, visible dans « Alertes » et dans le contexte de l'IA
+    r = await mgr('POST', `${J}/contracts`, { title: 'Contrat à rappeler', endDate: day(6), noticeDays: 3, assigneeId: mgrId, signStatus: 'to_sign' });
+    const kr = r.json.id;
+    r = await mgr('POST', `${J}/disputes`, { title: 'Dossier à suivre', nextStep: 'Appeler le client', nextDate: day(5), assigneeId: mgrId });
+    r = await mgr('GET', `${ws(org)}/dashboard/alerts`);
+    const al = (r.json.alerts || []).filter((a) => a.module === 'legal');
+    check('« Alertes » : rappels juridiques présents, attribués à la personne', al.length >= 2 && al.some((a) => a.text.includes('Contrat à rappeler') && a.text.includes('attribué à')) && al.some((a) => a.text.includes('Dossier à suivre')), r.status + ' ' + JSON.stringify(al));
+    check('pas de doublon : un seul rappel pour le contrat (fin et préavis fusionnés)', al.filter((a) => a.title.includes('à renouveler') && a.text.includes('Contrat à rappeler')).length === 1, al);
+    check('rappel à moins de 7 jours : urgent', al.find((a) => a.title.includes('à renouveler') && a.text.includes('Contrat à rappeler')).level === 'high');
+    r = await mgr('GET', `${ws(org)}/dashboard/alerts`);
+    check('relire les alertes ne crée pas de doublon', r.json.alerts.filter((a) => a.module === 'legal' && a.title.includes('à renouveler') && a.text.includes('Contrat à rappeler')).length === 1);
+    r = await mem('GET', `${ws(org)}/dashboard/alerts`);
+    check('le simple membre ne voit aucun rappel juridique', r.status === 200 && !(r.json.alerts || []).some((a) => a.module === 'legal'), r.status);
+    r = await mgr('POST', `${ws(org)}/ai/chat`, { module: 'legal', message: 'Mes rappels ?' });
+    const sysR = fake.seen.last.system;
+    check('IA : rappels attribués et contrats à signer dans le contexte, sans valeur légale', r.status === 200 && sysR.includes('Contrat à rappeler') && sysR.includes('attribué à Marc') && sysR.includes('à signer') && sysR.includes("n'est pas une signature électronique"), sysR.slice(0, 600));
+    r = await mgr('DELETE', `${J}/contracts/${kr}`);
+    r = await mgr('DELETE', `${J}/contracts/${kf}`);
+    r = await mgr('GET', `${J}/files?parentType=contract&parentId=${kf}`);
+    check('supprimer un contrat supprime ses fichiers', r.status === 404, r.json);
+    r = await mgr('GET', `${J}/contracts/${kf}/history`);
+    check('historique d\'un contrat supprimé -> 404', r.status === 404, r.json);
   } finally {
     if (process.env.SMOKE_LOG) console.log('--- journal du serveur ---\n' + out.split('\n').filter((l) => !/ -> 2\d\d /.test(l)).slice(-25).join('\n'));
     child.kill();

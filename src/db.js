@@ -1359,6 +1359,77 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_digest_log ON digest_log(org_id, user_id, id);
   `,
+  // Juridique : modèles propres à l'organisation, pièces jointes (chiffrées), historique des contrats, signature (suivi interne), rappels attribués.
+  `
+  ALTER TABLE legal_contracts ADD COLUMN assignee_id BIGINT;
+  ALTER TABLE legal_contracts ADD COLUMN sign_status TEXT NOT NULL DEFAULT 'none';
+  ALTER TABLE legal_contracts ADD COLUMN signed_at TEXT;
+  ALTER TABLE legal_contracts ADD COLUMN signers TEXT NOT NULL DEFAULT '';
+  ALTER TABLE legal_obligations ADD COLUMN doc_ref TEXT NOT NULL DEFAULT '';
+  ALTER TABLE legal_disputes ADD COLUMN assignee_id BIGINT;
+  ALTER TABLE legal_disputes ADD COLUMN doc_ref TEXT NOT NULL DEFAULT '';
+  CREATE TABLE legal_templates (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'document',
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    data TEXT NOT NULL DEFAULT '{}',
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_legal_templates_org ON legal_templates(org_id, kind);
+  CREATE TABLE legal_files (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    parent_type TEXT NOT NULL,
+    parent_id BIGINT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    mime TEXT NOT NULL,
+    size BIGINT NOT NULL,
+    data BYTEA NOT NULL,
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_legal_files_parent ON legal_files(org_id, parent_type, parent_id);
+  CREATE TABLE legal_history (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    contract_id BIGINT NOT NULL REFERENCES legal_contracts(id) ON DELETE CASCADE,
+    user_id BIGINT,
+    user_name TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL,
+    changes TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_legal_history_contract ON legal_history(contract_id, id);
+  `,
+  /* finance 2 : heures supplémentaires, 13e mois, comptabilisation de la paie, réouverture, clôture d'exercice, répétition des échéances */ `
+  ALTER TABLE payroll_settings ADD COLUMN options TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE payroll_slips ADD COLUMN overtime_hours TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE payroll_slips ADD COLUMN hourly_rate BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE payroll_slips ADD COLUMN annual_bonus BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE payroll_slips ADD COLUMN annual_bonus_label TEXT NOT NULL DEFAULT '';
+  ALTER TABLE payroll_slips ADD COLUMN acc_entry_id BIGINT;
+  ALTER TABLE payroll_slips ADD COLUMN acc_pay_entry_id BIGINT;
+  ALTER TABLE payroll_slips ADD COLUMN reopened_count BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE payroll_slips ADD COLUMN reopen_reason TEXT NOT NULL DEFAULT '';
+  ALTER TABLE payroll_slips ADD COLUMN reopened_at TEXT;
+  ALTER TABLE payroll_slips ADD COLUMN reopened_by BIGINT;
+  ALTER TABLE fiscal_obligations ADD COLUMN auto_repeat BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE fiscal_obligations ADD COLUMN parent_id BIGINT;
+  CREATE TABLE fiscal_closings (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    year TEXT NOT NULL,
+    action TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    user_id BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_fiscal_closings ON fiscal_closings(org_id, year, id);
+  `,
 ];
 
 

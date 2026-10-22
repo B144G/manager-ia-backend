@@ -62,6 +62,9 @@ async function alerts(req) {
     if (pl.c) add('info', 'hr', 'Ressources humaines', `${plural(pl.c, 'demande de congé attend', 'demandes de congé attendent')} une réponse`, pl.m);
   }
 
+  // Juridique : rappels d'échéances à 30 et 7 jours, une alerte par élément (responsables et plus)
+  if (A.can(req, 'manager')) for (const l of await require('./legal').alertItems(req)) add(l.level, 'legal', l.title, l.text, l.at);
+
   // Budget (responsables et plus)
   if (A.can(req, 'manager')) {
     const s = await require('./budget').summary(req);

@@ -6,6 +6,7 @@ const express = require('express');
 const { db, nowISO } = require('../db');
 const A = require('./access');
 const { HttpError } = require('../util');
+const SIG = require('./syscohada-sig');
 
 const router = express.Router({ mergeParams: true });
 router.use(A.need('admin'));
@@ -46,7 +47,7 @@ function templates() {
 
 const view = (o, t) => ({
   id: o.id, title: o.title, kind: o.kind, kindLabel: KINDS[o.kind] || '', period: o.period, dueDate: o.due_date, status: o.status, statusLabel: STATUSES[o.status],
-  amount: o.amount, reference: o.reference, note: o.note, recurrence: o.recurrence, doneDate: o.done_date,
+  amount: o.amount, reference: o.reference, note: o.note, recurrence: o.recurrence, doneDate: o.done_date, repeat: Boolean(o.auto_repeat), parentId: o.parent_id || null,
   late: o.status === 'todo' && o.due_date < t, soon: o.status === 'todo' && o.due_date >= t && o.due_date <= addDays(t, 7),
 });
 
@@ -79,6 +80,7 @@ function fields(b, cur) {
     reference: b.reference === undefined ? (c.reference || '') : A.text(b.reference, 200),
     note: b.note === undefined ? (c.note || '') : A.text(b.note, 300),
     recurrence: b.recurrence === undefined ? (c.recurrence || 'none') : A.oneOf(b.recurrence, Object.keys(RECUR), undefined, 'Répétition inconnue.'),
+    repeat: b.repeat === undefined ? Boolean(c.auto_repeat) : Boolean(b.repeat),
   };
 }
 
@@ -87,19 +89,40 @@ router.get('/obligations', async (req, res) => res.json({ ...(await obligations(
 router.post('/obligations', async (req, res) => {
   const f = fields(req.body || {}, null);
   if (!f.title) throw new HttpError(400, "Indiquez le nom de l'obligation.");
-  const id = (await db.prepare('INSERT INTO fiscal_obligations (org_id, title, kind, period, due_date, status, amount, reference, note, recurrence, done_date, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
-    req.org.id, f.title, f.kind, f.period, f.due, f.status, f.amount, f.reference, f.note, f.recurrence, f.status === 'todo' ? null : today(), req.user.id, nowISO())).lastInsertRowid;
+  if (f.repeat && f.recurrence === 'none') throw new HttpError(400, 'Pour répéter automatiquement, choisissez une périodicité (chaque mois, trimestre ou année).');
+  const id = (await db.prepare('INSERT INTO fiscal_obligations (org_id, title, kind, period, due_date, status, amount, reference, note, recurrence, done_date, created_by, created_at, auto_repeat) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+    req.org.id, f.title, f.kind, f.period, f.due, f.status, f.amount, f.reference, f.note, f.recurrence, f.status === 'todo' ? null : today(), req.user.id, nowISO(), f.repeat ? 1 : 0)).lastInsertRowid;
   await A.logActivity(req.org.id, req.user.id, 'fiscal', `Échéance fiscale « ${f.title} » ajoutée`);
   res.status(201).json({ id: Number(id) });
 });
 
+const STEP = { monthly: 1, quarterly: 3, yearly: 12 };
+
+/** Crée l'échéance suivante d'une obligation récurrente (à faire, mêmes réglages, sans justificatif). Renvoie null si elle existe déjà. */
+async function createNext(orgId, userId, o) {
+  const step = STEP[o.recurrence];
+  if (!step) return null;
+  const due = addMonths(o.due_date, step);
+  if (await db.prepare('SELECT 1 FROM fiscal_obligations WHERE org_id = ? AND title = ? AND due_date = ?').get(orgId, o.title, due)) return null;
+  const id = (await db.prepare("INSERT INTO fiscal_obligations (org_id, title, kind, period, due_date, status, amount, reference, note, recurrence, created_by, created_at, auto_repeat, parent_id) VALUES (?, ?, ?, '', ?, 'todo', ?, '', ?, ?, ?, ?, ?, ?)").run(
+    orgId, o.title, o.kind, due, o.amount, o.note, o.recurrence, userId, nowISO(), o.auto_repeat ? 1 : 0, o.id)).lastInsertRowid;
+  return { id: Number(id), dueDate: due };
+}
+
 router.put('/obligations/:id', async (req, res) => {
   const o = await obOf(req, req.params.id);
   const f = fields(req.body || {}, o);
+  if (f.repeat && f.recurrence === 'none') throw new HttpError(400, 'Pour répéter automatiquement, choisissez une périodicité (chaque mois, trimestre ou année).');
   const done = f.status === 'todo' ? null : (o.status !== 'todo' && o.done_date ? o.done_date : today());
-  await db.prepare('UPDATE fiscal_obligations SET title = ?, kind = ?, period = ?, due_date = ?, status = ?, amount = ?, reference = ?, note = ?, recurrence = ?, done_date = ? WHERE id = ?').run(
-    f.title, f.kind, f.period, f.due, f.status, f.amount, f.reference, f.note, f.recurrence, done, o.id);
-  res.json({ ok: true });
+  await db.prepare('UPDATE fiscal_obligations SET title = ?, kind = ?, period = ?, due_date = ?, status = ?, amount = ?, reference = ?, note = ?, recurrence = ?, done_date = ?, auto_repeat = ? WHERE id = ?').run(
+    f.title, f.kind, f.period, f.due, f.status, f.amount, f.reference, f.note, f.recurrence, done, f.repeat ? 1 : 0, o.id);
+  // « Répéter » : en passant de « à faire » à « déposée » ou « payée », l'échéance suivante est créée (une seule fois).
+  let next = null;
+  if (o.status === 'todo' && f.status !== 'todo' && f.repeat) {
+    next = await createNext(req.org.id, req.user.id, { ...o, title: f.title, kind: f.kind, due_date: f.due, amount: f.amount, note: f.note, recurrence: f.recurrence, auto_repeat: 1 });
+    if (next) await A.logActivity(req.org.id, req.user.id, 'fiscal', `Échéance « ${f.title} » : la suivante est créée pour le ${next.dueDate}`);
+  }
+  res.json({ ok: true, next });
 });
 
 router.delete('/obligations/:id', async (req, res) => {
@@ -108,16 +131,13 @@ router.delete('/obligations/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
-// Crée l'échéance suivante d'une obligation récurrente (à faire, mêmes réglages, sans justificatif).
+// Crée à la main l'échéance suivante d'une obligation récurrente.
 router.post('/obligations/:id/next', async (req, res) => {
   const o = await obOf(req, req.params.id);
-  const step = { monthly: 1, quarterly: 3, yearly: 12 }[o.recurrence];
-  if (!step) throw new HttpError(400, "Cette obligation n'est pas récurrente.");
-  const due = addMonths(o.due_date, step);
-  if (await db.prepare('SELECT 1 FROM fiscal_obligations WHERE org_id = ? AND title = ? AND due_date = ?').get(req.org.id, o.title, due)) throw new HttpError(409, "L'échéance suivante existe déjà.");
-  const id = (await db.prepare("INSERT INTO fiscal_obligations (org_id, title, kind, period, due_date, status, amount, reference, note, recurrence, created_by, created_at) VALUES (?, ?, ?, '', ?, 'todo', ?, '', ?, ?, ?, ?)").run(
-    req.org.id, o.title, o.kind, due, o.amount, o.note, o.recurrence, req.user.id, nowISO())).lastInsertRowid;
-  res.status(201).json({ id: Number(id), dueDate: due });
+  if (!STEP[o.recurrence]) throw new HttpError(400, "Cette obligation n'est pas récurrente.");
+  const n = await createNext(req.org.id, req.user.id, o);
+  if (!n) throw new HttpError(409, "L'échéance suivante existe déjà.");
+  res.status(201).json(n);
 });
 
 // ---------- Comptabilité : états de fin d'exercice ----------
@@ -130,66 +150,56 @@ const yearOf = (v) => {
 };
 const pre = (a, list) => list.some((p) => a.startsWith(p));
 
-/** Soldes intermédiaires de gestion (classement simplifié des comptes SYSCOHADA par leur numéro). Montants en « résultat positif = produit ». */
+/** Soldes intermédiaires de gestion. Classement des comptes : voir syscohada-sig.js (tableau de correspondance lisible). Montants : produit positif, charge positive dans la valeur ; le signe est géré dans les lignes. */
 function sigOf(rows) {
-  const v = { ventesMarch: 0, ventesProd: 0, prodAutre: 0, subv: 0, prodFin: 0, reprises: 0, autresProduits: 0, achatsMarch: 0, varStockMarch: 0, conso: 0, impots: 0, personnel: 0, chFin: 0, dotations: 0, autresCharges: 0, hao: 0, impotResultat: 0 };
+  const v = Object.fromEntries(Object.keys(SIG.SIG_KEYS).map((k) => [k, 0]));
   for (const r of rows) {
-    const a = r.account; const b = r.balance; const c = a[0];
-    if (c === '7') {
-      if (a.startsWith('701')) v.ventesMarch -= b;
-      else if (a.startsWith('70')) v.ventesProd -= b;
-      else if (pre(a, ['72', '73'])) v.prodAutre -= b;
-      else if (a.startsWith('71')) v.subv -= b;
-      else if (a.startsWith('77')) v.prodFin -= b;
-      else if (pre(a, ['78', '79'])) v.reprises -= b;
-      else v.autresProduits -= b;
-    } else if (c === '6') {
-      if (a.startsWith('601')) v.achatsMarch += b;
-      else if (a.startsWith('6031')) v.varStockMarch += b;
-      else if (pre(a, ['60', '61', '62', '63'])) v.conso += b;
-      else if (a.startsWith('64')) v.impots += b;
-      else if (a.startsWith('66')) v.personnel += b;
-      else if (a.startsWith('67')) v.chFin += b;
-      else if (pre(a, ['68', '69'])) v.dotations += b;
-      else v.autresCharges += b;
-    } else if (c === '8') {
-      if (a.startsWith('89')) v.impotResultat += b; else v.hao -= b;
-    }
+    const k = SIG.sigKeyOf(r.account);
+    if (!k) continue;
+    v[k] += SIG.SIG_KEYS[k][0] === 'produit' ? -r.balance : r.balance;
   }
   const margeCommerciale = v.ventesMarch - v.achatsMarch - v.varStockMarch;
-  const production = v.ventesProd + v.prodAutre;
-  const valeurAjoutee = margeCommerciale + production - v.conso;
+  const production = v.ventesProd + v.prodStockee + v.prodImmo;
+  const consommations = v.achatsMat + v.varStockMat + v.transports + v.servicesExt;
+  const valeurAjoutee = margeCommerciale + production - consommations;
   const excedentBrutExploitation = valeurAjoutee + v.subv - v.impots - v.personnel;
   const resultatExploitation = excedentBrutExploitation + v.autresProduits + v.reprises - v.autresCharges - v.dotations;
   const resultatFinancier = v.prodFin - v.chFin;
   const resultatActivitesOrdinaires = resultatExploitation + resultatFinancier;
-  const resultatNet = resultatActivitesOrdinaires + v.hao - v.impotResultat;
+  const hao = v.haoProd - v.haoCharges;
+  const resultatNet = resultatActivitesOrdinaires + hao - v.participation - v.impotResultat;
   return {
     chiffreAffaires: v.ventesMarch + v.ventesProd,
     lines: [
       { key: 'ventesMarch', label: 'Ventes de marchandises', amount: v.ventesMarch },
       { key: 'achatsMarch', label: 'Achats de marchandises et variation de stock', amount: -(v.achatsMarch + v.varStockMarch) },
       { key: 'margeCommerciale', label: 'Marge commerciale', amount: margeCommerciale, total: true },
-      { key: 'production', label: 'Production vendue et autre production', amount: production },
-      { key: 'conso', label: 'Consommations (matières, transports, services extérieurs)', amount: -v.conso },
+      { key: 'production', label: 'Production vendue, stockée et immobilisée', amount: production },
+      { key: 'consoMatieres', label: 'Consommations de matières et fournitures (achats et variation de stock)', amount: -(v.achatsMat + v.varStockMat) },
+      { key: 'transports', label: 'Transports', amount: -v.transports },
+      { key: 'servicesExt', label: 'Services extérieurs (loyers, assurances, banque, honoraires...)', amount: -v.servicesExt },
       { key: 'valeurAjoutee', label: 'Valeur ajoutée', amount: valeurAjoutee, total: true },
       { key: 'subv', label: "Subventions d'exploitation", amount: v.subv },
       { key: 'impots', label: 'Impôts et taxes', amount: -v.impots },
       { key: 'personnel', label: 'Charges de personnel', amount: -v.personnel },
       { key: 'excedentBrutExploitation', label: "Excédent brut d'exploitation", amount: excedentBrutExploitation, total: true },
-      { key: 'autres', label: 'Autres produits, reprises, autres charges et dotations', amount: v.autresProduits + v.reprises - v.autresCharges - v.dotations },
+      { key: 'autresProduits', label: "Autres produits, transferts de charges et reprises d'exploitation", amount: v.autresProduits + v.reprises },
+      { key: 'autresCharges', label: 'Autres charges', amount: -v.autresCharges },
+      { key: 'dotations', label: "Dotations d'exploitation (amortissements et provisions)", amount: -v.dotations },
       { key: 'resultatExploitation', label: "Résultat d'exploitation", amount: resultatExploitation, total: true },
       { key: 'resultatFinancier', label: 'Résultat financier', amount: resultatFinancier },
-      { key: 'hao', label: 'Résultat hors activités ordinaires', amount: v.hao },
+      { key: 'resultatActivitesOrdinaires', label: 'Résultat des activités ordinaires', amount: resultatActivitesOrdinaires, total: true },
+      { key: 'hao', label: 'Résultat hors activités ordinaires', amount: hao },
+      { key: 'participation', label: 'Participation des travailleurs', amount: -v.participation },
       { key: 'impotResultat', label: 'Impôts sur le résultat', amount: -v.impotResultat },
       { key: 'resultatNet', label: 'Résultat net', amount: resultatNet, total: true },
     ],
-    margeCommerciale, valeurAjoutee, excedentBrutExploitation, resultatExploitation, resultatNet,
+    margeCommerciale, valeurAjoutee, excedentBrutExploitation, resultatExploitation, resultatActivitesOrdinaires, resultatNet,
   };
 }
 
-/** Compte de résultat par compte (produits et charges) et bilan par grandes masses, calculés sur les écritures de l'exercice. */
-function statementsOf(rows) {
+/** Compte de résultat par compte (produits et charges) sur les écritures de l'exercice ; bilan par grandes masses sur les soldes CUMULÉS depuis l'ouverture (cumRows), avec le résultat des exercices précédents non affecté (prior). */
+function statementsOf(rows, cumRows, prior) {
   const net = (r) => r.balance;
   const produits = rows.filter((r) => r.account[0] === '7' || (r.account[0] === '8' && r.balance < 0)).map((r) => ({ account: r.account, label: r.label, amount: -r.balance }));
   const charges = rows.filter((r) => r.account[0] === '6' || (r.account[0] === '8' && r.balance >= 0)).map((r) => ({ account: r.account, label: r.label, amount: r.balance }));
@@ -197,7 +207,7 @@ function statementsOf(rows) {
   const resultat = -rows.filter((r) => '678'.includes(r.account[0])).reduce((a, r) => a + net(r), 0);
 
   const g = { immo: [], stocks: [], creances: [], treso: [], capitaux: [], dettesFin: [], dettesCirc: [], tresoPassif: [] };
-  for (const r of rows) {
+  for (const r of cumRows) {
     const a = r.account; const b = r.balance; const c = a[0];
     const item = { account: a, label: r.label, amount: 0 };
     if (c === '2') g.immo.push({ ...item, amount: b });
@@ -209,7 +219,7 @@ function statementsOf(rows) {
   const tot = (l) => l.reduce((a, x) => a + x.amount, 0);
   const actif = [['immo', 'Actif immobilisé (net)'], ['stocks', 'Stocks (net)'], ['creances', 'Créances et emplois assimilés'], ['treso', 'Trésorerie-actif']].map(([k, label]) => ({ key: k, label, amount: tot(g[k]), rows: g[k] }));
   const passif = [['capitaux', 'Capitaux propres (avant résultat)'], ['dettesFin', 'Dettes financières'], ['dettesCirc', 'Passif circulant'], ['tresoPassif', 'Trésorerie-passif']].map(([k, label]) => ({ key: k, label, amount: tot(g[k]), rows: g[k] }));
-  passif.splice(1, 0, { key: 'resultat', label: "Résultat de l'exercice", amount: resultat, rows: [] });
+  passif.splice(1, 0, { key: 'report', label: 'Résultat des exercices précédents (non affecté)', amount: prior, rows: [] }, { key: 'resultat', label: "Résultat de l'exercice", amount: resultat, rows: [] });
   const totalActif = actif.reduce((a, x) => a + x.amount, 0); const totalPassif = passif.reduce((a, x) => a + x.amount, 0);
   return { resultat: { produits, charges, totalProduits, totalCharges, resultat }, bilan: { actif, passif, totalActif, totalPassif, equilibre: totalActif === totalPassif } };
 }
@@ -217,7 +227,14 @@ function statementsOf(rows) {
 async function liasse(req, year) {
   const from = `${year}-01-01`; const to = `${year}-12-31`;
   const rows = await accounting().balance(req.org, from, to);
-  const st = statementsOf(rows); const sig = sigOf(rows);
+  // Soldes cumulés depuis l'ouverture (toutes les écritures jusqu'à la fin de l'exercice) : base du bilan.
+  const cum = await accounting().balance(req.org, '0001-01-01', to);
+  const resultYear = -rows.filter((r) => '678'.includes(r.account[0])).reduce((a, r) => a + r.balance, 0);
+  const resultToDate = -cum.filter((r) => '678'.includes(r.account[0])).reduce((a, r) => a + r.balance, 0);
+  const prior = resultToDate - resultYear; // résultat des exercices précédents qui n'a pas encore été viré en réserves/report à nouveau
+  const st = statementsOf(rows, cum, prior); const sig = sigOf(rows);
+  const before = Number((await db.prepare('SELECT COUNT(*) c FROM acc_entries WHERE org_id = ? AND date < ?').get(req.org.id, from)).c);
+  const acc = await accounting().ensure(req.org);
   const issues = [];
   const add = (level, code, text, items) => issues.push({ level, code, text, items: items || [] });
 
@@ -234,13 +251,73 @@ async function liasse(req, year) {
   if (unnamed.length) add('warn', 'unnamed', 'Des comptes n\'ont pas de nom dans le plan comptable.', unnamed.slice(0, 10).map((r) => r.account));
   if (!st.bilan.equilibre) add('error', 'bilan', `Le bilan n'est pas équilibré (actif ${st.bilan.totalActif.toLocaleString('fr-FR')} contre passif ${st.bilan.totalPassif.toLocaleString('fr-FR')}).`);
   if (sig.resultatNet !== st.resultat.resultat) add('error', 'result-gap', 'Le résultat net des soldes de gestion ne correspond pas au résultat du compte de résultat.');
-  if (tot.n && !rows.some((r) => r.account.startsWith('101'))) add('info', 'capital', "Aucune écriture sur le capital social (compte 101) cet exercice : normal si le capital a été constaté les années précédentes (les à-nouveaux ne sont pas reportés automatiquement).");
-  if (tot.n) add('info', 'carry', "Les états reprennent uniquement les écritures datées de l'exercice : les soldes des exercices précédents (reports à nouveau, immobilisations anciennes) doivent avoir été passés en écritures d'ouverture.");
+  if (tot.n && !cum.some((r) => r.account.startsWith('101'))) add('info', 'capital', "Aucune écriture sur le capital social (compte 101) depuis l'ouverture : vérifiez que le capital a bien été enregistré.");
+  if (tot.n && !before) add('info', 'carry', "Aucune écriture avant cet exercice : si l'entreprise existait déjà, enregistrez dans la Comptabilité les écritures d'ouverture (soldes de départ) pour que le bilan soit complet.");
+  if (prior !== 0) add('info', 'carry-result', `Le bilan cumule les écritures depuis l'ouverture et affiche ${prior.toLocaleString('fr-FR')} de résultat des exercices précédents non affecté. MANAGER-IA ne passe pas l'écriture d'affectation du résultat (réserves, report à nouveau, dividendes) : elle se décide en assemblée et se saisit en écriture diverse dans la Comptabilité.`);
   const todo = issues.filter((i) => i.level !== 'info');
-  return { year, notice: NOTICE, entryCount: Number(tot.n), resultat: st.resultat, bilan: st.bilan, sig, issues, toFix: todo.filter((i) => i.level === 'error').length, ready: !todo.some((i) => i.level === 'error') };
+  return { year, notice: NOTICE, entryCount: Number(tot.n), resultat: st.resultat, bilan: st.bilan, sig, carry: { priorResult: prior, hasPriorEntries: before > 0, cumulative: true }, exercise: { closed: Boolean(acc.locked_until && acc.locked_until >= to), lockedUntil: acc.locked_until || '' }, issues, toFix: todo.filter((i) => i.level === 'error').length, ready: !todo.some((i) => i.level === 'error') };
 }
 
 router.get('/liasse', async (req, res) => res.json(await liasse(req, yearOf(req.query.year))));
+
+// Tableau de correspondance des comptes (classes 1 à 8, sous-comptes usuels, lignes des soldes intermédiaires de gestion).
+router.get('/classification', (req, res) => res.json(SIG.describe()));
+
+// ---------- Exercices : clôture et réouverture ----------
+// Clôturer = verrouiller les écritures jusqu'au 31 décembre de l'année (réglage « période clôturée » de la Comptabilité). Aucune écriture
+// d'affectation du résultat ni de à-nouveaux n'est générée : le bilan cumule les soldes depuis l'ouverture, donc il reste exact sans elles.
+const EXERCISE_NOTES = [
+  "Clôturer un exercice verrouille toutes les écritures jusqu'au 31 décembre de cette année : plus personne ne peut en ajouter, ni dans ces dates ni avant.",
+  "La clôture ne génère PAS d'écriture d'affectation du résultat ni de report à nouveau : le bilan de l'exercice suivant reprend les soldes cumulés depuis l'ouverture et affiche le résultat précédent non affecté.",
+  "Seul le dernier exercice clôturé peut être rouvert, avec un motif obligatoire. La réouverture est journalisée (journal d'activité et journal d'audit).",
+  'Cette clôture est un verrou interne de MANAGER-IA : elle ne remplace ni la clôture légale ni la validation par votre expert-comptable.',
+];
+const lockStart = (req) => accounting().ensure(req.org);
+
+router.get('/exercises', async (req, res) => {
+  const acc = await lockStart(req);
+  const rows = await db.prepare("SELECT SUBSTR(date, 1, 4) AS year, COUNT(*) AS n FROM acc_entries WHERE org_id = ? GROUP BY SUBSTR(date, 1, 4) ORDER BY year DESC").all(req.org.id);
+  const cur = today().slice(0, 4);
+  const years = new Map(rows.map((r) => [r.year, Number(r.n)]));
+  if (!years.has(cur)) years.set(cur, 0);
+  const list = [...years.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1)).map(([year, n]) => ({ year, entryCount: n, closed: Boolean(acc.locked_until && acc.locked_until >= `${year}-12-31`), canClose: `${year}-12-31` <= today() && !(acc.locked_until && acc.locked_until >= `${year}-12-31`), canReopen: acc.locked_until === `${year}-12-31` }));
+  const history = (await db.prepare('SELECT id, year, action, reason, created_at FROM fiscal_closings WHERE org_id = ? ORDER BY id DESC LIMIT 30').all(req.org.id)).map((h) => ({ id: h.id, year: h.year, action: h.action, reason: h.reason, at: h.created_at }));
+  res.json({ lockedUntil: acc.locked_until || '', years: list, history, notes: EXERCISE_NOTES });
+});
+
+const closing = async (req, year, action, reason) => {
+  await db.prepare('INSERT INTO fiscal_closings (org_id, year, action, reason, user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(req.org.id, year, action, reason, req.user.id, nowISO());
+  await A.logActivity(req.org.id, req.user.id, 'fiscal', `Exercice ${year} ${action === 'close' ? 'clôturé' : 'rouvert'}${reason ? ' : ' + reason : ''}`);
+  try { await require('../security/audit').record(req, `fiscal.exercise_${action}`, { orgId: req.org.id, target: `exercice:${year}`, severity: action === 'close' ? 'info' : 'warn', detail: reason }); } catch { /* ne bloque jamais */ }
+};
+
+router.post('/exercises/:year/close', async (req, res) => {
+  const year = yearOf(req.params.year);
+  const end = `${year}-12-31`;
+  if (end > today()) throw new HttpError(400, "Cet exercice n'est pas terminé : il ne peut être clôturé qu'après le 31 décembre.");
+  const acc = await lockStart(req);
+  if (acc.locked_until && acc.locked_until >= end) throw new HttpError(409, 'Cet exercice est déjà clôturé.');
+  const l = await liasse(req, year);
+  if (l.toFix > 0) throw new HttpError(400, `Corrigez d'abord les ${l.toFix} anomalie(s) bloquante(s) de la liasse avant de clôturer.`);
+  await db.prepare('UPDATE acc_settings SET locked_until = ? WHERE org_id = ?').run(end, req.org.id);
+  await closing(req, year, 'close', '');
+  res.json({ ok: true, lockedUntil: end, notes: EXERCISE_NOTES });
+});
+
+router.post('/exercises/:year/reopen', async (req, res) => {
+  const year = yearOf(req.params.year);
+  const end = `${year}-12-31`;
+  const reason = A.text((req.body || {}).reason, 200, { required: true, msg: 'Indiquez le motif de la réouverture.' });
+  if (reason.length < 5) throw new HttpError(400, 'Le motif de la réouverture est trop court (5 caractères au moins).');
+  const acc = await lockStart(req);
+  if (acc.locked_until !== end) throw new HttpError(409, acc.locked_until ? `Seul le dernier exercice clôturé (verrou au ${acc.locked_until}) peut être rouvert.` : "Cet exercice n'est pas clôturé.");
+  const prev = String(Number(year) - 1);
+  const last = await db.prepare('SELECT action FROM fiscal_closings WHERE org_id = ? AND year = ? ORDER BY id DESC LIMIT 1').get(req.org.id, prev);
+  const lock = last && last.action === 'close' ? `${prev}-12-31` : null;
+  await db.prepare('UPDATE acc_settings SET locked_until = ? WHERE org_id = ?').run(lock, req.org.id);
+  await closing(req, year, 'reopen', reason);
+  res.json({ ok: true, lockedUntil: lock || '' });
+});
 
 // TVA du mois : collectée (comptes 443) moins déductible (comptes 445), à partir des écritures.
 async function vatMonth(req, monthParam) {
@@ -257,7 +334,12 @@ async function vatMonth(req, monthParam) {
   if (set && Number(set.vat_rate) === 0) missing.push('Le taux de TVA est à 0 % dans les réglages de la Comptabilité : aucune TVA n\'est séparée sur vos factures.');
   if (!col.length) missing.push(`Aucune TVA collectée (comptes 443) enregistrée en ${r.month} : vos factures du mois ne sont peut-être pas encore comptabilisées (Comptabilité, écritures automatiques).`);
   if (!ded.length) missing.push(`Aucune TVA déductible (comptes 445) enregistrée en ${r.month}${set && !set.purchase_vat ? ' : la TVA sur les achats n\'est pas activée dans les réglages de la Comptabilité' : ''}.`);
-  return { month: r.month, collected, deductible, due: Math.max(collected - deductible, 0), credit: Math.max(deductible - collected, 0), available: col.length > 0 || ded.length > 0, missing, notice: 'Estimation à partir de vos écritures : à vérifier avant toute déclaration.' };
+  const rateOf = (label) => { const m = /(\d+(?:[.,]\d+)?)\s*%/.exec(label || ''); return m ? Number(m[1].replace(',', '.')) : null; };
+  const byAccount = { collected: col.map((x) => ({ account: x.account, label: x.label, rate: rateOf(x.label), amount: -x.balance })), deductible: ded.map((x) => ({ account: x.account, label: x.label, rate: rateOf(x.label), amount: x.balance })) };
+  const rateNote = (col.length + ded.length) > 2 || byAccount.collected.some((x) => x.rate !== null) || byAccount.deductible.some((x) => x.rate !== null)
+    ? 'Le détail ci-dessous est par compte de TVA. Les taux affichés viennent du nom du compte, quand il en contient un (ex. « TVA facturée 9 % »).'
+    : "Le plan comptable distingue la TVA par nature (ventes, services, achats, immobilisations), pas par taux : une seule valeur de taux est réglée dans la Comptabilité et appliquée aux écritures automatiques. Si vous avez plusieurs taux, créez un compte par taux (ex. 443101 « TVA facturée 18 % », 443102 « TVA facturée 9 % ») et saisissez ces écritures à la main : elles seront additionnées dans le total et listées séparément ici.";
+  return { month: r.month, collected, deductible, due: Math.max(collected - deductible, 0), credit: Math.max(deductible - collected, 0), available: col.length > 0 || ded.length > 0, missing, byAccount, rate: set ? Number(set.vat_rate) : null, rateNote, notice: 'Estimation à partir de vos écritures : à vérifier avant toute déclaration.' };
 }
 router.get('/vat', async (req, res) => res.json(await vatMonth(req, req.query.month)));
 
@@ -279,10 +361,14 @@ module.exports.ctx = async (req) => {
   const cur = req.org.currency; const f = (n) => `${Number(n).toLocaleString('fr-FR')} ${cur}`;
   const year = today().slice(0, 4);
   const l = await liasse(req, year); const o = await obligations(req.org.id);
+  const rec = o.items.filter((x) => x.status === 'todo' && x.recurrence !== 'none');
+  const noAuto = rec.filter((x) => !x.repeat);
   const show = (list) => list.slice(0, 8).map((x) => `- ${String(x.title).slice(0, 60)} (échéance ${x.dueDate}${x.amount ? ', ' + f(x.amount) : ''})`).join('\n') || '(aucune)';
   return [`FISCALITÉ ${year} : résultat provisoire ${f(l.resultat.resultat)}, chiffre d'affaires ${f(l.sig.chiffreAffaires)} (d'après ${l.entryCount} écriture(s) ; document de travail non validé).`,
     `Anomalies à corriger avant dépôt : ${l.toFix}${l.issues.filter((i) => i.level === 'error').length ? '\n' + l.issues.filter((i) => i.level === 'error').slice(0, 6).map((i) => '- ' + i.text.slice(0, 160)).join('\n') : ''}`,
-    `Échéances en retard (${o.late.length}) :\n${show(o.late)}`, `Échéances dans les 7 jours (${o.soon.length}) :\n${show(o.soon)}`].join('\n').slice(0, 2900);
+    `Échéances en retard (${o.late.length}) :\n${show(o.late)}`, `Échéances dans les 7 jours (${o.soon.length}) :\n${show(o.soon)}`,
+    `Échéances récurrentes ouvertes : ${rec.length}. Rappel : quand une échéance « Répéter » est marquée déposée ou payée, la suivante est créée automatiquement ; ${noAuto.length ? `${noAuto.length} échéance(s) récurrente(s) n'ont PAS « Répéter » (la suivante est à créer à la main) : ${noAuto.slice(0, 5).map((x) => String(x.title).slice(0, 40)).join(', ')}.` : 'toutes ont « Répéter ».'}`,
+    l.carry.priorResult ? `Résultat des exercices précédents non affecté : ${f(l.carry.priorResult)} (affectation à saisir par le comptable).` : '', l.exercise.closed ? `Exercice ${year} clôturé (verrou au ${l.exercise.lockedUntil}).` : `Verrou de clôture : ${l.exercise.lockedUntil || 'aucun'}.`].filter(Boolean).join('\n').slice(0, 2900);
 };
 module.exports.min = 'admin';
 module.exports.prompt = `Tu aides l'administrateur à PRÉPARER sa fin d'exercice et son calendrier fiscal : lire les états (bilan, compte de résultat, soldes intermédiaires de gestion), comprendre les anomalies à corriger, ne pas oublier les échéances en retard ou proches, estimer la TVA du mois.
