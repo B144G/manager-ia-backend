@@ -55,8 +55,10 @@ const counters = { calls: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 const stats = () => ({ ...counters, provider: config.ai.provider, model: config.ai.model, modelFast: config.ai.modelFast || null });
 
 const failure = (r, name) => {
-  const msg = (r.data && r.data.error && (r.data.error.message || r.data.error)) || 'réponse inattendue';
-  return new Error(`${name} HTTP ${r.status} : ${oneLine(String(msg), 200)}`);
+  // Certains services (Gemini) renvoient l'erreur dans une liste : [{ error: { message } }].
+  const d = Array.isArray(r.data) ? r.data[0] : r.data;
+  const msg = (d && d.error && (d.error.message || d.error)) || (d && d.message) || (typeof r.data === 'string' ? r.data : '') || 'réponse inattendue (vérifiez AI_BASE_URL et AI_MODEL)';
+  return new Error(`${name} HTTP ${r.status} : ${oneLine(String(msg), 240)}`);
 };
 
 /**
