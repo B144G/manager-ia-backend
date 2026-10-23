@@ -21,37 +21,45 @@ function passwordProblem(pass, ...personal) {
 }
 
 /** Lance une erreur 429 si ce compte (ou "admin") est verrouillé. */
-function assertNotLocked(key) {
-  const r = db.prepare('SELECT * FROM login_fails WHERE k = ?').get(key);
+async function assertNotLocked(key) {
+  const r = await db.prepare('SELECT * FROM login_fails WHERE k = ?').get(key);
   if (r && r.locked_until && Date.parse(r.locked_until) > Date.now()) {
     const min = Math.max(1, Math.ceil((Date.parse(r.locked_until) - Date.now()) / 60000));
     throw new HttpError(429, `Trop d'échecs : connexion bloquée pendant encore ${min} min. Vous pouvez aussi réinitialiser votre mot de passe.`);
   }
 }
 /** Compte un échec ; renvoie true si le verrouillage vient d'être déclenché. */
-function recordFail(key) {
+async function recordFail(key) {
   const now = Date.now();
-  const r = db.prepare('SELECT * FROM login_fails WHERE k = ?').get(key);
+  const r = await db.prepare('SELECT * FROM login_fails WHERE k = ?').get(key);
   let fails = 1; let first = new Date(now).toISOString();
   if (r && now - Date.parse(r.first_at) < FAIL_WINDOW_MS) { fails = r.fails + 1; first = r.first_at; }
   const lock = fails >= MAX_FAILS ? new Date(now + LOCK_MS).toISOString() : null;
-  db.prepare('INSERT INTO login_fails (k, fails, first_at, locked_until) VALUES (?, ?, ?, ?) ON CONFLICT(k) DO UPDATE SET fails = excluded.fails, first_at = excluded.first_at, locked_until = excluded.locked_until')
+  await db.prepare('INSERT INTO login_fails (k, fails, first_at, locked_until) VALUES (?, ?, ?, ?) ON CONFLICT(k) DO UPDATE SET fails = excluded.fails, first_at = excluded.first_at, locked_until = excluded.locked_until')
     .run(key, lock ? 0 : fails, first, lock);
   return Boolean(lock);
 }
-const clearFails = (key) => db.prepare('DELETE FROM login_fails WHERE k = ?').run(key);
+const clearFails = async (key) => await db.prepare('DELETE FROM login_fails WHERE k = ?').run(key);
 
-/** Journal de sécurité (jamais de mot de passe ni de code). */
-function audit(type, req, userId, detail) {
-  try {
-    db.prepare('INSERT INTO security_log (at, type, user_id, ip, detail) VALUES (?, ?, ?, ?, ?)')
-      .run(nowISO(), type, userId || null, String((req && req.ip) || '').slice(0, 64), String(detail || '').slice(0, 200));
-  } catch (e) { log.warn('Journal de sécurité : écriture impossible'); }
+// Anciens types d'événements -> journal d'audit central (src/security/audit.js) : [action, gravité, points d'abus]
+const LEGACY = {
+  register: ['account.register', 'info'], login_ok: ['login.ok', 'info'], login_fail: ['login.fail', 'warn', 'login_fail'], login_locked: ['login.locked', 'high', 'login_locked'],
+  password_reset: ['password.reset', 'warn'], password_change: ['password.change', 'warn'], password_change_fail: ['password.change_fail', 'warn'],
+  admin_login: ['admin.login', 'warn'], admin_login_fail: ['admin.login_fail', 'high', 'admin_login_fail'], admin_locked: ['admin.locked', 'critical', 'admin_locked'],
+};
+
+/** Journal de sécurité (jamais de mot de passe ni de code) : écrit dans le journal d'audit central, et compte les points d'abus. */
+async function audit(type, req, userId, detail) {
+  const m = LEGACY[type] || [String(type).replace(/_/g, '.'), 'info'];
+  const central = require('../security');
+  await central.audit.record(req, m[0], { userId, detail, severity: m[1], actor: type === 'admin_login' ? { type: 'admin', id: null } : undefined });
+  if (m[2]) await central.abuse.strike(req, m[2]);
 }
 
-function sweep() {
-  db.prepare('DELETE FROM security_log WHERE at < ?').run(new Date(Date.now() - 180 * 86400000).toISOString());
-  db.prepare('DELETE FROM login_fails WHERE (locked_until IS NULL OR locked_until < ?) AND first_at < ?').run(nowISO(), new Date(Date.now() - FAIL_WINDOW_MS).toISOString());
+async function sweep() {
+  await db.prepare('DELETE FROM security_log WHERE at < ?').run(new Date(Date.now() - 180 * 86400000).toISOString());
+  await db.prepare('DELETE FROM login_fails WHERE (locked_until IS NULL OR locked_until < ?) AND first_at < ?').run(nowISO(), new Date(Date.now() - FAIL_WINDOW_MS).toISOString());
+  await require('../security').sweep();
 }
 
 module.exports = { BCRYPT_COST, passwordProblem, assertNotLocked, recordFail, clearFails, audit, sweep };

@@ -19,7 +19,7 @@ async function getToken() {
 
 async function authed(path, opts = {}) {
   const token = await getToken();
-  return fetchJson(`${base()}${path}`, { ...opts, headers: { Authorization: `Token ${token}` } });
+  return await fetchJson(`${base()}${path}`, { ...opts, headers: { Authorization: `Token ${token}` } });
 }
 
 /** Lance la demande de paiement sur le téléphone du client. Renvoie { reference, ussd_code, operator }. */

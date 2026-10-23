@@ -17,7 +17,7 @@ const seen = makeSeen();
 const hits = new Map();
 const UNSUPPORTED = "Je peux lire les messages écrits et les messages vocaux, ainsi que les photos et les PDF. Pouvez-vous m'écrire ou m'enregistrer votre demande ?";
 
-const orgOf = (token) => db.prepare('SELECT * FROM orgs WHERE intake_token = ?').get(String(token || '').slice(0, 80));
+const orgOf = async (token) => await db.prepare('SELECT * FROM orgs WHERE intake_token = ?').get(String(token || '').slice(0, 80));
 
 /** Limite anti-abus : 25 messages par 10 minutes pour un même numéro. */
 function tooMany(key) {
@@ -37,19 +37,19 @@ function validSignature(req, secret) {
 }
 
 // Étape de vérification faite une fois dans le tableau de bord Meta.
-router.get('/:token', (req, res) => {
-  const org = orgOf(req.params.token);
+router.get('/:token', async (req, res) => {
+  const org = await orgOf(req.params.token);
   if (!org || !org.wa_verify || req.query['hub.mode'] !== 'subscribe' || !safeEqual(String(req.query['hub.verify_token'] || ''), org.wa_verify)) return res.status(403).type('text/plain').send('Vérification refusée');
   return res.status(200).type('text/plain').send(String(req.query['hub.challenge'] || ''));
 });
 
-router.post('/:token', express.json({ limit: '1mb', verify: (req, res, buf) => { req.rawBody = buf; } }), (req, res) => {
-  const org = orgOf(req.params.token);
+router.post('/:token', express.json({ limit: '1mb', verify: (req, res, buf) => { req.rawBody = buf; } }), async (req, res) => {
+  const org = await orgOf(req.params.token);
   if (!org || !waOrg.isConnected(org)) return res.status(404).json({ error: 'Introuvable.' });
-  if (!validSignature(req, vault.decrypt(org.wa_secret))) { log.warn(`WhatsApp (organisation ${org.id}) : signature invalide, message rejeté.`); return res.status(403).json({ error: 'Signature invalide.' }); }
+  if (!validSignature(req, vault.decrypt(org.wa_secret))) { log.warn(`WhatsApp (organisation ${org.id}) : signature invalide, message rejeté.`); require('../security').abuse.strike(req, 'bad_signature'); return res.status(403).json({ error: 'Signature invalide.' }); }
   res.status(200).send('EVENT_RECEIVED'); // on répond vite à Meta, puis on traite
   const body = req.body;
-  setImmediate(() => {
+  setImmediate(async () => {
     processBody(org, body).catch((e) => log.warn(`WhatsApp (organisation ${org.id}) : erreur de traitement :`, oneLine(e.message, 200)));
   });
 });
@@ -91,11 +91,11 @@ async function handleMessage(org, m) {
   // Désabonnement : « STOP » arrête toute relance sortante ; « REPRENDRE » la réactive.
   const word = text.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z ]/g, '').trim();
   if (['stop', 'arret', 'arreter', 'desabonner', 'unsubscribe', 'stop relances'].includes(word)) {
-    waOut.optOut(org.id, from);
+    await waOut.optOut(org.id, from);
     return void (await waOrg.sendText(org, from, "C'est noté : vous ne recevrez plus de messages de relance. Vous pouvez toujours nous écrire. Pour les réactiver, répondez REPRENDRE."));
   }
-  if (['reprendre', 'start'].includes(word) && waOut.isOptedOut(org.id, from)) {
-    waOut.optIn(org.id, from);
+  if (['reprendre', 'start'].includes(word) && await waOut.isOptedOut(org.id, from)) {
+    await waOut.optIn(org.id, from);
     return void (await waOrg.sendText(org, from, 'Merci, les messages de relance sont réactivés.'));
   }
 

@@ -8,6 +8,7 @@ const net = require('net');
 const crypto = require('crypto');
 const os = require('os');
 const path = require('path');
+const { startTestPg } = require('./lib/testdb');
 
 let passed = 0;
 let failed = 0;
@@ -141,10 +142,10 @@ async function main() {
   const fake = await fakeClaude(fport);
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
-  const dbFile = path.join(os.tmpdir(), `manager-ia-ws-${process.pid}.db`);
+  const pgt = await startTestPg();
   const blank = ['ALLOWED_ORIGINS', 'COOKIE_SAMESITE', 'COOKIE_SECURE', 'SMTP_HOST', 'WHATSAPP_PHONE_ID', 'WHATSAPP_TOKEN', 'CAMPAY_USERNAME', 'CAMPAY_PASSWORD', 'BUSINESS_FILE', 'KNOWLEDGE_DIR'];
-  const env = { ...process.env, ...Object.fromEntries(blank.map((k) => [k, ''])), NODE_ENV: 'test', PORT: String(port), JWT_SECRET: 'secret-de-test-assez-long-123456', DB_PATH: dbFile,
-    ANTHROPIC_API_KEY: 'cle-de-test', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fport}`, META_GRAPH_URL: `http://127.0.0.1:${fport}/graph`, STT_API_KEY: 'cle-stt', STT_BASE_URL: `http://127.0.0.1:${fport}/v1`, ADMIN_USERNAME: 'admin-test', ADMIN_PASSWORD: 'mot-de-passe-admin-test', TRUST_PROXY: '0', WS_AI_FREE: '100', AI_PER_MINUTE: '500', SIGNUP_VERIFY: 'off', TEST_AUTH_BYPASS: '1', WEBHOOK_ALLOW_PRIVATE: '1', META_MEDIA_ALLOW_ANY: '1', API_PUBLIC_URL: `http://127.0.0.1:${port}`, REPLY_DELAY_SCALE: '20', REPLY_TICK_MS: '50', REMINDER_HOUR: '0', REMINDER_TICK_MS: '100', SMTP_HOST: '127.0.0.1', SMTP_PORT: String(smtpPort), SMTP_FROM: 'noreply@manager-ia.test', WS_BRANCHES_FREE: '2' };
+  const env = { ...process.env, ...Object.fromEntries(blank.map((k) => [k, ''])), NODE_ENV: 'test', PORT: String(port), JWT_SECRET: 'secret-de-test-assez-long-123456', DATABASE_URL: pgt.url,
+    ANTHROPIC_API_KEY: 'cle-de-test', ANTHROPIC_BASE_URL: `http://127.0.0.1:${fport}`, META_GRAPH_URL: `http://127.0.0.1:${fport}/graph`, STT_API_KEY: 'cle-stt', STT_BASE_URL: `http://127.0.0.1:${fport}/v1`, ADMIN_USERNAME: 'admin-test', ADMIN_PASSWORD: 'mot-de-passe-admin-test', TRUST_PROXY: '0', WS_AI_FREE: '100', AI_PER_MINUTE: '500', SIGNUP_VERIFY: 'off', WEBHOOK_ALLOW_PRIVATE: '1', META_MEDIA_ALLOW_ANY: '1', API_PUBLIC_URL: `http://127.0.0.1:${port}`, REPLY_DELAY_SCALE: '20', REPLY_TICK_MS: '50', REMINDER_HOUR: '0', REMINDER_TICK_MS: '100', SMTP_HOST: '127.0.0.1', SMTP_PORT: String(smtpPort), SMTP_FROM: 'noreply@manager-ia.test', WS_BRANCHES_FREE: '2' };
   const child = spawn(process.execPath, [path.join(__dirname, '..', 'src', 'server.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = '';
   child.stdout.on('data', (d) => { out += d; });
@@ -622,9 +623,9 @@ async function main() {
     check('e-mail reçu : destinataire, objet sans injection d\'en-tête, signature, pièce jointe PNG', got && /^To: .*marie@exemple\.com/m.test(got) && !/^Bcc:/mi.test(got) && /avec MANAGER-IA/.test(got) && /Boutique Awa/.test(got) && /Content-Type: image\/png/i.test(got) && /Reply-To:/i.test(got), got && got.slice(0, 600));
     r = await staff('GET', M);
     check('journal des envois et fichiers', r.json.enabled === true && r.json.outbox.length === 1 && r.json.outbox[0].status === 'sent' && r.json.files.length === 1 && r.json.sentToday === 1, r.json);
-    const raw0 = new (require('better-sqlite3'))(dbFile);
-    for (let i = 0; i < 4; i++) raw0.prepare("INSERT INTO outbox (org_id, user_id, customer_id, to_email, subject, body, status, created_at) VALUES (?, 1, ?, 'a@b.cm', 's', 'b', 'sent', ?)").run(org, cust, new Date().toISOString());
-    raw0.close();
+    const raw0 = await pgt.open();
+    for (let i = 0; i < 4; i++) await raw0.prepare("INSERT INTO outbox (org_id, user_id, customer_id, to_email, subject, body, status, created_at) VALUES (?, 1, ?, 'a@b.cm', 's', 'b', 'sent', ?)").run(org, cust, new Date().toISOString());
+    await raw0.close();
     r = await staff('POST', `${M}/send`, { customerId: cust, subject: 'Encore', body: 'Encore un' });
     check('quota d\'e-mails par jour (5 en Gratuit) -> 429', r.status === 429 && /5 e-mails par jour/.test(r.json.error), r.json);
     r = await staff('DELETE', `${M}/files/${fileId}`);
@@ -728,7 +729,7 @@ async function main() {
     console.log('WhatsApp de l\'organisation (API officielle de Meta, simulée)');
     const WA = `/api/ws/public/whatsapp/${token}`;
     const PID = '109876543210', APPSECRET = 'secret-app-meta-123', TOKEN_WA = 'EAAG-jeton-de-test-0123456789';
-    const waitFor = async (fn, ms = 4000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (fn()) return true; await sleep(50); } return false; };
+    const waitFor = async (fn, ms = 4000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await fn()) return true; await sleep(50); } return false; };
     const post = (body, secret = APPSECRET, sig) => { const rawBody = JSON.stringify(body); return fetch(base + WA, { method: 'POST', headers: { 'content-type': 'application/json', ...(sig === null ? {} : { 'x-hub-signature-256': sig || 'sha256=' + crypto.createHmac('sha256', secret).update(rawBody).digest('hex') }) }, body: rawBody }); };
     const payload = (from, id, msg, pid = PID) => ({ object: 'whatsapp_business_account', entry: [{ changes: [{ value: { metadata: { phone_number_id: pid }, contacts: [{ profile: { name: 'Client' }, wa_id: from }], messages: [{ from, id, timestamp: '1', ...msg }] } }] }] });
     const sent = () => (fake.seen.wa || []).length;
@@ -739,10 +740,10 @@ async function main() {
     r = await owner('PUT', `${SL}/whatsapp`, { phoneId: PID, number: '237 677 11 22 33', token: TOKEN_WA, appSecret: APPSECRET });
     const verifyTok = r.json.verifyToken;
     check('WhatsApp : connecté ; le jeton et le secret ne sont jamais renvoyés', r.status === 200 && r.json.connected === true && r.json.tokenSet && r.json.secretSet && /^[a-f0-9]{24}$/.test(verifyTok) && !JSON.stringify(r.json).includes('EAAG') && !JSON.stringify(r.json).includes(APPSECRET), r.json);
-    const rawDb = new (require('better-sqlite3'))(dbFile);
-    const row = rawDb.prepare('SELECT wa_token, wa_secret FROM orgs WHERE id = ?').get(org);
+    const rawDb = await pgt.open();
+    const row = await rawDb.prepare('SELECT wa_token, wa_secret FROM orgs WHERE id = ?').get(org);
     check('WhatsApp : jeton et secret chiffrés dans la base (illisibles sans la clé)', /^v1:/.test(row.wa_token) && !row.wa_token.includes('EAAG') && /^v1:/.test(row.wa_secret) && !row.wa_secret.includes(APPSECRET), [row.wa_token.slice(0, 8)]);
-    rawDb.close();
+    await rawDb.close();
     r = await owner('GET', `${SL}/whatsapp`);
     check('WhatsApp : lecture des réglages sans secret', r.json.connected && !JSON.stringify(r.json).includes('EAAG') && r.json.webhookPath === WA, r.json);
     r = await owner('POST', `${SL}/whatsapp/test`);
@@ -805,9 +806,9 @@ async function main() {
     check('un responsable écrit au client sur WhatsApp depuis MANAGER-IA', r.status === 200 && fake.seen.wa[6].to === '237611223344' && /responsable/.test(fake.seen.wa[6].body), [r.json, fake.seen.wa[6]]);
     r = await owner('GET', `${SL}/chats/${hc.id}`);
     check('la réponse humaine est conservée dans la conversation', r.json.messages.some((m) => m.role === 'staff' && /responsable/.test(m.content)), r.json.messages.map((m) => m.role));
-    const rawDb2 = new (require('better-sqlite3'))(dbFile);
-    rawDb2.prepare('UPDATE chat_messages SET created_at = ? WHERE chat_id = ?').run('2020-01-01T10:00:00.000Z', hc.id);
-    rawDb2.close();
+    const rawDb2 = await pgt.open();
+    await rawDb2.prepare('UPDATE chat_messages SET created_at = ? WHERE chat_id = ?').run('2020-01-01T10:00:00.000Z', hc.id);
+    await rawDb2.close();
     r = await owner('POST', `${SL}/chats/${hc.id}/reply`, { text: 'Encore là ?' });
     check('au-delà de 24 h sans message du client : réponse libre refusée (règle WhatsApp) -> 400', r.status === 400 && /24 h/.test(r.json.error), r.json);
     r = await owner('PUT', `${SL}/chats/${hc.id}/status`, { status: 'open' });
@@ -850,9 +851,9 @@ async function main() {
     w = await post(imgMsg('237677700004', 'wamid.pdf1', 'document', 'PDF1', 'Ma liste de commande'));
     await waitFor(() => sent() >= wm3 + 1);
     check('PDF reçu : transmis à l\'IA comme document', fake.seen.lastParts.some((p) => p.type === 'document' && p.media === 'application/pdf'), fake.seen.lastParts);
-    const rawDb6 = new (require('better-sqlite3'))(dbFile);
-    const nm = rawDb6.prepare('SELECT COUNT(*) c, MAX(size) mx FROM chat_media').get();
-    rawDb6.close();
+    const rawDb6 = await pgt.open();
+    const nm = await rawDb6.prepare('SELECT COUNT(*) c, MAX(size) mx FROM chat_media').get();
+    await rawDb6.close();
     check('pièces jointes conservées en base (3 : photo, reçu, PDF), le faux fichier n\'est pas gardé', nm.c === 3 && nm.mx < 5 * 1024 * 1024, nm);
 
 
@@ -951,10 +952,10 @@ async function main() {
     // Un prospect silencieux depuis 3 jours : relancé une seule fois
     w = await post(payload('237699001122', 'wamid.rel1', { type: 'text', text: { body: 'Bonjour, vous avez des robes ?' } }));
     await waitFor(() => sent() >= wn0 + 2);
-    const rawDb3 = new (require('better-sqlite3'))(dbFile);
-    const w_silentChat = rawDb3.prepare("SELECT id FROM chats WHERE contact = '237699001122'").get();
-    rawDb3.prepare('UPDATE chat_messages SET created_at = ? WHERE chat_id = ?').run(new Date(Date.now() - 3 * 86400000).toISOString(), w_silentChat.id);
-    rawDb3.close();
+    const rawDb3 = await pgt.open();
+    const w_silentChat = await rawDb3.prepare("SELECT id FROM chats WHERE contact = '237699001122'").get();
+    await rawDb3.prepare('UPDATE chat_messages SET created_at = ? WHERE chat_id = ?').run(new Date(Date.now() - 3 * 86400000).toISOString(), w_silentChat.id);
+    await rawDb3.close();
     r = await owner('GET', WO);
     check('le prospect silencieux (3 jours) est proposé à la relance', r.json.silent.some((x) => x.contact === '237699001122'), r.json.silent);
     const wn1 = sent();
@@ -970,9 +971,9 @@ async function main() {
     const w_stopChat = (id) => payload('237688776655', id, { type: 'text', text: { body: id === 'wamid.stop' ? 'STOP' : id === 'wamid.go' ? 'Reprendre' : 'Bonjour, des chapeaux ?' } });
     w = await post(w_stopChat('wamid.hello'));
     await waitFor(() => sent() >= wn2 + 1);
-    const rawDb4 = new (require('better-sqlite3'))(dbFile);
-    rawDb4.prepare("UPDATE chat_messages SET created_at = ? WHERE chat_id = (SELECT id FROM chats WHERE contact = '237688776655')").run(new Date(Date.now() - 3 * 86400000).toISOString());
-    rawDb4.close();
+    const rawDb4 = await pgt.open();
+    await rawDb4.prepare("UPDATE chat_messages SET created_at = ? WHERE chat_id = (SELECT id FROM chats WHERE contact = '237688776655')").run(new Date(Date.now() - 3 * 86400000).toISOString());
+    await rawDb4.close();
     r = await owner('GET', WO);
     check('avant STOP : ce prospect est relançable', r.json.silent.some((x) => x.contact === '237688776655'), r.json.silent);
     const w_calls2 = fake.seen.publicCalls; const wn3 = sent();
@@ -991,10 +992,10 @@ async function main() {
     check('REPRENDRE : relances réactivées', /réactivés/.test(fake.seen.wa[fake.seen.wa.length - 1].body) && r.json.optouts === 0, r.json.optouts);
 
     // Factures impayées
-    const rawDb5 = new (require('better-sqlite3'))(dbFile);
-    const custDebt = rawDb5.prepare("INSERT INTO customers (org_id, name, phone, email, notes, created_at) VALUES (?, 'Ibrahim Debiteur', '655 12 34 56', '', '', ?)").run(org, new Date().toISOString()).lastInsertRowid;
-    rawDb5.prepare("INSERT INTO documents (org_id, customer_id, kind, number, status, lines, total, paid, issued, due, created_by, created_at, updated_at) VALUES (?, ?, 'invoice', 'F-TEST-1', 'sent', '[]', 50000, 10000, '2020-01-01', '2020-02-01', 1, ?, ?)").run(org, custDebt, new Date().toISOString(), new Date().toISOString());
-    rawDb5.close();
+    const rawDb5 = await pgt.open();
+    const custDebt = (await rawDb5.prepare("INSERT INTO customers (org_id, name, phone, email, notes, created_at) VALUES (?, 'Ibrahim Debiteur', '655 12 34 56', '', '', ?)").run(org, new Date().toISOString())).lastInsertRowid;
+    await rawDb5.prepare("INSERT INTO documents (org_id, customer_id, kind, number, status, lines, total, paid, issued, due, created_by, created_at, updated_at) VALUES (?, ?, 'invoice', 'F-TEST-1', 'sent', '[]', 50000, 10000, '2020-01-01', '2020-02-01', 1, ?, ?)").run(org, custDebt, new Date().toISOString(), new Date().toISOString());
+    await rawDb5.close();
     r = await owner('GET', WO);
     check('la facture échue (reste 40 000) est proposée au rappel', r.json.overdue.some((i) => i.number === 'F-TEST-1' && i.left === 40000), r.json.overdue);
     const wn5 = sent();
@@ -1090,8 +1091,8 @@ async function main() {
     r = await owner('PUT', MS, { pageId: PAGE, instagramId: IGID, token: PAGE_TOKEN, appSecret: MSECRET });
     const mverify = r.json.verifyToken;
     check('Messenger : connecté ; jeton et secret jamais renvoyés', r.status === 200 && r.json.connected && r.json.tokenSet && r.json.secretSet && !JSON.stringify(r.json).includes('EAAG') && !JSON.stringify(r.json).includes(MSECRET) && /^[a-f0-9]{24}$/.test(mverify), r.json);
-    const rawDb8 = new (require('better-sqlite3'))(dbFile);
-    const mrow = rawDb8.prepare('SELECT fb_token, fb_secret FROM orgs WHERE id = ?').get(org); rawDb8.close();
+    const rawDb8 = await pgt.open();
+    const mrow = await rawDb8.prepare('SELECT fb_token, fb_secret FROM orgs WHERE id = ?').get(org); await await rawDb8.close();
     check('Messenger : jeton et secret chiffrés dans la base', /^v1:/.test(mrow.fb_token) && !mrow.fb_token.includes('EAAG') && /^v1:/.test(mrow.fb_secret), mrow.fb_token.slice(0, 6));
     r = await owner('POST', `${MS}/test`, {});
     check('Messenger : test de connexion', r.status === 200, r.json);
@@ -1421,9 +1422,9 @@ async function main() {
 
     // Plus de 24 h : modèle WhatsApp approuvé nécessaire
     const rem2 = await tomorrowAppt('237699600002', 'wamid.t2', 2);
-    const rawDb10 = new (require('better-sqlite3'))(dbFile);
-    rawDb10.prepare("UPDATE chat_messages SET created_at = ? WHERE chat_id = (SELECT id FROM chats WHERE contact = '237699600002')").run(new Date(Date.now() - 3 * 86400000).toISOString());
-    rawDb10.close();
+    const rawDb10 = await pgt.open();
+    await rawDb10.prepare("UPDATE chat_messages SET created_at = ? WHERE chat_id = (SELECT id FROM chats WHERE contact = '237699600002')").run(new Date(Date.now() - 3 * 86400000).toISOString());
+    await rawDb10.close();
     await owner('PUT', `${AP}/${rem2.id}`, { status: 'confirmed' });
     rm0 = sent();
     await sleep(700);
@@ -1479,10 +1480,10 @@ async function main() {
     check('aucune suppression d\'écriture possible (route absente)', r.status === 404, r.status);
 
     // Écritures automatiques : facture (TTC 119 250 = 100 000 HT + 19 250 de TVA), paiement partiel, achat reçu
-    const rawDb7 = new (require('better-sqlite3'))(dbFile);
-    const ac_cAcc = rawDb7.prepare("INSERT INTO customers (org_id, name, phone, email, notes, created_at) VALUES (?, 'Client Compta', '', '', '', ?)").run(org, new Date().toISOString()).lastInsertRowid;
-    const ac_dAcc = rawDb7.prepare("INSERT INTO documents (org_id, customer_id, kind, number, status, lines, total, paid, issued, due, created_by, created_at, updated_at) VALUES (?, ?, 'invoice', 'F-COMPTA-1', 'sent', '[]', 119250, 0, '2026-10-10', '2026-11-10', 1, ?, ?)").run(org, ac_cAcc, new Date().toISOString(), new Date().toISOString()).lastInsertRowid;
-    rawDb7.close();
+    const rawDb7 = await pgt.open();
+    const ac_cAcc = (await rawDb7.prepare("INSERT INTO customers (org_id, name, phone, email, notes, created_at) VALUES (?, 'Client Compta', '', '', '', ?)").run(org, new Date().toISOString())).lastInsertRowid;
+    const ac_dAcc = (await rawDb7.prepare("INSERT INTO documents (org_id, customer_id, kind, number, status, lines, total, paid, issued, due, created_by, created_at, updated_at) VALUES (?, ?, 'invoice', 'F-COMPTA-1', 'sent', '[]', 119250, 0, '2026-10-10', '2026-11-10', 1, ?, ?)").run(org, ac_cAcc, new Date().toISOString(), new Date().toISOString())).lastInsertRowid;
+    await rawDb7.close();
     r = await owner('GET', ac_AC);
     check('factures à comptabiliser signalées', r.json.toPost.invoices >= 1, r.json.toPost);
     r = await owner('POST', `${ac_AC}/generate`, {});
@@ -1556,8 +1557,8 @@ async function main() {
     r = await owner('POST', `${IG}/keys`, { name: 'Make écriture', scope: 'write' });
     const keyWrite = r.json.key;
     r = await owner('GET', IG);
-    const rawDb9 = new (require('better-sqlite3'))(dbFile);
-    const krow = rawDb9.prepare('SELECT key_hash, prefix FROM api_keys ORDER BY id DESC LIMIT 1').get(); rawDb9.close();
+    const rawDb9 = await pgt.open();
+    const krow = await rawDb9.prepare('SELECT key_hash, prefix FROM api_keys ORDER BY id DESC LIMIT 1').get(); await await rawDb9.close();
     check('la clé n\'est jamais renvoyée ni stockée en clair (empreinte seulement)', !JSON.stringify(r.json).includes(keyRead) && !JSON.stringify(r.json).includes(keyWrite) && krow.key_hash.length === 64 && krow.key_hash !== keyWrite && krow.prefix === keyWrite.slice(0, 8) && r.json.keys.length === 2, r.json.keys);
     const api = (key, method, path, body) => fetch(base + '/api/v1' + path, { method, headers: { ...(key ? { authorization: 'Bearer ' + key } : {}), 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }).then(async (x) => ({ status: x.status, json: await x.json().catch(() => null) }));
     r = await api(null, 'GET', '/customers');
@@ -1637,11 +1638,10 @@ async function main() {
     console.log('Quota mensuel commun');
     r = await owner('GET', `/api/ws/orgs/${org}`);
     check('quota : 100 messages par mois pour toute l\'organisation (Gratuit de test), déjà en partie utilisés', r.json.limits.aiMonth === 100 && r.json.limits.aiUsed >= 10 && r.json.limits.aiUsed < 100, r.json.limits);
-    const Database = require('better-sqlite3');
-    const raw = new Database(dbFile);
+    const raw = await pgt.open();
     const used = r.json.limits.aiUsed;
     const ins = raw.prepare("INSERT INTO ai_usage (org_id, user_id, created_at) VALUES (?, 1, ?)");
-    for (let i = used; i < 99; i++) ins.run(org, new Date().toISOString());
+    for (let i = used; i < 99; i++) await ins.run(org, new Date().toISOString());
     r = await owner('POST', `/api/ws/orgs/${org}/ai/chat`, { module: 'general', message: 'dernier message' });
     check('quota : le 100e message passe, il en reste 0', r.status === 200 && r.json.remaining === 0, r.json);
     r = await owner('POST', `/api/ws/orgs/${org}/ai/chat`, { module: 'general', message: 'encore' });
@@ -1651,32 +1651,32 @@ async function main() {
     await owner('DELETE', `/api/ws/orgs/${org}/ai/history?module=general`);
     r = await owner('POST', `/api/ws/orgs/${org}/ai/chat`, { module: 'general', message: 'encore' });
     check('effacer l\'historique ne remet pas le quota à zéro -> 429', r.status === 429, r.json);
-    raw.prepare("UPDATE ai_usage SET created_at = ? WHERE org_id = ?").run('2020-01-15T10:00:00.000Z', org);
+    await raw.prepare("UPDATE ai_usage SET created_at = ? WHERE org_id = ?").run('2020-01-15T10:00:00.000Z', org);
     r = await owner('GET', `/api/ws/orgs/${org}`);
     check('quota : un nouveau mois remet le compteur à zéro', r.json.limits.aiUsed === 0, r.json.limits);
     console.log('Période du quota alignée sur l\'abonnement, et pas de changement d\'offre en cours d\'abonnement');
     const ownerId = (await owner('GET', `/api/ws/orgs/${org}`)).json.me.userId;
     const DAY = 86400000;
     const at = (n) => new Date(Date.now() + n * DAY).toISOString();
-    raw.prepare('DELETE FROM ai_usage WHERE org_id = ?').run(org);
-    raw.prepare("UPDATE users SET plan = 'Pro', plan_expires = ? WHERE id = ?").run(at(10), ownerId);
-    raw.prepare('INSERT INTO ai_usage (org_id, user_id, created_at) VALUES (?, 1, ?)').run(org, at(-25)); // avant la période : ne compte pas
-    raw.prepare('INSERT INTO ai_usage (org_id, user_id, created_at) VALUES (?, 1, ?)').run(org, at(-5));  // dans la période : compte
+    await raw.prepare('DELETE FROM ai_usage WHERE org_id = ?').run(org);
+    await raw.prepare("UPDATE users SET plan = 'Pro', plan_expires = ? WHERE id = ?").run(at(10), ownerId);
+    await raw.prepare('INSERT INTO ai_usage (org_id, user_id, created_at) VALUES (?, 1, ?)').run(org, at(-25)); // avant la période : ne compte pas
+    await raw.prepare('INSERT INTO ai_usage (org_id, user_id, created_at) VALUES (?, 1, ?)').run(org, at(-5));  // dans la période : compte
     r = await owner('GET', `/api/ws/orgs/${org}`);
     check('offre Pro, échéance dans 10 jours : période = 30 jours avant l\'échéance, 1 message compté sur 1 000', r.json.limits.aiMonth === 1000 && r.json.limits.aiUsed === 1 && Math.abs(Date.parse(r.json.limits.aiResetAt) - Date.parse(at(10))) < 60000, r.json.limits);
-    raw.prepare("UPDATE users SET plan_expires = ? WHERE id = ?").run(at(50), ownerId);
+    await raw.prepare("UPDATE users SET plan_expires = ? WHERE id = ?").run(at(50), ownerId);
     r = await owner('GET', `/api/ws/orgs/${org}`);
     check('renouvellement anticipé (échéance dans 50 jours) : la période en cours se termine dans 20 jours', Math.abs(Date.parse(r.json.limits.aiResetAt) - Date.parse(at(20))) < 60000 && r.json.limits.aiUsed === 1, r.json.limits);
-    raw.prepare("UPDATE users SET plan_expires = ? WHERE id = ?").run(at(10), ownerId);
+    await raw.prepare("UPDATE users SET plan_expires = ? WHERE id = ?").run(at(10), ownerId);
     r = await owner('POST', '/api/payments/initiate', { plan: 'promax', operator: 'mtn', phone: '677000111' });
     check('changer d\'offre en cours d\'abonnement -> 409 avec la date', r.status === 409 && /changement d'offre/.test(r.json.error) && /Pro/.test(r.json.error), r.json);
     r = await owner('POST', '/api/payments/initiate', { plan: 'pro', operator: 'mtn', phone: '677000111' });
     check('renouveler la MÊME offre reste possible', r.status < 300, r.json);
-    raw.prepare("UPDATE users SET plan = 'Gratuit', plan_expires = NULL WHERE id = ?").run(ownerId);
+    await raw.prepare("UPDATE users SET plan = 'Gratuit', plan_expires = NULL WHERE id = ?").run(ownerId);
     r = await owner('POST', '/api/payments/initiate', { plan: 'promax', operator: 'mtn', phone: '677000111' });
     check('une fois l\'abonnement terminé (offre Gratuite), on peut choisir une autre offre', r.status < 300, r.json);
 
-    raw.close();
+    await raw.close();
 
     console.log('Mot de passe oublié');
     const ru = client(base);
@@ -1688,8 +1688,8 @@ async function main() {
     const a2 = await anon('POST', '/api/password/forgot', { contact: 'inconnu@exemple.com' });
     check('« mot de passe oublié » : même réponse que le compte existe ou non (pas de fuite d\'information)', a1.status === 200 && a2.status === 200 && a1.json.message === a2.json.message, [a1.json, a2.json]);
     await sleep(500);
-    const resetMail = mailbox.find((m) => new RegExp('To: .*' + emailC.replace('.', '\\.')).test(m) && /reinitialiser\.html\?t=3D|reinitialiser\.html\?t=/.test(m));
-    const tokenM = resetMail && /reinitialiser\.html\?t=3?D?([a-f0-9]{64})/.exec(resetMail.replace(/=\r?\n/g, ''));
+    const resetMail = mailbox.find((m) => new RegExp('To: .*' + emailC.replace('.', '\\.')).test(m) && /reinitialiser\?t=3D|reinitialiser\?t=/.test(m));
+    const tokenM = resetMail && /reinitialiser\?t=3?D?([a-f0-9]{64})/.exec(resetMail.replace(/=\r?\n/g, ''));
     check('e-mail de réinitialisation reçu avec un lien à usage unique', !!tokenM, resetMail && resetMail.slice(0, 300));
     const tk1 = tokenM && tokenM[1];
     r = await anon('POST', '/api/password/reset', { token: 'a'.repeat(64), pass: 'nouveau123' });
@@ -1735,7 +1735,7 @@ async function main() {
     child.kill();
     fake.srv.close();
     smtp.close();
-    for (const f of [dbFile, dbFile + '-wal', dbFile + '-shm']) { try { fs.unlinkSync(f); } catch { /* absent */ } }
+    await pgt.stop();
   }
   console.log(`\n${passed} réussis, ${failed} échoués`);
   process.exit(failed ? 1 : 0);

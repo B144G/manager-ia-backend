@@ -1,51 +1,344 @@
 # MANAGER-IA : serveur (backend)
 
-## Liaison site (frontend) ↔ serveur (backend)
+## GUIDE COMPLET : mettre MANAGER-IA en ligne (base de données, serveur, site)
 
-Deux dossiers, deux adresses. Le site doit connaître l'adresse du serveur, et le serveur doit autoriser l'adresse du site.
+Trois services, tous créés par **vous** avec **vos** comptes (ne donnez jamais vos mots de passe ni vos clés à personne, ni dans un chat) :
 
-| | Dossier | Adresse en essai local | Où se règle le lien |
-|---|---|---|---|
-| **Serveur (API)** | `manager-ia-backend` | `http://localhost:3000` | fichier `.env` du serveur : `PORT`, `SITE_URL`, `ALLOWED_ORIGINS` |
-| **Site** | `manager-ia-frontend` | `http://localhost:5173` | fichier `.env` du site : `API_BASE` (puis `npm run config`) |
-
-## Essayer sur votre ordinateur (3 commandes de chaque côté)
-
-```bash
-# 1) Le serveur
-cd manager-ia-backend
-npm run setup      # crée .env avec des secrets aléatoires et affiche le mot de passe administrateur
-npm install
-npm start          # http://localhost:3000
-
-# 2) Le site (autre terminal)
-cd manager-ia-frontend
-npm start          # écrit config.js depuis .env puis sert le site sur http://localhost:5173
+```
+Visiteurs ──► Vercel (le site React : manager-ia-frontend)
+                │  tout ce qui commence par /api est transmis au serveur
+                ▼
+              Render (le serveur Node.js : manager-ia-backend) ──► Neon (la base PostgreSQL)
 ```
 
-Ouvrez <http://localhost:5173>. Si le port 3000 est déjà pris sur votre machine, changez `PORT` dans le `.env` du serveur **et** `API_BASE` dans le `.env` du site (puis `npm run config`).
+| Service | Rôle | Dépôt GitHub | Prix de départ |
+|---|---|---|---|
+| **Neon** | base de données PostgreSQL | — | offre gratuite (sans carte) ; la base se met en veille quand elle n'est pas utilisée |
+| **Render** | serveur (API, assistant, WhatsApp, paiements) | `manager-ia-backend` | offre gratuite (le serveur s'endort après ~15 min sans visite) ; offre payante « Starter » pour un serveur toujours réveillé |
+| **Vercel** | le site que voient les visiteurs | `manager-ia-frontend` | offre gratuite « Hobby » (réservée à un usage **non commercial** : pour une activité commerciale, prévoyez l'offre Pro) |
 
-## En ligne
+> Les prix et limites changent : vérifiez-les sur les sites de chaque service avant de choisir. Pour une vraie activité (clients, paiements, WhatsApp), prévoyez un serveur Render payant : un serveur qui dort répond lentement et peut rater des messages WhatsApp.
 
-| Situation | `.env` du site | `.env` du serveur |
-|---|---|---|
-| **Même domaine** (recommandé : copiez le site dans `manager-ia-backend/public`) | `API_BASE=` (vide) | `ALLOWED_ORIGINS` vide, `COOKIE_SAMESITE=lax` |
-| **Deux domaines** (site `https://manager-ia.com`, serveur `https://api.manager-ia.com`) | `API_BASE=https://api.manager-ia.com` | `ALLOWED_ORIGINS=https://manager-ia.com`, `SITE_URL=https://manager-ia.com`, `COOKIE_SAMESITE=none`, `COOKIE_SECURE=true` (HTTPS obligatoire) |
-
-Vérifications : `https://<serveur>/api/health` doit répondre `{"ok":true}` ; dans le navigateur, la connexion crée un cookie `mia_token`. Une erreur « Origine non autorisée » signifie que `ALLOWED_ORIGINS` ne contient pas l'adresse exacte du site (avec `http`/`https` et sans `/` final).
-
-Le `.env` du site ne contient **aucun secret** (l'adresse du serveur est publique). Celui du serveur en contient : ne le publiez jamais (il est exclu des zips et de Git).
+Durée : environ 45 minutes la première fois. **Suivez l'ordre : Neon → Render → Vercel → réglages finaux.**
 
 ---
 
+### Étape 0 : préparer (10 min)
 
-Ce dossier contient le « cerveau » du site MANAGER-IA : comptes des utilisateurs, offres Gratuit / Pro / Pro Max / Méga Pro / Illimité, paiements, assistant IA, agent de service client (WhatsApp, Messenger, Instagram), notifications pour vous, et une page d'administration (`/admin`).
+1. **Fusionnez le code sur GitHub.** Pour chaque dépôt (`manager-ia-backend` et `manager-ia-frontend`) : onglet *Pull requests* → la demande de la branche `claude/postgres-react` → **Merge pull request**. Sans cela, Render et Vercel déploieraient l'ancienne version.
+2. **Créez vos comptes** (inscription avec votre e-mail, vous-même) : <https://neon.tech>, <https://render.com>, <https://vercel.com>. Choisissez « Continue with GitHub » pour Render et Vercel : cela leur permet de lire vos dépôts.
+3. **Préparez 3 secrets** (sur votre ordinateur, dans un terminal). Notez-les dans un gestionnaire de mots de passe, jamais dans un fichier du projet :
+   ```bash
+   node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"   # à lancer 2 fois : JWT_SECRET puis DATA_KEY
+   ```
+   - `JWT_SECRET` : protège les connexions.
+   - `DATA_KEY` : chiffre les jetons WhatsApp/Meta et les secrets de double authentification. **Ne la changez plus jamais ensuite** (les jetons déjà enregistrés deviendraient illisibles).
+   - `ADMIN_PASSWORD` : choisissez une phrase longue (12 caractères minimum, mélangés) et un `ADMIN_USERNAME` pas trop prévisible (évitez « admin »).
 
-Il fonctionne avec **Node.js 20 ou plus** et une petite base de données SQLite (un simple fichier, rien à installer en plus).
+---
 
-> **Important : à lire avant de commencer**
-> - Ce code a été écrit et vérifié sans accès à vos vrais comptes (Campay, Meta/WhatsApp, e-mail, Anthropic). Faites **toujours un essai réel** de chaque service après le déploiement (voir « Check-list de mise en ligne » à la fin).
-> - Les appels vocaux (téléphone) **ne sont pas gérés** par ce serveur : voir la section « Agent de service client ».
+### Étape 1 : la base de données sur Neon (5 min)
+
+1. Sur <https://console.neon.tech> : **New Project**. Nom : `manager-ia`. Région : choisissez la plus proche de vos clients, par exemple **AWS Europe (Francfort)**. Notez-la : vous prendrez la même région sur Render.
+2. Une fois le projet créé, cliquez sur le bouton **Connect**. Une fenêtre affiche une adresse commençant par `postgresql://…`.
+3. Il vous faut **deux adresses**, en basculant l'option **« Connection pooling »** :
+   - **Pooled connection** (option activée, l'adresse contient `-pooler`) → ce sera `DATABASE_URL`.
+   - **Direct connection** (option désactivée, sans `-pooler`) → ce sera `DATABASE_URL_UNPOOLED`.
+   Copiez-les dans votre gestionnaire de mots de passe. **Elles contiennent le mot de passe de la base : ne les publiez jamais** (ni dans GitHub, ni dans un message).
+4. (Facultatif mais conseillé) Testez depuis votre ordinateur, dans le dossier `manager-ia-backend` :
+   ```bash
+   npm install
+   DATABASE_URL='collez-ici-l-adresse-pooled' JWT_SECRET=test npm run db:check
+   ```
+   Vous devez voir « Connexion OK ». Les tables se créeront toutes seules au premier démarrage du serveur : **rien à créer à la main**.
+
+> Vous avez déjà des données dans l'ancienne base SQLite ? Une seule fois, sur une base Neon vide : `npm i --no-save better-sqlite3` puis `npm run db:import-sqlite -- chemin/vers/manager-ia.db`. L'ancien fichier n'est jamais modifié.
+
+---
+
+### Étape 2 : le serveur sur Render (15 min)
+
+**Méthode rapide (recommandée) : Blueprint.** Le fichier `render.yaml` du dépôt décrit tout.
+
+1. Sur <https://dashboard.render.com> : **New +** → **Blueprint** → choisissez le dépôt `manager-ia-backend` → **Connect**.
+2. Render lit `render.yaml` et vous demande les valeurs « secrètes ». Saisissez-les **vous-même** :
+
+| Variable | Valeur à saisir |
+|---|---|
+| `DATABASE_URL` | l'adresse **Pooled** de Neon |
+| `DATABASE_URL_UNPOOLED` | l'adresse **Direct** de Neon |
+| `ADMIN_PASSWORD` | votre mot de passe administrateur (12+ caractères) |
+| `SITE_URL`, `ALLOWED_ORIGINS`, `API_PUBLIC_URL` | laissez vide pour l'instant : vous les remplirez à l'étape 4 |
+| `ANTHROPIC_API_KEY` | votre clé d'IA (facultatif pour démarrer ; vous pourrez l'ajouter plus tard) |
+
+   `JWT_SECRET` et `DATA_KEY` sont **générés automatiquement** par Render (vous pouvez les remplacer par ceux de l'étape 0). Déjà réglés pour vous : `NODE_ENV=production`, `TRUST_PROXY=2`, `COOKIE_SAMESITE=lax`, `ADMIN_USERNAME`.
+3. Choisissez la **région** (la même que Neon, par exemple Francfort) et l'offre (voir le tableau plus haut). Cliquez **Apply** / **Deploy**.
+
+**Méthode manuelle (si vous ne voulez pas du Blueprint) :** **New +** → **Web Service** → dépôt `manager-ia-backend`. Runtime **Node**, *Build Command* `npm ci --omit=dev --omit=optional`, *Start Command* `node src/server.js`, *Health Check Path* `/api/health`. Ajoutez ensuite les variables du tableau ci-dessus et celles de l'étape 4 dans l'onglet **Environment**.
+
+4. Attendez que l'état passe à **Live** (3 à 5 minutes la première fois). Le journal (*Logs*) doit afficher « MANAGER-IA démarré… » puis « Base de données : PostgreSQL ».
+5. **Notez l'adresse de votre serveur**, en haut de la page du service, par exemple `https://manager-ia-backend.onrender.com`.
+6. **Testez** en ouvrant dans le navigateur `https://VOTRE-SERVEUR.onrender.com/api/health` : la réponse doit être `{"ok":true,"db":true}`. (Si le serveur dormait, la première réponse peut prendre 30 à 60 secondes.)
+
+---
+
+### Étape 3 : le site sur Vercel (10 min)
+
+1. **Indiquez l'adresse de votre serveur Render au site.** Dans le dépôt `manager-ia-frontend`, ouvrez le fichier `vercel.json` et remplacez `https://VOTRE-SERVEUR.onrender.com` par l'adresse notée à l'étape 2 (ligne `"destination": "https://…/api/:path*"`). Modifiez-le directement sur GitHub (icône crayon → *Commit changes*) ou chez vous, puis :
+   ```bash
+   cd ~/Downloads/manager-ia-frontend
+   git add vercel.json && git commit -m "Adresse du serveur" && git push
+   ```
+   C'est ce réglage qui permet au site et au serveur de se comporter comme **un seul site** (indispensable pour que la connexion fonctionne partout, y compris sur iPhone/Safari).
+2. Sur <https://vercel.com/new> : **Import** le dépôt `manager-ia-frontend`.
+3. Vercel détecte **Vite** tout seul (commande `npm run build`, dossier `dist`). Ne changez rien. **Aucune variable n'est obligatoire.** Cliquez **Deploy**.
+4. À la fin, Vercel affiche l'adresse de votre site, par exemple `https://manager-ia-frontend.vercel.app`. **Notez-la.**
+
+---
+
+### Étape 4 : relier le serveur et le site (5 min)
+
+Retournez sur **Render** → votre service → **Environment** et renseignez (sans `/` à la fin) :
+
+| Variable | Valeur | Pourquoi |
+|---|---|---|
+| `SITE_URL` | `https://votre-site.vercel.app` | liens des e-mails (mot de passe oublié…) |
+| `ALLOWED_ORIGINS` | `https://votre-site.vercel.app` | le serveur n'accepte que les requêtes venant de votre site |
+| `API_PUBLIC_URL` | `https://VOTRE-SERVEUR.onrender.com` | liens de médias et adresses de webhook affichées dans l'application |
+| `TRUST_PROXY` | `2` | Vercel puis Render : sans cela, tous les visiteurs auraient la même adresse IP et les protections seraient faussées |
+| `COOKIE_SAMESITE` | `lax` | connexion fiable (cookies « du même site ») |
+
+Enregistrez : Render redéploie automatiquement (1 à 3 minutes).
+
+---
+
+### Étape 5 : vérifier que tout marche (10 min)
+
+1. Ouvrez `https://votre-site.vercel.app/api/health` : `{"ok":true,"db":true}` (cette réponse vient du serveur *à travers* Vercel : le lien fonctionne).
+2. Ouvrez `https://votre-site.vercel.app` : la page de présentation s'affiche.
+3. **Créez un compte** (Inscription), puis créez votre organisation : vous arrivez dans l'espace de travail.
+4. Ouvrez-le **sur votre téléphone** (iPhone et Android si possible) : menu ☰, une page, un formulaire.
+5. **Administration** : `https://VOTRE-SERVEUR.onrender.com/admin` (l'administration est servie par le serveur, pas par Vercel). Identifiant et mot de passe de l'étape 0.
+6. Dans **Sécurité**, activez la **double authentification** de l'administrateur (scannez avec Google Authenticator, Microsoft Authenticator, Authy…) et **notez les 10 codes de secours** hors ligne.
+
+---
+
+### Étape 6 : brancher les services (quand vous êtes prêt)
+
+À faire **dans Render → Environment** (les clés se saisissent là, jamais dans un chat ni dans GitHub) :
+
+| Fonction | Variables | Détail |
+|---|---|---|
+| **IA (Anthropic)** | `ANTHROPIC_API_KEY` | l'assistant et les propositions de l'IA ; le coût dépend de l'usage |
+| **E-mails** (code d'inscription, mot de passe oublié) | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | avec Gmail : mot de passe d'application (voir la section 5 du README du dépôt `manager-ia-backend`) ; active la vérification de l'e-mail à l'inscription |
+| **Paiement manuel / Mobile Money** | `MTN_NUMBER`, `ORANGE_NUMBER`, `PAYMENT_HOLDER_NAME` | les numéros affichés aux clients |
+| **Paiement automatique** | `CAMPAY_USERNAME`, `CAMPAY_PASSWORD` | voir la section 6 du README du dépôt `manager-ia-backend` |
+| **Notifications administrateur** | `ADMIN_EMAIL`, `WHATSAPP_PHONE_ID`, `WHATSAPP_TOKEN`, `WHATSAPP_TEMPLATE` | voir la section 5 du README du dépôt `manager-ia-backend` |
+| **WhatsApp, Messenger, Instagram** | `META_APP_SECRET`, `META_VERIFY_TOKEN` | voir la section 7 du README du dépôt `manager-ia-backend` |
+
+**Adresses de webhook** (à coller chez Meta / Campay) : elles pointent vers **Render**, pas vers Vercel. Exemples : `https://VOTRE-SERVEUR.onrender.com/webhooks/whatsapp` et `https://VOTRE-SERVEUR.onrender.com/webhooks/meta`. Pour le WhatsApp **de chaque organisation**, l'adresse exacte s'affiche dans l'application (sous-application *Assistant commercial* → *Canaux*), à condition que `API_PUBLIC_URL` soit réglée.
+
+---
+
+### Étape 7 : votre propre nom de domaine (facultatif)
+
+1. Achetez un domaine (chez le registrar de votre choix).
+2. **Vercel** → votre projet → **Settings → Domains** → ajoutez `votre-domaine.com` et suivez les enregistrements DNS indiqués (le certificat HTTPS est automatique).
+3. Sur **Render**, remplacez `SITE_URL` et `ALLOWED_ORIGINS` par `https://votre-domaine.com` (et `https://www.votre-domaine.com` si vous l'utilisez, séparés par une virgule).
+4. Sur **Render** → **Settings → Custom Domains**, vous pouvez aussi donner un domaine au serveur (ex. `api.votre-domaine.com`) : mettez-le dans `API_PUBLIC_URL` et dans `vercel.json`.
+
+---
+
+### Étape 8 : mises à jour, sauvegardes, surveillance
+
+- **Mettre à jour le site ou le serveur** : poussez le code sur la branche principale de GitHub (`git push`) ; Render et Vercel redéploient tout seuls. Les tables de la base se mettent à jour automatiquement au démarrage (migrations numérotées).
+- **Revenir en arrière** : Render → *Events/Deploys* → *Rollback* ; Vercel → *Deployments* → *Promote to Production* sur une version précédente.
+- **Sauvegardes** : Neon garde un historique restaurable (*Restore* : revenir à un instant précis) et permet de créer une **branche** (copie instantanée) avant une grosse modification. En plus, `npm run backup` écrit une copie compressée de toutes les tables dans `data/backups/` : programmez-la chaque nuit si vous avez un ordinateur toujours allumé, et copiez le dossier **ailleurs**.
+- **Surveillance** : Render → *Logs*. Dans l'administration, l'écran **Sécurité** montre le journal d'audit, les adresses bloquées et l'état de la configuration (`npm run security:check` donne le même contrôle en ligne de commande).
+
+---
+
+### Dépannage
+
+| Symptôme | Cause probable | Que faire |
+|---|---|---|
+| Le serveur ne démarre pas, journal : « DATABASE_URL manquant » | variable absente ou mal collée | Render → Environment : recollez l'adresse **Pooled** de Neon (commence par `postgresql://`) |
+| « Origine non autorisée » à l'inscription ou à la connexion | `ALLOWED_ORIGINS` ne contient pas l'adresse exacte du site | mettez l'adresse Vercel **sans** `/` à la fin (et avec `https://`) |
+| La connexion ne « tient » pas (déconnecté tout de suite) | `vercel.json` ne renvoie pas `/api` vers Render, ou `COOKIE_SAMESITE`/`TRUST_PROXY` mal réglés | vérifiez l'adresse dans `vercel.json`, puis `COOKIE_SAMESITE=lax` et `TRUST_PROXY=2` |
+| Premier chargement très lent (30–60 s) | serveur Render gratuit endormi, ou base Neon en veille | normal sur l'offre gratuite ; prenez l'offre payante pour un serveur toujours réveillé |
+| `/api/health` répond `db:false` | base inaccessible | vérifiez les adresses Neon (pooled), que le projet n'est pas suspendu, et la région |
+| Page blanche ou 404 en ouvrant directement `/app/…` | le site n'a pas été déployé depuis le bon dépôt | le fichier `vercel.json` (redirections) doit être à la racine du dépôt déployé |
+| Message « Trop de requêtes » (429) | limite de débit atteinte (ou adresse bloquée) | attendez quelques minutes ; administration → Sécurité → *Adresses bloquées* pour débloquer |
+| Les e-mails n'arrivent pas | SMTP non configuré | renseignez les variables `SMTP_*` (section 5 du README du backend) ; l'inscription fonctionne sans e-mail, mais sans vérification |
+| Les messages WhatsApp n'arrivent pas | adresse de webhook ou jeton incorrects, ou serveur endormi | vérifiez l'adresse (Render, pas Vercel), `META_APP_SECRET`, et prenez un serveur toujours réveillé |
+
+---
+
+### Check-list finale
+
+- [ ] Les deux dépôts sont fusionnés dans la branche principale
+- [ ] Neon : projet créé, deux adresses (pooled et directe) notées en lieu sûr
+- [ ] Render : service **Live**, `/api/health` répond `{"ok":true,"db":true}`
+- [ ] Vercel : site déployé, `vercel.json` pointe vers l'adresse Render
+- [ ] Render : `SITE_URL`, `ALLOWED_ORIGINS`, `API_PUBLIC_URL`, `TRUST_PROXY=2`, `COOKIE_SAMESITE=lax` réglés
+- [ ] Inscription, création d'organisation et connexion testées, sur ordinateur **et** téléphone
+- [ ] Administration : double authentification activée, codes de secours notés
+- [ ] `npm run security:check` : aucun point « dangereux »
+- [ ] Les jetons GitHub utilisés pour pousser le code sont supprimés
+- [ ] Un essai réel de chaque service branché (IA, e-mail, WhatsApp, paiement) a été fait
+
+---
+
+### Annexe : essayer sur votre ordinateur (sans rien mettre en ligne)
+
+```bash
+# 1) Le serveur (dossier manager-ia-backend) : il a besoin d'une base PostgreSQL (un projet Neon gratuit suffit pour les essais)
+cd manager-ia-backend
+npm run setup                 # crée .env avec des secrets aléatoires et affiche le mot de passe administrateur
+# ouvrez .env et collez DATABASE_URL (adresse Neon), puis :
+npm install
+npm start                     # http://localhost:3000   (si le port 3000 est pris : PORT=3100 dans .env)
+
+# 2) Le site (autre terminal, dossier manager-ia-frontend)
+cd manager-ia-frontend
+npm install
+cp .env.example .env          # DEV_API_TARGET = adresse du serveur local
+npm run dev                   # http://localhost:5173
+```
+
+Vite renvoie les appels `/api` vers le serveur local : le navigateur ne voit qu'un seul site, la connexion fonctionne sans réglage. Les tests automatiques (`npm test` dans le backend) démarrent leur propre base PostgreSQL jetable : rien à installer.
+
+## GUIDE WHATSAPP : obtenir les identifiants (Phone number ID, jeton, secret) et brancher MANAGER-IA
+
+> **Les écrans de Meta changent souvent** : les noms des menus ci-dessous sont ceux de la dernière version connue, vos écrans peuvent différer légèrement. Tout se fait avec **votre** compte Meta. Ne collez jamais un jeton ou un secret dans un chat, un e-mail ou GitHub : seulement dans les champs prévus (Render, ou l'écran *Canaux* de l'application).
+
+### Deux usages de WhatsApp dans MANAGER-IA (ne les confondez pas)
+
+| | **A. Notifications pour vous (administrateur)** | **B. Assistant commercial d'une entreprise** |
+|---|---|---|
+| À quoi ça sert | vous recevez un message WhatsApp à chaque inscription, contact, paiement | l'IA répond aux clients de l'entreprise, prend les commandes, relance |
+| Où se saisissent les valeurs | variables d'environnement du serveur (Render) | écran **Assistant commercial → Canaux → WhatsApp** de l'application |
+| Adresse de rappel (webhook) | `https://VOTRE-SERVEUR/webhooks/whatsapp` (jeton = `META_VERIFY_TOKEN`) | affichée dans l'écran *Canaux* (un jeton propre à chaque organisation) |
+
+Vous pouvez faire A seul, B seul, ou les deux. Pour **A**, il faut en plus créer le modèle `nouvelle_notification` (voir la section 5 du README du dépôt `manager-ia-backend`) et renseigner `ADMIN_WHATSAPP` et `WHATSAPP_TEMPLATE`.
+
+> **À savoir (important)** : une application Meta n'a **qu'une seule adresse de rappel** pour WhatsApp. Chaque organisation qui active l'assistant commercial utilise donc **sa propre application Meta** (ou celle de son entreprise), avec son propre secret et son propre numéro. Pour vos clients, ce sont eux qui créent leur application en suivant ce guide.
+
+---
+
+### Étape 1 : le compte Meta Business (10 min)
+
+1. Créez ou ouvrez votre compte sur <https://business.facebook.com> (« portefeuille d'entreprise » / *Business portfolio*). Renseignez le nom légal de l'entreprise, son adresse et son site : Meta les revérifie plus tard.
+2. Créez un compte développeur sur <https://developers.facebook.com> (avec le même compte Facebook), et acceptez les conditions.
+
+### Étape 2 : créer l'application Meta avec WhatsApp (10 min)
+
+1. <https://developers.facebook.com/apps> → **Créer une application**.
+2. Cas d'utilisation : choisissez **« Se connecter avec les clients sur WhatsApp »** (ou, selon l'écran, type **Entreprise** puis **Ajouter le produit WhatsApp**). Nommez-la (ex. `MANAGER-IA Boutique Awa`) et **rattachez-la à votre portefeuille d'entreprise**.
+3. Dans le menu de gauche : **WhatsApp → Configuration de l'API** (*API Setup*). Cette page est votre tableau de bord de départ. Meta vous y donne **gratuitement** :
+   - un **numéro de test** ;
+   - le **Phone number ID** (identifiant du numéro) ;
+   - le **WhatsApp Business Account ID** ;
+   - un **jeton temporaire** (valable ~24 h : bon pour un premier essai seulement).
+4. Dans le même écran, section **« À »** (*To*) : ajoutez **votre numéro personnel** comme destinataire de test. Meta vous envoie un code par WhatsApp pour le confirmer. **Tant que l'application est en mode développement, le numéro de test ne peut écrire qu'à ces numéros** (5 maximum).
+
+### Étape 3 : où trouver chaque valeur
+
+| Valeur demandée par MANAGER-IA | Où la trouver chez Meta | Où la mettre dans MANAGER-IA |
+|---|---|---|
+| **Phone number ID** (chiffres, ex. `106540352242922`) | WhatsApp → Configuration de l'API, sous le numéro d'envoi (ne confondez pas avec le *numéro de téléphone* ni avec le *WhatsApp Business Account ID*) | A : `WHATSAPP_PHONE_ID` · B : champ « Identifiant du numéro » |
+| **Numéro WhatsApp** | le numéro lui-même, avec l'indicatif, sans `+` ni espaces : `237677112233` | B : champ « Numéro » |
+| **Jeton d'accès permanent** | voir l'étape 4 ci-dessous | A : `WHATSAPP_TOKEN` · B : champ « Jeton d'accès » |
+| **Secret de l'application** | Paramètres de l'application → **Paramètres → Général** → *Clé secrète de l'application* → **Afficher** (Meta peut redemander votre mot de passe) | A : `META_APP_SECRET` · B : champ « Secret de l'application » |
+| **Jeton de vérification du webhook** | **vous l'inventez** (phrase longue, lettres et chiffres) pour A ; pour B, il est **généré et affiché** par l'écran *Canaux* | A : `META_VERIFY_TOKEN` (et le même chez Meta) · B : à copier chez Meta |
+| **Adresse de rappel (webhook)** | c'est MANAGER-IA qui la fournit (voir l'étape 6) | à coller chez Meta |
+
+### Étape 4 : le jeton d'accès PERMANENT (10 min)
+
+Le jeton de la page « Configuration de l'API » **expire en 24 heures** : ne l'utilisez que pour tester. Pour un vrai usage, créez un jeton permanent :
+
+1. <https://business.facebook.com/settings> → **Utilisateurs → Utilisateurs système** → **Ajouter** → nom `manager-ia`, rôle **Administrateur**.
+2. Sélectionnez cet utilisateur système → **Ajouter des actifs** :
+   - **Applications** : votre application → contrôle total (*Gérer l'application*) ;
+   - **Comptes WhatsApp** : votre compte WhatsApp Business → contrôle total.
+3. **Générer un jeton** → choisissez votre application → durée **Jamais** (*Never expires*) → cochez les autorisations **`whatsapp_business_messaging`** et **`whatsapp_business_management`** → **Générer**.
+4. **Copiez le jeton tout de suite** (Meta ne le réaffiche plus) et mettez-le directement dans Render (A) ou dans l'écran *Canaux* (B). S'il fuit : supprimez-le et régénérez-en un.
+
+### Étape 5 : brancher votre vrai numéro (quelques jours)
+
+Pour répondre à de **vrais clients** (et non plus seulement à 5 numéros de test) :
+
+1. **WhatsApp → Configuration de l'API → Ajouter un numéro de téléphone** (ou *WhatsApp Manager → Numéros de téléphone*). Le numéro **ne doit pas être inscrit dans l'application WhatsApp classique** (ni WhatsApp Business sur téléphone) : sinon, supprimez d'abord ce compte WhatsApp.
+2. Choisissez le **nom d'affichage** (le nom de votre entreprise, qui doit correspondre à votre site/marque) : Meta l'approuve.
+3. **Vérifiez le numéro** par SMS ou appel (code à 6 chiffres), puis créez un **code PIN à 6 chiffres** (validation en deux étapes) : notez-le.
+4. Mettez à jour dans MANAGER-IA le **Phone number ID** et le **numéro** (ceux du numéro réel, pas ceux du numéro de test).
+5. **Passez l'application en mode « Live »** (interrupteur en haut du tableau de bord de l'application) et **vérifiez votre entreprise** : *Business Settings → Centre de sécurité → Vérification de l'entreprise* (documents d'immatriculation). Sans cette vérification, le nombre de clients contactés par jour reste limité.
+6. **Moyen de paiement** : *WhatsApp Manager → Paramètres de paiement* : Meta facture ses « conversations ». Vérifiez les tarifs de votre pays sur le site de Meta avant toute campagne.
+
+### Étape 6 : l'adresse de rappel (webhook) : recevoir les messages
+
+C'est ce qui permet à Meta d'envoyer chaque message de client à votre serveur. **Le serveur doit être en ligne, en https.**
+
+1. **Usage B (assistant d'une entreprise)** : dans l'application, **Assistant commercial → Canaux → WhatsApp**, saisissez le Phone number ID, le numéro, le jeton permanent et le secret de l'application, puis **Enregistrer**. L'écran affiche alors l'**adresse de rappel** et le **jeton de vérification**. (Pour que l'adresse soit la bonne, `API_PUBLIC_URL` doit valoir l'adresse Render.)
+   **Usage A (notifications pour vous)** : adresse `https://VOTRE-SERVEUR.onrender.com/webhooks/whatsapp` et le jeton `META_VERIFY_TOKEN` que vous avez inventé.
+2. Chez Meta : **WhatsApp → Configuration** → section **Webhook** → **Modifier** → collez l'**adresse de rappel** et le **jeton de vérification** → **Vérifier et enregistrer**.
+   - Si Meta refuse : adresse non https, serveur endormi (réveillez-le en ouvrant `/api/health`), ou jeton différent.
+3. Sous **Champs du webhook**, cliquez **Gérer** et **abonnez le champ `messages`** (c'est lui qui apporte les messages des clients).
+4. Dans MANAGER-IA, cliquez **Tester la connexion** : le nom affiché du numéro doit apparaître.
+
+### Étape 7 : premier essai (5 min)
+
+1. Dans *Réglages* de l'assistant commercial : **activez l'assistant public**. Vérifiez que le serveur a la clé d'IA (`ANTHROPIC_API_KEY`) : sans elle, l'assistant ne répond pas.
+2. Depuis **votre téléphone** (numéro ajouté à la liste de test), écrivez au numéro WhatsApp de l'entreprise : « Bonjour, c'est combien ? ». L'IA doit répondre avec les prix du catalogue.
+3. Essayez un **message vocal** et une **photo** : ils sont compris (transcription et lecture de l'image).
+4. Faites une commande : elle apparaît dans *Commandes* « à valider ».
+
+### Étape 8 : les modèles de message (obligatoires pour les relances)
+
+WhatsApp interdit d'écrire à un client **plus de 24 heures après son dernier message**, sauf avec un **modèle approuvé par Meta**. MANAGER-IA en utilise trois (créez-les dans *WhatsApp Manager → Modèles de message → Créer un modèle*, langue **Français**, un nom en minuscules sans espace) :
+
+| Usage dans MANAGER-IA | Catégorie Meta | Texte du modèle (variables `{{1}}`…) |
+|---|---|---|
+| **Relance d'un prospect** (2 variables) | Utilitaire ou Marketing | `Bonjour {{1}}, c'est {{2}}. Vous nous avez écrit récemment : souhaitez-vous que nous reprenions votre demande ?` |
+| **Rappel de facture impayée** (4 variables) | Utilitaire | `Bonjour {{1}}, la facture {{2}} de {{4}} présente un reste à payer de {{3}}. Merci de régulariser dès que possible.` |
+| **Rappel de rendez-vous** (4 variables) | Utilitaire | `Bonjour {{1}}, rappel : votre rendez-vous est prévu le {{2}} à {{3}} chez {{4}}.` |
+
+1. Meta demande un **exemple** de chaque variable (ex. `Awa`, `F-2026-0007`, `15 000 FCFA`, `Boutique Awa`).
+2. Attendez le statut **Approuvé** (minutes à quelques heures).
+3. Dans MANAGER-IA : **Assistant commercial → Relances → Ajouter un modèle** : saisissez **le nom exact**, la langue, l'usage et le texte (aperçu). Le nombre de variables est contrôlé.
+4. Le client qui écrit **STOP** n'est plus jamais relancé.
+
+### Étape 9 : suivre la qualité et les limites
+
+- **Palier d'envoi** : au départ, un nombre limité de clients « nouveaux » par jour ; il augmente avec la vérification de l'entreprise et la qualité de vos messages. Si trop de clients bloquent ou signalent vos messages, Meta réduit vos droits : **ne relancez que ceux qui ont écrit**.
+- **Pas d'appels vocaux** : seuls les messages (écrits, vocaux, images, PDF) sont gérés.
+- **Fenêtre de 24 h** : l'IA répond librement pendant 24 h après le message du client ; après, seulement avec un modèle approuvé.
+
+### Dépannage WhatsApp
+
+| Symptôme | Cause probable | Que faire |
+|---|---|---|
+| Meta refuse l'adresse de rappel | serveur endormi / non https / mauvais jeton de vérification | ouvrez `/api/health` pour réveiller Render ; recopiez le jeton exact |
+| Aucun message n'arrive | champ **`messages`** non abonné, application pas en « Live », ou numéro de l'expéditeur absent de la liste de test | abonnez `messages` ; ajoutez le numéro à la liste de test ; passez l'app en Live |
+| Journal du serveur : « signature invalide » | **secret de l'application** faux (ou celui d'une autre application) | recopiez la *clé secrète* depuis Paramètres → Général |
+| « Meta a refusé la connexion » au test | jeton expiré (24 h) ou sans les autorisations `whatsapp_business_*`, ou mauvais Phone number ID | régénérez un jeton permanent (étape 4) ; vérifiez l'identifiant |
+| Erreur « destinataire non autorisé » (#131030) | application en développement et numéro hors liste de test | ajoutez-le à la liste, ou passez en Live |
+| Erreur « hors fenêtre de 24 h » (#131047) | le client n'a pas écrit depuis plus de 24 h | utilisez un **modèle approuvé** (étape 8) |
+| Modèle refusé par Meta | texte promotionnel dans un modèle « Utilitaire », variable collée au début/à la fin | reformulez, ou choisissez la catégorie Marketing |
+| L'IA ne répond pas | assistant public désactivé, clé d'IA absente, quota de messages IA atteint | Réglages de l'assistant ; `ANTHROPIC_API_KEY` ; écran Abonnement |
+| Les réponses arrivent avec du retard | délai de réponse réglé, ou serveur Render qui se réveille | Réglages : délai de réponse ; offre Render toujours réveillée |
+
+### Check-list WhatsApp
+
+- [ ] Compte Meta Business et application créés, WhatsApp ajouté
+- [ ] Phone number ID, numéro, **jeton permanent** et **secret de l'application** notés en lieu sûr
+- [ ] Webhook vérifié chez Meta, champ **`messages`** abonné
+- [ ] Valeurs saisies dans l'écran *Canaux* (ou dans Render pour les notifications) ; « Tester la connexion » réussi
+- [ ] Essai réel : texte, vocal, photo, commande
+- [ ] Trois modèles de message approuvés et ajoutés dans *Relances*
+- [ ] Application en mode Live, entreprise vérifiée, moyen de paiement renseigné (pour de vrais clients)
+
+---
 
 ---
 
@@ -57,8 +350,9 @@ Il fonctionne avec **Node.js 20 ou plus** et une petite base de données SQLite 
    npm install
    cp .env.example .env        # sous Windows : copy .env.example .env
    ```
-3. Ouvrez le fichier `.env` avec un éditeur de texte et remplissez au minimum :
+3. Ouvrez le fichier `.env` avec un éditeur de texte et remplissez au minimum (ou lancez `npm run setup`, qui crée `.env` avec des secrets aléatoires) :
    ```
+   DATABASE_URL=l'adresse PostgreSQL de votre projet Neon (voir le guide ci-dessus, étape 1)
    ADMIN_USERNAME=votre_identifiant
    ADMIN_PASSWORD=un_mot_de_passe_long_et_unique
    ```
@@ -67,7 +361,7 @@ Il fonctionne avec **Node.js 20 ou plus** et une petite base de données SQLite 
    ```bash
    npm start
    ```
-5. Ouvrez <http://localhost:3000/api/health> : vous devez voir `{"ok":true}`. La page d'administration est sur <http://localhost:3000/admin>.
+5. Ouvrez <http://localhost:3000/api/health> : vous devez voir `{"ok":true,"db":true}`. La page d'administration est sur <http://localhost:3000/admin>.
 
 Sans aucune clé externe, le serveur démarre quand même : les notifications s'affichent dans le terminal, les paiements sont en mode manuel et l'assistant IA répond « indisponible » (le site a un plan B).
 
@@ -80,12 +374,9 @@ Sans aucune clé externe, le serveur démarre quand même : les notifications s'
 
 ## 2. Brancher le frontend
 
-**Cas simple (recommandé) : même adresse.** Copiez les fichiers de votre site (le `index.html` et ses fichiers) dans le dossier `public/`. Le serveur les affiche à la racine (`/`), et l'API est sur `/api/...`. Rien d'autre à régler : les cookies de connexion fonctionnent directement.
+Le site est une application React (dépôt `manager-ia-frontend`, hébergée sur Vercel). Il appelle le serveur par des adresses `/api/...` **sur son propre domaine** ; c'est le fichier `vercel.json` du site qui transmet ces appels à ce serveur (cookies « du même site », donc fiables partout, y compris sur iPhone). Réglages côté serveur : `SITE_URL` et `ALLOWED_ORIGINS` = adresse du site, `API_PUBLIC_URL` = adresse de ce serveur, `COOKIE_SAMESITE=lax`, `TRUST_PROXY=2`. Tout est expliqué pas à pas dans le **guide complet** en haut de ce fichier.
 
-**Frontend sur un autre domaine** (par exemple le site sur `https://manager-ia.com` et le serveur sur `https://api.manager-ia.com`) :
-1. Dans les variables : `ALLOWED_ORIGINS=https://manager-ia.com,https://www.manager-ia.com`
-2. `COOKIE_SAMESITE=none` et `COOKIE_SECURE=true` (le HTTPS est obligatoire).
-3. Côté frontend, chaque appel doit envoyer les cookies : `fetch(url, { credentials: "include", ... })`.
+Variante (non recommandée, cookies tiers bloqués par Safari) : le site appelle directement le serveur (`VITE_API_BASE` côté site, `COOKIE_SAMESITE=none` et `COOKIE_SECURE=true` côté serveur).
 
 Le serveur renvoie toujours les erreurs sous la forme `{"error":"message en français"}`.
 
@@ -101,11 +392,11 @@ Elles sont toutes décrites et commentées dans `.env.example`. Résumé :
 | `JWT_SECRET` | secret qui protège les connexions | **oui en production** (le serveur refuse de démarrer sans) |
 | `ADMIN_USERNAME`, `ADMIN_PASSWORD` | accès à `/admin` | oui pour utiliser l'admin |
 | `ALLOWED_ORIGINS`, `COOKIE_SAMESITE`, `COOKIE_SECURE` | frontend sur un autre domaine | seulement dans ce cas |
-| `TRUST_PROXY` | `1` derrière Render/Railway/nginx (automatique en production) | non |
-| `DB_PATH` | emplacement du fichier de base de données | conseillé en ligne (disque persistant) |
+| `TRUST_PROXY` | nombre de relais devant le serveur : `1` derrière Render/Railway/nginx seul, **`2` avec Vercel (redirection `/api`) puis Render**. Trop bas, tous les visiteurs auraient la même adresse IP (limites et blocages faussés) : le serveur le détecte et suspend alors le blocage automatique | **oui derrière Vercel** |
+| `DATABASE_URL` | adresse PostgreSQL (Neon, « Pooled connection ») | **oui** |
+| `DATABASE_URL_UNPOOLED` | adresse directe Neon, pour les migrations | non |
 | `ADMIN_EMAIL`, `ADMIN_WHATSAPP` | où vous recevez les notifications | non (valeurs par défaut) |
-| `SMTP_*` | code de vérification d'inscription et e-mails | obligatoire pour créer un compte |
-| `WEBAUTHN_RP_NAME`, `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGIN` | clés biométriques; en local `MANAGER-IA`, `localhost`, `http://localhost:5173` | défauts locaux |
+| `SMTP_*` | envoi des e-mails | non |
 | `WHATSAPP_PHONE_ID`, `WHATSAPP_TOKEN`, `WHATSAPP_TEMPLATE` | WhatsApp (notifications + agent client) | non |
 | `META_VERIFY_TOKEN`, `META_APP_SECRET`, `PAGE_ACCESS_TOKEN` | agent client WhatsApp/Messenger/Instagram | non |
 | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | assistant IA et agent client | non |
@@ -140,9 +431,6 @@ Tests : `npm run smoke:ws` (412 contrôles), `npm run smoke`, `npm run smoke:sig
 
 ### Sécurité : ce qui est en place
 
-- **Inscription et biométrie** : un code à 6 chiffres envoyé par SMTP expire en 30 secondes; après validation, l'appareil enregistre une clé d'accès WebAuthn avec vérification utilisateur requise. À chaque connexion, le mot de passe est suivi de cette clé (empreinte, visage ou code PIN selon l'appareil). Après 5 minutes sans activité, une nouvelle vérification est demandée avant toute action protégée. L'empreinte elle-même ne quitte jamais l'appareil.
-- **Configuration locale** : remplissez `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` et `SMTP_FROM` dans le `.env` du backend, puis redémarrez-le. Sans SMTP opérationnel, aucune inscription n'est créée et aucun code n'est simulé. En ligne, servez le site en HTTPS et définissez `WEBAUTHN_RP_ID` et `WEBAUTHN_ORIGIN` sur le domaine exact.
-
 - **Mots de passe** : 8 caractères minimum, refus des mots de passe courants, de ceux qui contiennent le nom ou l'e-mail ; chiffrés (bcrypt coût 12). En production, `ADMIN_PASSWORD` doit faire au moins 10 caractères (le serveur refuse de démarrer sinon).
 - **Verrouillage** : 8 échecs de connexion en 15 minutes bloquent le compte (ou l'administration) pendant 15 minutes ; l'administrateur est alerté. Un compte inexistant répond comme un compte existant.
 - **Changer son mot de passe** : `POST /api/me/password` (mot de passe actuel + nouveau). Les autres appareils sont déconnectés et un e-mail d'alerte est envoyé.
@@ -151,40 +439,39 @@ Tests : `npm run smoke:ws` (412 contrôles), `npm run smoke`, `npm run smoke:sig
 - **Sauvegarde** : `npm run backup` (copie cohérente + contrôle d'intégrité + rotation `BACKUP_KEEP`, 14 par défaut). Planifiez-la chaque nuit et copiez-la ailleurs.
 - **Dépendances** : `npm audit --omit=dev` doit afficher 0 faille ; relancez-le régulièrement.
 - Tests : `npm run smoke:security`.
-- **Pas encore fait** : double authentification (2FA) de l'administrateur, journal des actions de l'administrateur, audit de sécurité par un tiers.
+- **Reste à faire de votre côté** : un audit de sécurité par un tiers avant d'accueillir beaucoup d'utilisateurs ; activer la double authentification de l'administrateur (voir « Centre de sécurité »).
+
+### Centre de sécurité (version 23)
+
+Tout est regroupé dans `src/security/` (un seul endroit, une seule logique) et visible dans **/admin → Sécurité** :
+
+| Protection | Ce que ça fait |
+|---|---|
+| **Sessions révocables** | Chaque connexion est une session enregistrée en base. On peut la fermer à tout moment : « Déconnecter cet appareil », « tous les autres », mot de passe changé ou réinitialisé (coupe tout), ou, côté administrateur, tous les appareils d'un compte suspect. Un cookie volé après déconnexion ne sert plus. |
+| **Journal d'audit chaîné** | Chaque événement important (connexions, échecs, changements de rôle, clés d'API, suppression d'organisation, actions de l'administrateur, canaux WhatsApp/Meta…) est inscrit avec qui, quand, depuis quelle adresse, quel appareil et un numéro de requête (`X-Request-Id`). Chaque ligne contient l'empreinte SHA-256 de la précédente : modifier ou effacer une ligne **casse la chaîne**, et « Vérifier l'intégrité » (ou `npm run security:check`) le détecte. |
+| **Double authentification (2FA)** | Code à 6 chiffres (Google Authenticator, Microsoft Authenticator, Authy, 2FAS…) + 10 codes de secours à usage unique, pour les utilisateurs (⚙ « Sécurité du compte » dans l'espace de travail) **et** l'administrateur (/admin → Sécurité). Secrets chiffrés (AES-256-GCM), codes rejoués refusés. |
+| **Blocage automatique d'adresses IP** | Des points d'abus s'accumulent (mots de passe faux, code 2FA faux, origine interdite, signature de webhook invalide, limites dépassées). Au-delà du seuil (`SECURITY_BAN_SCORE`, 40 par défaut), l'adresse est bloquée 1 h (24 h en cas de récidive) et l'administrateur est prévenu. Blocage / déblocage manuel dans l'administration. Les adresses locales et privées ne sont jamais bloquées automatiquement. |
+| **Limites de débit partagées** | Connexion, inscription, paiements, mot de passe, administrateur : comptées dans PostgreSQL, donc valables même avec plusieurs serveurs Render. |
+| **Actions sensibles surveillées** | Une seule table (`src/security/sensitive.js`) liste les actions à inscrire au journal : pour en surveiller une de plus, ajoutez une ligne. |
+| **Alertes** | Les événements graves ou critiques préviennent l'administrateur (e-mail / WhatsApp). |
+| **Contrôle de configuration** | `npm run security:check` (et l'écran Sécurité) liste ce qui est solide, à améliorer ou dangereux : secrets trop courts, cookies non sécurisés, 2FA administrateur absente, origines trop larges… Il ne montre jamais un secret. |
+
+**À faire en ligne** : sur `/admin → Sécurité`, activer la 2FA de l'administrateur et noter les codes de secours ; puis `npm run security:check` doit ne montrer aucun point « dangereux ». Les connexions ouvertes avant la mise à jour sont fermées une fois : chacun se reconnecte.
+
 
 ### Inscription avec code par e-mail
 
-Dès que l'envoi d'e-mails est configuré (`SMTP_HOST`…), l'inscription exige un code à 6 chiffres **valable 30 secondes** (5 essais maximum par code, 5 codes par heure et par adresse, renvoi après 20 s). Sans SMTP, l'inscription est refusée; aucun code ne peut être simulé. Un téléphone seul n'est pas accepté à l'inscription.
+Dès que l'envoi d'e-mails est configuré (`SMTP_HOST`…), l'inscription demande une vérification : le visiteur reçoit un code à 6 chiffres **valable 1 minute** (5 essais maximum par code, 5 codes par heure et par adresse, renvoi possible après 20 s). Le compte n'est créé qu'après la saisie du bon code, puis la personne arrive directement dans son espace. Un téléphone seul n'est alors plus accepté à l'inscription (il n'y a pas d'envoi de SMS). Variable `SIGNUP_VERIFY` : `auto` (par défaut), `on` ou `off` (pour des essais en local sans e-mail). Test : `npm run smoke:signup`.
 
-Après le code, l'utilisateur enregistre une clé d'accès WebAuthn sur son appareil. À chaque connexion, le mot de passe est suivi de la clé; si le compte existait avant cette fonction, un code e-mail est exigé une fois pour enregistrer la clé. Après 5 minutes sans activité, une nouvelle vérification est demandée avant la prochaine action protégée. La validation locale peut utiliser l'empreinte, le visage ou le code PIN de l'appareil; le serveur ne reçoit jamais les données biométriques. En production, HTTPS est obligatoire; `WEBAUTHN_RP_ID` et `WEBAUTHN_ORIGIN` doivent correspondre exactement au domaine du site.
+## 4. Mise en ligne : autres hébergeurs
 
-Le test d'intégration utilise un faux SMTP local, sans envoyer de vrai courriel : `npm run smoke:signup`.
-
-## 4. Mise en ligne, pas à pas
-
-Dans tous les cas, définissez au minimum : `NODE_ENV=production`, `JWT_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, et vos numéros de paiement (`MTN_NUMBER`, `ORANGE_NUMBER`, `PAYMENT_HOLDER_NAME`).
-
-Générer un `JWT_SECRET` :
-```bash
-node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
-```
-
-### Option A : Render (simple)
-
-1. Mettez ce dossier dans un dépôt GitHub **privé** (le fichier `.gitignore` empêche d'y mettre `.env` et la base).
-2. Sur <https://render.com> : *New* → *Web Service* → choisissez votre dépôt.
-3. Réglages : *Runtime* = Node ; *Build Command* = `npm install` ; *Start Command* = `npm start`.
-4. Onglet *Environment* : ajoutez les variables ci-dessus.
-5. **Disque persistant (indispensable)** : la base de données est un fichier. Sans disque, tout est effacé à chaque redéploiement. Dans *Disks*, ajoutez un disque (monté sur `/var/data`, par exemple) puis ajoutez la variable `DB_PATH=/var/data/manager-ia.db`. (Les disques demandent une formule payante chez Render.)
-6. Déployez. Testez `https://votre-service.onrender.com/api/health`.
-7. Avec votre propre nom de domaine : *Settings* → *Custom Domains*, puis suivez les instructions DNS.
+La méthode recommandée (Neon + Render + Vercel) est le **guide complet** en haut de ce fichier. Les variantes ci-dessous sont pour d'autres hébergeurs : dans tous les cas, définissez au minimum `NODE_ENV=production`, `DATABASE_URL` (PostgreSQL, par exemple Neon), `JWT_SECRET`, `DATA_KEY`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, et vos numéros de paiement (`MTN_NUMBER`, `ORANGE_NUMBER`, `PAYMENT_HOLDER_NAME`).
 
 ### Option B : Railway
 
 1. Dépôt GitHub privé, puis <https://railway.app> → *New Project* → *Deploy from GitHub repo*.
 2. Onglet *Variables* : ajoutez les variables.
-3. Onglet *Settings* → *Volumes* : créez un volume monté sur `/data`, puis `DB_PATH=/data/manager-ia.db`.
+3. Ajoutez `DATABASE_URL` (Neon, voir l'étape 1) : aucun volume n'est nécessaire.
 4. *Settings* → *Networking* → *Generate Domain* (ou votre domaine).
 5. Le fichier `Dockerfile` fourni est utilisé automatiquement.
 
@@ -364,20 +651,33 @@ Déposez simplement des fichiers `.md` dans ces dossiers : ils sont lus automati
 
 ---
 
+## 8 ter. Les modules ERP (paie, fiscalité, marketing, logistique, production, chantiers, maintenance, juridique, mémoire, agents)
+
+Tous sont dans l'espace de travail (`/app`), réservés selon le rôle (voir `src/workspace/modules.js`). Chaque module a ses tables (préfixées), ses routes sous `/api/ws/orgs/:orgId/<module>`, un test (`npm run test:finance`, `test:commerce`, `test:ops`, `test:intelligence`) et fournit à l'IA ses données (`ctx`) filtrées par rôle.
+
+| Module | Rôle minimal | Ce qu'il fait | Limites à connaître |
+|---|---|---|---|
+| Paie | administrateur | Bulletins mensuels (brouillon, validé, payé), retenues et charges **paramétrables**, heures supplémentaires calculées (heures x taux horaire x majoration par palier), 13e mois ou prime annuelle, bulletin imprimable, export CSV, écriture au budget, **comptabilisation automatique en option** (désactivée par défaut : une écriture par événement, validation puis paiement, contre-passée si le bulletin est rouvert), réouverture d'un bulletin validé non payé (administrateur, motif obligatoire, journal d'activité et d'audit), modèles de barèmes par pays | Les taux fournis par défaut sont des **exemples**. Les modèles de pays (Cameroun, Côte d'Ivoire, Sénégal, Congo, Gabon, RDC, Bénin, Togo, Mali, Burkina Faso, générique) ne sont que des **points de départ : ils ne contiennent aucun taux ni plafond** (rubriques « à compléter », mention « À vérifier auprès de votre administration », date « à jour au » à renseigner par vous) ; l'application ne connaît pas les barèmes officiels. Pas de calcul d'impôt progressif ni de déclarations sociales. Les écritures utilisent les comptes SYSCOHADA de base (661, 664, 641, 431, 447, 421, 422, 571/521/589) ; une période comptable clôturée refuse l'écriture (la validation reste possible). Un bulletin payé ou déjà enregistré au budget ne peut pas être rouvert. |
+| Fiscalité et liasse | administrateur | Bilan (soldes **cumulés depuis l'ouverture**, avec le résultat des exercices précédents non affecté), compte de résultat, soldes intermédiaires de gestion détaillés avec classement SYSCOHADA classes 1 à 8 (tableau de correspondance lisible dans `src/workspace/syscohada-sig.js`, consultable à l'écran), contrôles de cohérence, clôture et réouverture d'exercice (verrou des écritures, motif et journal d'audit), TVA estimée avec détail par compte, calendrier des déclarations paramétrable avec **« Répéter »** (l'échéance suivante est créée quand la précédente est déposée ou payée ; rappel dans le contexte de l'IA) | Document de travail à **faire valider par un expert-comptable** : ce n'est pas une liasse officielle. La clôture est un verrou interne : elle ne génère **aucune écriture d'affectation du résultat ni à-nouveaux** (le report est calculé par cumul) et ne remplace pas la clôture légale ; seul le dernier exercice clôturé peut être rouvert. Le classement est indicatif et à valider. La TVA reste calculée sur les comptes 443/445 : le plan distingue la TVA par nature, pas par taux ; plusieurs taux ne sont gérés que si vous créez un compte par taux (le taux affiché vient du nom du compte). |
+| Marketing | membre | Campagnes liées aux conversations et commandes de l'assistant commercial, coût par prospect, calendrier de contenu, offres | L'aide à la rédaction est un conseil de l'IA, rien n'est publié automatiquement. |
+| Logistique | membre | Livraisons (statuts, historique, preuve), transporteurs, zones, tournées, lien WhatsApp « prévenir le client » | Le lien ouvre WhatsApp avec un message prérempli : aucun envoi automatique. |
+| Production | membre | Nomenclatures, coût de revient, ordres de fabrication (matières sorties et produit fini entré en stock, en une transaction) | Une seule nomenclature par produit. |
+| Maintenance | membre | Équipements, plans préventifs, interventions, pièces prélevées du stock, indicateurs d'arrêt | — |
+| Chantiers (BTP) | membre | Chantiers, phases, dépenses et budget, pointages, rapports, incidents, situations de travaux | Pas de photos, un seul budget par chantier. |
+| Juridique et conformité | responsable | Contrats et alertes de fin (30 et 7 jours, visibles dans « Alertes » et pour l'IA, rappels attribuables à un membre), obligations, litiges, registre des données personnelles, historique des modifications d'un contrat, suivi de signature, pièces jointes (PDF ou image de 2 Mo, chiffrées), 11 modèles de documents fournis et modèles propres à l'organisation (créer, modifier, dupliquer, supprimer) | Aide-mémoire et modèles **à faire relire par un professionnel du droit**, sans affirmation de conformité à un droit national. Le suivi « à signer / signé » est une simple note interne : **pas de signature électronique**, aucune valeur légale. Pièces jointes limitées à 2 Mo, 10 par élément et 40 Mo par organisation (PDF, JPEG, PNG, WebP ; type vérifié d'après le contenu), stockées chiffrées dans la base avec la clé `DATA_KEY` (la perdre rend les fichiers illisibles). Pas de rappel par e-mail ou WhatsApp : les rappels apparaissent dans « Alertes » et dans l'IA. L'historique ne couvre que les contrats. Les modèles se remplissent par champs `{{nom}}` en texte brut (pas de mise en page, pas d'export PDF : impression ou copie). |
+| Mémoire de l'entreprise | membre | Décisions, incidents, procédures, recherche, question en langage naturel (réponse tirée uniquement des notes, avec sources) | Non filtrée par antenne. |
+| Agents spécialisés | membre | Une équipe d'agents par domaine et un mode « réunion » avec synthèse (4 messages IA au plus par question) | Les agents ne modifient jamais les données. |
+| Résumé WhatsApp | responsable | Résumé du matin et alertes urgentes, avec consentement, désabonnement et journal des envois | **Contrainte Meta** : un message libre n'est livré que si la personne a écrit au numéro de l'entreprise dans les 24 dernières heures. Sinon l'envoi bascule sur l'e-mail, ou utilise un modèle de message approuvé si vous renseignez son nom. |
+
 ## 9. Sauvegarde de la base de données
 
-Toutes vos données sont dans **un seul fichier** : `data/manager-ia.db` (ou l'emplacement `DB_PATH`). SQLite en mode WAL crée aussi `manager-ia.db-wal` et `manager-ia.db-shm` : ce sont des fichiers normaux.
+Vos données sont dans PostgreSQL (Neon). Trois niveaux de protection :
 
-- **Sauvegarde propre (conseillée)**, serveur en marche, avec l'outil `sqlite3` :
-  ```bash
-  sqlite3 data/manager-ia.db ".backup 'sauvegarde-$(date +%F).db'"
-  ```
-- Sans cet outil : arrêtez le serveur, copiez les 3 fichiers `manager-ia.db*`, redémarrez.
-- Automatique sur un VPS : ajoutez dans `crontab -e` une ligne qui exécute la commande ci-dessus chaque nuit, puis copiez les sauvegardes **ailleurs** (autre serveur, Google Drive...). Une sauvegarde sur le même disque ne protège pas d'une panne du disque.
-- Sur Render/Railway : activez les sauvegardes/instantanés du disque si disponibles, et téléchargez régulièrement une copie.
-- Exportez aussi de temps en temps la liste des inscrits en CSV depuis `/admin`.
+- **Neon, automatique** : historique des modifications (*Restore* : revenir à un instant précis, la durée dépend de votre offre) et **branches** (une copie instantanée de la base, pratique avant une grosse modification). Rien à installer.
+- **Copie chez vous** : `npm run backup` écrit un fichier `data/backups/manager-ia-AAAA-MM-JJ….json.gz` (toutes les tables, les 14 dernières sont gardées ; `BACKUP_DIR` et `BACKUP_KEEP` règlent le dossier et le nombre). Lancez-la chaque nuit (cron) et copiez le dossier **ailleurs** (autre ordinateur, Google Drive…) : une sauvegarde au même endroit que la base ne protège de rien.
+- **Sauvegarde SQL standard** (si vous avez les outils PostgreSQL) : `pg_dump "$DATABASE_URL_UNPOOLED" -Fc -f sauvegarde.dump`, restauration avec `pg_restore`.
 
-Pour restaurer : arrêtez le serveur, remplacez le fichier `.db` par la sauvegarde, redémarrez.
+Exportez aussi de temps en temps la liste des inscrits en CSV depuis `/admin`.
 
 ---
 
@@ -387,7 +687,7 @@ Fait par le serveur : mots de passe chiffrés (bcrypt), cookies `httpOnly` (invi
 
 À votre charge :
 - Utilisez **HTTPS** partout (Render/Railway le fournissent ; sur un VPS, certbot).
-- Choisissez un `ADMIN_PASSWORD` long et unique ; ne le partagez pas.
+- Choisissez un `ADMIN_PASSWORD` long et unique ; ne le partagez pas ; activez la double authentification de l administrateur.
 - Gardez vos clés secrètes : si l'une fuit, **changez-la immédiatement** chez le fournisseur.
 - Faites des sauvegardes (section 9) et mettez à jour les dépendances de temps en temps (`npm audit`, `npm update`).
 - Respectez la protection des données de vos inscrits (noms, numéros, e-mails).
@@ -398,7 +698,7 @@ Remarque : les numéros camerounais à 9 chiffres commençant par 6 sont enregis
 
 ## 11. Référence rapide de l'API
 
-Utilisateur (cookie `mia_token`, 30 jours maximum, verrou biométrique après 5 minutes d'inactivité) :
+Utilisateur (cookie `mia_token`, 30 jours) :
 `POST /api/register` · `POST /api/login` · `POST /api/logout` · `GET /api/me` · `PUT /api/me/state` · `POST /api/contact` · `POST /api/assistant` · `GET /api/plans` · `POST /api/payments/initiate` · `POST /api/payments/confirm-manual` · `GET /api/payments/:reference` · `POST|GET /api/payments/webhook/campay` · `GET /api/health`
 
 Administrateur (cookie `mia_admin`) :
@@ -419,5 +719,5 @@ Tâches automatiques (toutes les heures) : les offres expirées repassent à « 
 - [ ] Un paiement de test (manuel ou Campay) active bien l'offre
 - [ ] L'assistant du site répond (clé Anthropic)
 - [ ] Message de test envoyé au numéro WhatsApp de l'entreprise : l'agent répond
-- [ ] Le disque / volume persistant est monté et une sauvegarde est programmée
+- [ ] La base Neon est reliée (`npm run db:check` répond « Connexion OK ») et `npm run backup` est programmé
 - [ ] `JWT_SECRET` et `ADMIN_PASSWORD` sont longs et secrets

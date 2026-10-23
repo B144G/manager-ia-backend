@@ -6,20 +6,20 @@ const signed = require('../services/signedUrl');
 const tts = require('../services/tts');
 
 const isConnected = (org, channel) => (channel === 'whatsapp' ? waOrg.isConnected(org) : metaChat.isConnected(org));
-const sendText = (org, chat, text) => (chat.channel === 'whatsapp' ? waOrg.sendText(org, chat.contact, text) : metaChat.sendText(org, chat.contact, text));
+const sendText = async (org, chat, text) => (chat.channel === 'whatsapp' ? await waOrg.sendText(org, chat.contact, text) : await metaChat.sendText(org, chat.contact, text));
 
 /** Message vocal : la réponse écrite est lue à voix haute (Ogg/Opus pour WhatsApp, AAC pour Messenger et Instagram). */
 async function sendVoice(org, chat, text) {
   if (chat.channel === 'whatsapp') {
     const buf = await tts.speak(text, 'opus');
     const id = await waOrg.uploadMedia(org, buf, 'audio/ogg', 'voix.ogg');
-    return waOrg.sendMedia(org, chat.contact, 'audio', id);
+    return await waOrg.sendMedia(org, chat.contact, 'audio', id);
   }
   const buf = await tts.speak(text, 'aac');
-  const url = signed.make('tmp', signed.stash(org.id, 'audio/aac', buf));
-  return metaChat.sendAttachment(org, chat.contact, 'audio', url);
+  const url = signed.make('tmp', await signed.stash(org.id, 'audio/aac', buf));
+  return await metaChat.sendAttachment(org, chat.contact, 'audio', url);
 }
 /** Fichier du catalogue sur Messenger / Instagram : Meta télécharge le fichier via un lien signé temporaire. */
-const sendCatalogLink = (org, chat, m) => metaChat.sendAttachment(org, chat.contact, m.kind, signed.make('cm', m.id));
+const sendCatalogLink = async (org, chat, m) => await metaChat.sendAttachment(org, chat.contact, m.kind, signed.make('cm', m.id));
 
 module.exports = { isConnected, sendText, sendVoice, sendCatalogLink, voiceReady: () => tts.isConfigured() };

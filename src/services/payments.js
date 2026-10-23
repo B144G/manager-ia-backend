@@ -19,12 +19,12 @@ function planConflict(user, planName) {
   return null;
 }
 
-const activate = db.transaction((paymentId) => {
-  const p = db.prepare('SELECT * FROM payments WHERE id = ?').get(paymentId);
+const activate = db.transaction(async (paymentId) => {
+  const p = await db.prepare('SELECT * FROM payments WHERE id = ?').get(paymentId);
   if (!p || p.status === 'paid') return null; // déjà fait : on ne recommence pas
   const plan = config.plans[p.plan];
   if (!plan) return null;
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(p.user_id);
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(p.user_id);
   if (!user) return null;
 
   if (planConflict(user, plan.name)) return null; // jamais de changement d'offre en cours d'abonnement
@@ -32,8 +32,8 @@ const activate = db.transaction((paymentId) => {
   const current = user.plan !== 'Gratuit' && user.plan_expires ? new Date(user.plan_expires).getTime() : 0;
   const expires = addDays(new Date(Math.max(now, current)), config.durationDays).toISOString();
 
-  db.prepare("UPDATE payments SET status = 'paid', paid_at = ? WHERE id = ? AND status != 'paid'").run(nowISO(), p.id);
-  db.prepare('UPDATE users SET plan = ?, plan_expires = ?, reminded_for = NULL WHERE id = ?').run(plan.name, expires, user.id);
+  await db.prepare("UPDATE payments SET status = 'paid', paid_at = ? WHERE id = ? AND status != 'paid'").run(nowISO(), p.id);
+  await db.prepare('UPDATE users SET plan = ?, plan_expires = ?, reminded_for = NULL WHERE id = ?').run(plan.name, expires, user.id);
   return { payment: p, user, planName: plan.name, expires };
 });
 
@@ -41,8 +41,8 @@ const activate = db.transaction((paymentId) => {
  * Marque un paiement comme payé et active l'offre. Renvoie null s'il était déjà payé.
  * Envoie l'e-mail de confirmation et la notification admin en arrière-plan.
  */
-function markPaid(paymentId) {
-  const r = activate(paymentId);
+async function markPaid(paymentId) {
+  const r = await activate(paymentId);
   if (!r) return null;
   mailUser(
     r.user.contact,

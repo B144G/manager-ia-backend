@@ -47,11 +47,11 @@ function id(v, msg = 'Identifiant invalide.') {
 const idOrNull = (v, msg) => (v === undefined || v === null || v === '' ? null : id(v, msg));
 
 // ---------- Contexte d'organisation (middleware pour /orgs/:orgId/...) ----------
-function loadOrg(req, res, next) {
+async function loadOrg(req, res, next) {
   const orgId = Number(req.params.orgId);
   if (!Number.isInteger(orgId) || orgId < 1) throw new HttpError(404, 'Organisation introuvable.');
-  const org = db.prepare('SELECT * FROM orgs WHERE id = ?').get(orgId);
-  const member = org && db.prepare('SELECT * FROM org_members WHERE org_id = ? AND user_id = ?').get(orgId, req.user.id);
+  const org = await db.prepare('SELECT * FROM orgs WHERE id = ?').get(orgId);
+  const member = org && await db.prepare('SELECT * FROM org_members WHERE org_id = ? AND user_id = ?').get(orgId, req.user.id);
   if (!org || !member) throw new HttpError(404, 'Organisation introuvable.'); // même message : on ne révèle pas son existence
   req.org = org;
   req.member = member;
@@ -73,22 +73,22 @@ function scope(req, col = 'branch_id') {
 const visible = (req, row) => !row.branch_id || can(req, 'admin') || req.member.branch_id == null || req.member.branch_id === row.branch_id;
 
 /** Vérifie qu'une antenne appartient bien à l'organisation. */
-function branchOf(req, v) {
+async function branchOf(req, v) {
   const b = idOrNull(v, 'Antenne invalide.');
   if (b === null) return null;
-  if (!db.prepare('SELECT 1 FROM branches WHERE id = ? AND org_id = ?').get(b, req.org.id)) throw new HttpError(400, 'Antenne inconnue.');
+  if (!await db.prepare('SELECT 1 FROM branches WHERE id = ? AND org_id = ?').get(b, req.org.id)) throw new HttpError(400, 'Antenne inconnue.');
   return b;
 }
 /** Vérifie qu'une personne fait partie de l'organisation. */
-function memberOf(req, v) {
+async function memberOf(req, v) {
   const u = idOrNull(v, 'Personne invalide.');
   if (u === null) return null;
-  if (!db.prepare('SELECT 1 FROM org_members WHERE org_id = ? AND user_id = ?').get(req.org.id, u)) throw new HttpError(400, "Cette personne ne fait pas partie de l'organisation.");
+  if (!await db.prepare('SELECT 1 FROM org_members WHERE org_id = ? AND user_id = ?').get(req.org.id, u)) throw new HttpError(400, "Cette personne ne fait pas partie de l'organisation.");
   return u;
 }
 
 // ---------- Offres ----------
-const ownerPlan = (org) => (getUserFresh(org.owner_id) || {}).plan || 'Gratuit';
+const ownerPlan = async (org) => (await getUserFresh(org.owner_id) || {}).plan || 'Gratuit';
 const limitsFor = (plan) => config.workspaceLimits[plan] || config.workspaceLimits.Gratuit;
 
 /**
@@ -97,8 +97,8 @@ const limitsFor = (plan) => config.workspaceLimits[plan] || config.workspaceLimi
  *   temps que l'abonnement (même après un renouvellement anticipé qui prolonge l'échéance).
  * - Offre Gratuite : le mois civil.
  */
-function quotaWindow(org) {
-  const u = getUserFresh(org.owner_id) || {};
+async function quotaWindow(org) {
+  const u = await getUserFresh(org.owner_id) || {};
   const now = Date.now();
   const exp = u.plan && u.plan !== 'Gratuit' && u.plan_expires ? Date.parse(u.plan_expires) : 0;
   if (exp > now) {
@@ -110,10 +110,10 @@ function quotaWindow(org) {
   return { start: new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).toISOString(), end: new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)).toISOString() };
 }
 /** Messages IA déjà utilisés par l'organisation sur la période en cours. */
-const aiUsed = (org) => { const w = quotaWindow(org); return db.prepare('SELECT COUNT(*) c FROM ai_usage WHERE org_id = ? AND created_at >= ? AND created_at < ?').get(org.id, w.start, w.end).c; };
+const aiUsed = async (org) => { const w = await quotaWindow(org); return (await db.prepare('SELECT COUNT(*) c FROM ai_usage WHERE org_id = ? AND created_at >= ? AND created_at < ?').get(org.id, w.start, w.end)).c; };
 
-function logActivity(orgId, userId, module, t) {
-  db.prepare('INSERT INTO activity (org_id, user_id, module, text, created_at) VALUES (?, ?, ?, ?, ?)').run(orgId, userId, module, String(t).slice(0, 300), nowISO());
+async function logActivity(orgId, userId, module, t) {
+  await db.prepare('INSERT INTO activity (org_id, user_id, module, text, created_at) VALUES (?, ?, ?, ?, ?)').run(orgId, userId, module, String(t).slice(0, 300), nowISO());
 }
 
 const monthRange = (m) => {

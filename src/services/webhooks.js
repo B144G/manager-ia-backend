@@ -69,18 +69,18 @@ function post(hook, body) {
 async function deliver(hook, event, data) {
   const body = JSON.stringify({ id: crypto.randomUUID(), event, created_at: nowISO(), data });
   const r = await post({ ...hook }, body);
-  if (r.ok) db.prepare('UPDATE webhooks_out SET fails = 0, last_status = ?, last_at = ? WHERE id = ?').run(r.status, nowISO(), hook.id);
+  if (r.ok) await db.prepare('UPDATE webhooks_out SET fails = 0, last_status = ?, last_at = ? WHERE id = ?').run(r.status, nowISO(), hook.id);
   else {
-    db.prepare('UPDATE webhooks_out SET fails = fails + 1, last_status = ?, last_at = ?, active = CASE WHEN fails + 1 >= 10 THEN 0 ELSE active END WHERE id = ?').run(`échec : ${r.status}`, nowISO(), hook.id);
+    await db.prepare('UPDATE webhooks_out SET fails = fails + 1, last_status = ?, last_at = ?, active = CASE WHEN fails + 1 >= 10 THEN 0 ELSE active END WHERE id = ?').run(`échec : ${r.status}`, nowISO(), hook.id);
   }
   return r;
 }
 
 /** Prévient les webhooks de l'organisation abonnés à cet événement. Ne bloque jamais et ne plante jamais l'action d'origine. */
-function emit(orgId, event, data) {
+async function emit(orgId, event, data) {
   try {
-    const hooks = db.prepare('SELECT * FROM webhooks_out WHERE org_id = ? AND active = 1').all(orgId).filter((h) => JSON.parse(h.events).includes(event));
-    for (const h of hooks) setImmediate(() => deliver(h, event, data).catch((e) => log.warn('Webhook sortant :', oneLine(e.message, 120))));
+    const hooks = (await db.prepare('SELECT * FROM webhooks_out WHERE org_id = ? AND active = 1').all(orgId)).filter((h) => JSON.parse(h.events).includes(event));
+    for (const h of hooks) setImmediate(async () => deliver(h, event, data).catch((e) => log.warn('Webhook sortant :', oneLine(e.message, 120))));
   } catch (e) { log.warn('Webhook sortant : erreur', oneLine(e.message, 120)); }
 }
 

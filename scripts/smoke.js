@@ -8,6 +8,7 @@ const fs = require('fs');
 const net = require('net');
 const os = require('os');
 const path = require('path');
+const { startTestPg } = require('./lib/testdb');
 
 const APP_SECRET = 'secret-de-test-meta';
 const VERIFY = 'verif-test';
@@ -54,18 +55,18 @@ function client(base) {
 
 async function main() {
   let child = null;
-  let dbFile = null;
+  let pgt = null;
   let base = process.env.SMOKE_URL;
   let admin = ADMIN;
 
   if (!base) {
     const port = await freePort();
     base = `http://127.0.0.1:${port}`;
-    dbFile = path.join(os.tmpdir(), `manager-ia-smoke-${process.pid}.db`);
+    pgt = await startTestPg();
     const blank = ['ALLOWED_ORIGINS', 'COOKIE_SAMESITE', 'COOKIE_SECURE', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM',
       'WHATSAPP_PHONE_ID', 'WHATSAPP_TOKEN', 'PAGE_ACCESS_TOKEN', 'ANTHROPIC_API_KEY', 'CAMPAY_USERNAME', 'CAMPAY_PASSWORD', 'BUSINESS_FILE', 'SITE_URL'];
     const env = { ...process.env, ...Object.fromEntries(blank.map((k) => [k, ''])), NODE_ENV: 'test', PORT: String(port), JWT_SECRET: 'secret-de-test-assez-long-123456',
-      DB_PATH: dbFile, TEST_AUTH_BYPASS: '1', ADMIN_USERNAME: ADMIN.username, ADMIN_PASSWORD: ADMIN.password, META_APP_SECRET: APP_SECRET, META_VERIFY_TOKEN: VERIFY,
+      DATABASE_URL: pgt.url, ADMIN_USERNAME: ADMIN.username, ADMIN_PASSWORD: ADMIN.password, META_APP_SECRET: APP_SECRET, META_VERIFY_TOKEN: VERIFY,
       MTN_NUMBER: '670000001', ORANGE_NUMBER: '690000002', PAYMENT_HOLDER_NAME: 'Titulaire Test', TRUST_PROXY: '0' };
     child = spawn(process.execPath, [path.join(__dirname, '..', 'src', 'server.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
@@ -267,7 +268,7 @@ async function main() {
   } finally {
     if (child) child.kill('SIGTERM');
     await sleep(300);
-    if (dbFile) for (const suf of ['', '-wal', '-shm']) { try { fs.unlinkSync(dbFile + suf); } catch { /* absent */ } }
+    if (pgt) await pgt.stop();
   }
 
   console.log(`\n${passed} test(s) réussi(s), ${failed} échec(s).`);

@@ -4,11 +4,9 @@
 // Lancez-le avec :  npm run eval:ai        (option : --only=site ou --only=workspace)
 // Rien n'est modifié : le test utilise une base temporaire avec une organisation d'exemple.
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 
-const tmpDb = path.join(os.tmpdir(), `manager-ia-eval-${process.pid}.db`);
-process.env.DB_PATH = tmpDb;
+process.env.DATABASE_URL = 'pglite://memory';
 const config = require('../src/config');
 const { db, nowISO } = require('../src/db');
 const claude = require('../src/services/claude');
@@ -24,19 +22,22 @@ if (!claude.isConfigured()) {
 }
 
 // ---- Organisation d'exemple (mêmes données que dans nos démonstrations) ----
-const now = nowISO();
-const day = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
-const uid = Number(db.prepare("INSERT INTO users (name, contact, pass_hash, plan, created_at) VALUES ('Awa Kamga', 'awa@exemple.com', 'x', 'Pro', ?)").run(now).lastInsertRowid);
-const oid = Number(db.prepare("INSERT INTO orgs (name, sector, description, currency, owner_id, intake_token, created_at) VALUES ('Boutique Awa', 'Commerce', 'Vente de pagnes et couture à Douala', 'FCFA', ?, 'tok', ?)").run(uid, now).lastInsertRowid);
-db.prepare("INSERT INTO org_members (org_id, user_id, role, title, created_at) VALUES (?, ?, 'owner', 'Dirigeante', ?)").run(oid, uid, now);
-const m = day(0).slice(0, 7);
-for (const [k, c, a] of [['income', 'Ventes', 480000], ['expense', 'Loyer', 120000], ['expense', 'Transport', 45000]]) db.prepare('INSERT INTO budget_entries (org_id, kind, category, label, amount, date, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(oid, k, c, '', a, `${m}-05`, uid, now);
-db.prepare("INSERT INTO budget_plans (org_id, category, monthly_limit) VALUES (?, 'Loyer', 100000)").run(oid);
-db.prepare("INSERT INTO tickets (org_id, customer_name, channel, subject, priority, created_at, updated_at) VALUES (?, 'Marie N.', 'whatsapp', 'Commande en retard', 'high', ?, ?)").run(oid, now, now);
-const pid = Number(db.prepare("INSERT INTO projects (org_id, name, due, created_by, created_at) VALUES (?, 'Boutique en ligne', ?, ?, ?)").run(oid, day(30), uid, now).lastInsertRowid);
-db.prepare("INSERT INTO tasks (org_id, project_id, title, status, due, created_by, created_at) VALUES (?, ?, 'Photographier les produits', 'todo', ?, ?, ?)").run(oid, pid, day(-3), uid, now);
-db.prepare("INSERT INTO decisions (org_id, title, amount, requested_by, created_at) VALUES (?, 'Commande fournisseur : pagne wax', 450000, ?, ?)").run(oid, uid, now);
-const req = { user: db.prepare('SELECT * FROM users WHERE id = ?').get(uid), org: db.prepare('SELECT * FROM orgs WHERE id = ?').get(oid), member: db.prepare('SELECT * FROM org_members WHERE org_id = ? AND user_id = ?').get(oid, uid) };
+let req;
+async function seed() {
+  const now = nowISO();
+  const day = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+  const uid = Number((await db.prepare("INSERT INTO users (name, contact, pass_hash, plan, created_at) VALUES ('Awa Kamga', 'awa@exemple.com', 'x', 'Pro', ?)").run(now)).lastInsertRowid);
+  const oid = Number((await db.prepare("INSERT INTO orgs (name, sector, description, currency, owner_id, intake_token, created_at) VALUES ('Boutique Awa', 'Commerce', 'Vente de pagnes et couture à Douala', 'FCFA', ?, 'tok', ?)").run(uid, now)).lastInsertRowid);
+  await db.prepare("INSERT INTO org_members (org_id, user_id, role, title, created_at) VALUES (?, ?, 'owner', 'Dirigeante', ?)").run(oid, uid, now);
+  const m = day(0).slice(0, 7);
+  for (const [k, c, a] of [['income', 'Ventes', 480000], ['expense', 'Loyer', 120000], ['expense', 'Transport', 45000]]) await db.prepare('INSERT INTO budget_entries (org_id, kind, category, label, amount, date, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(oid, k, c, '', a, `${m}-05`, uid, now);
+  await db.prepare("INSERT INTO budget_plans (org_id, category, monthly_limit) VALUES (?, 'Loyer', 100000)").run(oid);
+  await db.prepare("INSERT INTO tickets (org_id, customer_name, channel, subject, priority, created_at, updated_at) VALUES (?, 'Marie N.', 'whatsapp', 'Commande en retard', 'high', ?, ?)").run(oid, now, now);
+  const pid = Number((await db.prepare("INSERT INTO projects (org_id, name, due, created_by, created_at) VALUES (?, 'Boutique en ligne', ?, ?, ?)").run(oid, day(30), uid, now)).lastInsertRowid);
+  await db.prepare("INSERT INTO tasks (org_id, project_id, title, status, due, created_by, created_at) VALUES (?, ?, 'Photographier les produits', 'todo', ?, ?, ?)").run(oid, pid, day(-3), uid, now);
+  await db.prepare("INSERT INTO decisions (org_id, title, amount, requested_by, created_at) VALUES (?, 'Commande fournisseur : pagne wax', 450000, ?, ?)").run(oid, uid, now);
+  return { user: await db.prepare('SELECT * FROM users WHERE id = ?').get(uid), org: await db.prepare('SELECT * FROM orgs WHERE id = ?').get(oid), member: await db.prepare('SELECT * FROM org_members WHERE org_id = ? AND user_id = ?').get(oid, uid) };
+}
 
 // ---- Site : mêmes consignes que la route /api/assistant ----
 const siteSystem = () => { const extra = knowledge.load('site'); return claude.SITE_PROMPT + (extra ? `\n\nConnaissances supplémentaires fournies par MANAGER-IA :\n${extra}` : ''); };
@@ -51,7 +52,7 @@ function check(text, s) {
 }
 
 async function run(kind, s) {
-  const system = kind === 'site' ? siteSystem() : wsAi.buildSystem(req, s.m);
+  const system = kind === 'site' ? siteSystem() : await wsAi.buildSystem(req, s.m);
   const t0 = Date.now();
   let text, err = null;
   try { text = await claude.ask({ system, messages: [{ role: 'user', content: s.q }], maxTokens: 700 }); } catch (e) { err = e.message; text = ''; }
@@ -60,6 +61,8 @@ async function run(kind, s) {
 }
 
 (async () => {
+  await db.ready;
+  req = await seed();
   const jobs = [];
   if (only !== 'workspace') scen.site.forEach((s) => jobs.push(['site', s]));
   if (only !== 'site') scen.workspace.forEach((s) => jobs.push(['workspace', s]));
@@ -79,6 +82,5 @@ async function run(kind, s) {
   for (const r of results) md += `\n### ${r.fails.length ? '⚠️' : '✅'} [${r.module}] ${r.q}\n\n${r.text || '(aucune réponse)'}\n\n${r.fails.length ? '*Vérifications : ' + r.fails.join(' ; ') + '*\n' : ''}`;
   fs.writeFileSync(file, md);
   console.log(`\n${results.length - bad.length} / ${results.length} conformes. Rapport complet : ${file}\n`);
-  for (const f of [tmpDb, tmpDb + '-wal', tmpDb + '-shm']) { try { fs.unlinkSync(f); } catch { /* absent */ } }
   process.exit(0);
 })();

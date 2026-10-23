@@ -57,14 +57,17 @@ const config = {
   isProd,
   port: int('PORT', 3000),
   trustProxy: str('TRUST_PROXY', isProd ? '1' : '0'),
-  testAuthBypass: str('NODE_ENV') === 'test' && bool('TEST_AUTH_BYPASS', false),
   siteUrl: str('SITE_URL'),
-  webAuthn: {
-    rpName: str('WEBAUTHN_RP_NAME', 'MANAGER-IA'),
-    rpID: str('WEBAUTHN_RP_ID', 'localhost'),
-    origin: str('WEBAUTHN_ORIGIN', 'http://localhost:5173'),
-  },
-  dbPath: resolvePath(str('DB_PATH', 'data/manager-ia.db')),
+  // Inscription avec code par e-mail : 'on', 'off' ou 'auto' (actif dès que l'envoi d'e-mails est configuré).
+  signupVerify: str('SIGNUP_VERIFY') || 'auto',
+  // PostgreSQL : DATABASE_URL (Neon : adresse « pooled »). DATABASE_URL_UNPOOLED (adresse directe) sert aux migrations si fournie.
+  // Pour les tests : DATABASE_URL=pglite://memory (ou pglite:///chemin/dossier), un vrai PostgreSQL embarqué sans installation.
+  database: (() => {
+    const url = str('DATABASE_URL');
+    if (!url) { console.error('[ERREUR] DATABASE_URL manquant. Exemple Neon : postgresql://utilisateur:motdepasse@ep-xxx.eu-central-1.aws.neon.tech/neondb?sslmode=require'); process.exit(1); }
+    if (/^pglite:/i.test(url)) { const rest = url.replace(/^pglite:\/\//i, ''); return { driver: 'pglite', pgliteDir: rest && rest !== 'memory' ? resolvePath(rest) : '', poolMax: 1 }; }
+    return { driver: 'pg', url, directUrl: str('DATABASE_URL_UNPOOLED') || url, ssl: str('DATABASE_SSL') === 'false' ? false : undefined, poolMax: Math.max(1, parseInt(str('DB_POOL_MAX', '10'), 10) || 10) };
+  })(),
   publicDir: path.join(ROOT, 'public'),
   adminDir: path.join(ROOT, 'admin'),
 
@@ -82,6 +85,12 @@ const config = {
     whatsapp: str('ADMIN_WHATSAPP', '237653621388').replace(/\D/g, ''),
   },
 
+  // E-mail par API web (HTTPS) : à utiliser quand l'hébergeur bloque les ports SMTP (plan gratuit de Render). Fournisseur géré : Brevo.
+  mailApi: {
+    provider: str('MAIL_API', str('BREVO_API_KEY') ? 'brevo' : '').toLowerCase(),
+    key: str('MAIL_API_KEY') || str('BREVO_API_KEY'),
+    baseUrl: str('MAIL_API_URL', 'https://api.brevo.com/v3').replace(/\/+$/, ''),
+  },
   smtp: {
     host: str('SMTP_HOST'),
     port: int('SMTP_PORT', 587),
