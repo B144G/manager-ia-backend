@@ -17,7 +17,7 @@ function fake(handler) {
 }
 const load = (env) => {
   Object.keys(require.cache).forEach((k) => { if (/[\\/]src[\\/]/.test(k)) delete require.cache[k]; });
-  for (const k of ['AI_PROVIDER', 'AI_API_KEY', 'AI_MODEL', 'AI_MODEL_FAST', 'AI_BASE_URL', 'AI_PROMPT_CACHE', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_BASE_URL']) delete process.env[k];
+  for (const k of ['AI_PROVIDER', 'AI_API_KEY', 'AI_MODEL', 'AI_MODEL_FAST', 'AI_BASE_URL', 'AI_PROMPT_CACHE', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_BASE_URL', 'AI_REASONING_EFFORT', 'AI_TIMEOUT_MS']) delete process.env[k];
   Object.assign(process.env, { DATABASE_URL: 'pglite://memory', ...env });
   return require('../src/services/claude');
 };
@@ -54,6 +54,10 @@ const load = (env) => {
   await c.ask({ messages: [{ role: 'user', content: img }] });
   const parts = o.seen[o.seen.length - 1].body.messages[0].content;
   ok(parts[1].type === 'image_url' && parts[1].image_url.url === 'data:image/png;base64,AAAA' && parts[2].type === 'text' && /PDF/.test(parts[2].text), 'pièces jointes au format OpenAI (le PDF devient une note)');
+  ok(!('reasoning_effort' in o.seen[0].body), "sans réglage, l'effort de réflexion n'est pas envoyé");
+  c = load({ AI_PROVIDER: 'openai', AI_API_KEY: 'k2', AI_BASE_URL: `http://127.0.0.1:${o.port}/v1`, AI_MODEL: 'gemini-x', AI_REASONING_EFFORT: 'LOW' });
+  await c.ask({ messages: [{ role: 'user', content: 'x' }] });
+  ok(o.seen[o.seen.length - 1].body.reasoning_effort === 'low', "AI_REASONING_EFFORT transmis (en minuscules)");
   o.srv.close();
 
   console.log('Pièces jointes (Anthropic)');

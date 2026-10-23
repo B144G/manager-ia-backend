@@ -126,6 +126,9 @@ const config = {
       modelFast: str('AI_MODEL_FAST'),
       baseUrl: (str('AI_BASE_URL') || (a ? str('ANTHROPIC_BASE_URL', 'https://api.anthropic.com') : 'https://api.openai.com/v1')).replace(/\/+$/, ''),
       cache: str('AI_PROMPT_CACHE', '1') !== '0', // mise en cache des consignes répétées (Anthropic)
+      // Services « compatibles OpenAI » : effort de réflexion des modèles qui réfléchissent (minimal, low, medium, high). Vide = réglage du service.
+      reasoning: str('AI_REASONING_EFFORT').toLowerCase(),
+      timeoutMs: Math.min(Math.max(int('AI_TIMEOUT_MS', 45000), 5000), 120000),
     };
   })(),
 

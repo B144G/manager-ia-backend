@@ -78,8 +78,8 @@ async function ask({ system = '', stable = '', messages, maxTokens = 600, tier }
     const r = await fetchJson(`${c.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { authorization: `Bearer ${c.key}` },
-      body: { model, max_tokens: maxTokens, messages: [...(sys ? [{ role: 'system', content: sys }] : []), ...messages.map((m) => ({ ...m, content: convertParts(m.content, 'openai') }))] },
-      timeout: 45000,
+      body: { model, max_tokens: maxTokens, ...(c.reasoning ? { reasoning_effort: c.reasoning } : {}), messages: [...(sys ? [{ role: 'system', content: sys }] : []), ...messages.map((m) => ({ ...m, content: convertParts(m.content, 'openai') }))] },
+      timeout: c.timeoutMs || 45000,
     });
     if (!r.ok) throw failure(r, 'IA');
     const u = (r.data && r.data.usage) || {};
