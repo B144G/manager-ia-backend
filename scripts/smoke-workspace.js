@@ -62,6 +62,7 @@ function fakeClaude(port) {
         if (/^\/graph\/IMG/.test(req.url)) return res.end(JSON.stringify({ url: `http://127.0.0.1:${port}/media/img` }));
         if (/^\/graph\/PDF/.test(req.url)) return res.end(JSON.stringify({ url: `http://127.0.0.1:${port}/media/pdf` }));
         if (/^\/graph\/MEDIA/.test(req.url)) return res.end(JSON.stringify({ url: `http://127.0.0.1:${port}/media/1` }));
+        if (/\/subscribed_apps$/.test(req.url)) { (seen.subs = seen.subs || []).push({ method: req.method, url: req.url, auth }); return res.end(req.method === 'POST' ? JSON.stringify({ success: true }) : JSON.stringify({ data: [{ whatsapp_business_api_data: { name: 'Manager-ia' } }] })); }
         return res.end(JSON.stringify({ display_phone_number: '+237 677 11 22 33', verified_name: 'Boutique Awa' }));
       }
       if (req.url.includes('/audio/speech')) { const jj = JSON.parse(b || '{}'); (seen.tts = seen.tts || []).push({ format: jj.response_format, input: jj.input, voice: jj.voice, auth: req.headers.authorization }); res.setHeader('content-type', 'audio/ogg'); return res.end(jj.response_format === 'aac' ? Buffer.concat([Buffer.from([0xff, 0xf1]), Buffer.alloc(80, 3)]) : Buffer.concat([Buffer.from('OggS'), Buffer.alloc(80, 2)])); }
@@ -748,6 +749,14 @@ async function main() {
     check('WhatsApp : lecture des réglages sans secret', r.json.connected && !JSON.stringify(r.json).includes('EAAG') && r.json.webhookPath === WA, r.json);
     r = await owner('POST', `${SL}/whatsapp/test`);
     check('WhatsApp : test de connexion (numéro et nom vérifié)', r.status === 200 && /677/.test(r.json.number) && r.json.name === 'Boutique Awa', r.json);
+    r = await owner('POST', `${SL}/whatsapp/subscribe`);
+    check('WhatsApp : abonnement sans identifiant de compte -> 400', r.status === 400, r.json);
+    r = await owner('PUT', `${SL}/whatsapp`, { wabaId: 'abc' });
+    check('WhatsApp : identifiant de compte invalide -> 400', r.status === 400, r.json);
+    r = await owner('PUT', `${SL}/whatsapp`, { wabaId: '1432309911579140' });
+    check('WhatsApp : identifiant du compte enregistré', r.status === 200 && r.json.wabaId === '1432309911579140' && r.json.connected, r.json);
+    r = await owner('POST', `${SL}/whatsapp/subscribe`);
+    check('WhatsApp : abonnement de l\'application au compte (jeton envoyé, liste renvoyée)', r.status === 200 && r.json.subscribed === true && r.json.apps.includes('Manager-ia') && fake.seen.subs && fake.seen.subs[0].method === 'POST' && /1432309911579140\/subscribed_apps/.test(fake.seen.subs[0].url) && /^Bearer /.test(fake.seen.subs[0].auth), [r.json, fake.seen.subs]);
     let w = await fetch(`${base}${WA}?hub.mode=subscribe&hub.verify_token=${verifyTok}&hub.challenge=CH123`);
     check('webhook : vérification par Meta (jeton correct) -> renvoie le défi', w.status === 200 && (await w.text()) === 'CH123');
     w = await fetch(`${base}${WA}?hub.mode=subscribe&hub.verify_token=mauvais&hub.challenge=CH123`);

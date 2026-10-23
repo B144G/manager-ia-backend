@@ -66,6 +66,19 @@ async function sendMedia(org, to, kind, mediaId, caption) {
   return r.data;
 }
 
+
+/** Abonne l'application de Meta au compte WhatsApp Business (WABA) : sans cela, Meta n'envoie pas les messages reçus au webhook. */
+async function subscribeApp(org) {
+  const waba = String(org.wa_waba || '').replace(/\D/g, '');
+  const token = vault.decrypt(org.wa_token);
+  if (!waba || !token) throw new Error("Identifiant du compte WhatsApp Business ou jeton manquant");
+  const r = await fetchJson(`${config.meta.graphUrl}/${encodeURIComponent(waba)}/subscribed_apps`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: {} });
+  if (!r.ok) throw fail(r, 'Abonnement');
+  const l = await fetchJson(`${config.meta.graphUrl}/${encodeURIComponent(waba)}/subscribed_apps`, { headers: { Authorization: `Bearer ${token}` } });
+  const apps = l.ok && l.data && Array.isArray(l.data.data) ? l.data.data.map((a) => oneLine(String((a.whatsapp_business_api_data && a.whatsapp_business_api_data.name) || a.name || a.id || 'application'), 60)) : [];
+  return { subscribed: Boolean(r.data && r.data.success !== false), apps };
+}
+
 /** Numéro affiché et nom vérifié du compte : sert à tester la connexion. */
 async function profile(org) {
   const c = creds(org);
@@ -89,4 +102,4 @@ async function downloadMedia(org, mediaId) {
   } finally { clearTimeout(timer); }
 }
 
-module.exports = { isConnected, sendText, sendTemplate, uploadMedia, sendMedia, profile, downloadMedia };
+module.exports = { subscribeApp, isConnected, sendText, sendTemplate, uploadMedia, sendMedia, profile, downloadMedia };

@@ -1430,6 +1430,9 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_fiscal_closings ON fiscal_closings(org_id, year, id);
   `,
+  `
+  ALTER TABLE orgs ADD COLUMN wa_waba TEXT NOT NULL DEFAULT '';
+  `,
 ];
 
 

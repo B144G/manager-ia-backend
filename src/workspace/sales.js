@@ -158,7 +158,7 @@ router.put('/chats/:id/status', async (req, res) => {
 });
 
 // ---------- WhatsApp de l'organisation (API officielle de Meta) : réglages réservés aux administrateurs ----------
-const waState = (o) => ({ connected: waOrg.isConnected(o), phoneId: o.wa_phone_id, number: o.wa_number, tokenSet: Boolean(vault.decrypt(o.wa_token)), secretSet: Boolean(vault.decrypt(o.wa_secret)), verifyToken: o.wa_verify, webhookPath: `/api/ws/public/whatsapp/${o.intake_token}`, voice: stt.isConfigured() });
+const waState = (o) => ({ connected: waOrg.isConnected(o), phoneId: o.wa_phone_id, wabaId: o.wa_waba || '', number: o.wa_number, tokenSet: Boolean(vault.decrypt(o.wa_token)), secretSet: Boolean(vault.decrypt(o.wa_secret)), verifyToken: o.wa_verify, webhookPath: `/api/ws/public/whatsapp/${o.intake_token}`, voice: stt.isConfigured() });
 router.get('/whatsapp', A.need('admin'), (req, res) => res.json(waState(req.org)));
 router.put('/whatsapp', A.need('admin'), async (req, res) => {
   const b = req.body || {};
@@ -169,12 +169,14 @@ router.put('/whatsapp', A.need('admin'), async (req, res) => {
   if (b.number !== undefined && /[A-Za-z]/.test(String(b.number))) throw new HttpError(400, 'Numéro WhatsApp invalide : chiffres uniquement, avec l\'indicatif du pays (237…).');
   const number = b.number === undefined ? o.wa_number : String(b.number).replace(/\D/g, '');
   if (number && (number.length < 8 || number.length > 15)) throw new HttpError(400, 'Numéro WhatsApp invalide : indiquez-le avec l\'indicatif du pays, par exemple 237677112233.');
+  if (b.wabaId !== undefined && String(b.wabaId).trim() && !/^\d{5,30}$/.test(String(b.wabaId).trim())) throw new HttpError(400, "L'identifiant du compte WhatsApp Business doit contenir uniquement des chiffres (5 à 30).");
+  const wabaId = b.wabaId === undefined ? (o.wa_waba || '') : String(b.wabaId).trim();
   const token = b.token ? String(b.token).trim() : '';
   const secret = b.appSecret ? String(b.appSecret).trim() : '';
   if (token && (token.length < 20 || token.length > 600 || /\s/.test(token))) throw new HttpError(400, 'Jeton d\'accès invalide (copiez-le en entier depuis Meta, sans espace).');
   if (secret && (secret.length < 8 || secret.length > 200 || /\s/.test(secret))) throw new HttpError(400, "Secret de l'application invalide (copiez-le depuis Meta, sans espace).");
-  await db.prepare('UPDATE orgs SET wa_phone_id = ?, wa_number = ?, wa_token = ?, wa_secret = ?, wa_verify = ? WHERE id = ?').run(
-    phoneId, number, token ? vault.encrypt(token) : o.wa_token, secret ? vault.encrypt(secret) : o.wa_secret, o.wa_verify || crypto.randomBytes(12).toString('hex'), o.id);
+  await db.prepare('UPDATE orgs SET wa_phone_id = ?, wa_waba = ?, wa_number = ?, wa_token = ?, wa_secret = ?, wa_verify = ? WHERE id = ?').run(
+    phoneId, wabaId, number, token ? vault.encrypt(token) : o.wa_token, secret ? vault.encrypt(secret) : o.wa_secret, o.wa_verify || crypto.randomBytes(12).toString('hex'), o.id);
   await A.logActivity(o.id, req.user.id, 'sales', 'Réglages WhatsApp mis à jour');
   res.json(waState(await db.prepare('SELECT * FROM orgs WHERE id = ?').get(o.id)));
 });
@@ -182,8 +184,12 @@ router.post('/whatsapp/test', A.need('admin'), asyncHandler(async (req, res) => 
   if (!req.org.wa_phone_id || !vault.decrypt(req.org.wa_token)) throw new HttpError(400, "Enregistrez d'abord l'identifiant du numéro et le jeton d'accès.");
   try { res.json(await waOrg.profile(req.org)); } catch (e) { throw new HttpError(502, `Meta a refusé la connexion : ${oneLine(e.message.replace(/^.*HTTP \d+ : /, ''), 160)}`); }
 }));
+router.post('/whatsapp/subscribe', A.need('admin'), asyncHandler(async (req, res) => {
+  if (!req.org.wa_waba || !vault.decrypt(req.org.wa_token)) throw new HttpError(400, "Enregistrez d'abord l'identifiant du compte WhatsApp Business et le jeton d'accès.");
+  try { res.json(await waOrg.subscribeApp(req.org)); } catch (e) { throw new HttpError(502, `Meta a refusé l'abonnement : ${oneLine(e.message.replace(/^.*HTTP \d+ : /, ''), 160)}`); }
+}));
 router.delete('/whatsapp', A.need('admin'), async (req, res) => {
-  await db.prepare("UPDATE orgs SET wa_phone_id = '', wa_token = '', wa_secret = '', wa_verify = '', wa_number = '' WHERE id = ?").run(req.org.id);
+  await db.prepare("UPDATE orgs SET wa_phone_id = '', wa_waba = '', wa_token = '', wa_secret = '', wa_verify = '', wa_number = '' WHERE id = ?").run(req.org.id);
   await A.logActivity(req.org.id, req.user.id, 'sales', 'WhatsApp déconnecté');
   res.json({ ok: true });
 });
