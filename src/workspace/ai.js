@@ -199,6 +199,22 @@ async function history(req, module, n = 12) {
   return rows;
 }
 
+// Test de l'IA par un administrateur : une toute petite question, avec la durée et la raison exacte d'un éventuel échec (aucune clé n'est jamais renvoyée).
+router.post('/ping', A.need('admin'), limits.assistantMinute, asyncHandler(async (req, res) => {
+  const c = config.ai;
+  let host = '';
+  try { host = new URL(c.baseUrl).host; } catch { host = ''; }
+  const info = { provider: c.provider, model: c.model, host, reasoning: c.reasoning || null, timeoutMs: c.timeoutMs || 45000, keySet: Boolean(c.key) };
+  if (!c.key) return res.json({ ok: false, ...info, error: "Aucune clé d'IA n'est configurée sur le serveur (AI_API_KEY)." });
+  const t0 = Date.now();
+  try {
+    const text = await claude.ask({ stable: 'Tu réponds en français, très brièvement.', system: '', messages: [{ role: 'user', content: 'Réponds seulement : bonjour' }], maxTokens: 50 });
+    return res.json({ ok: true, ...info, ms: Date.now() - t0, text: oneLine(String(text), 120) });
+  } catch (e) {
+    return res.json({ ok: false, ...info, ms: Date.now() - t0, error: oneLine(String((e.cause && e.cause.message) || e.message || 'erreur'), 240) });
+  }
+}));
+
 router.get('/history', async (req, res) => {
   const m = moduleOf(req.query.module || 'general', req);
   res.json({ messages: await history(req, m, 30), remaining: await remaining(req), limit: await monthlyLimit(req), enabled: claude.isConfigured() });

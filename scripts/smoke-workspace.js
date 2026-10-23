@@ -291,6 +291,10 @@ async function main() {
     check('simple membre : IA budget refusée -> 403', r.status === 403, r.json);
     r = await boss2('POST', `/api/ws/orgs/${org}/ai/chat`, { module: 'general', message: 'Où en suis-je ?' });
     check('simple membre : contexte général SANS budget', r.status === 200 && fake.seen.last.system.includes('BUDGET : non accessible') && !fake.seen.last.system.includes('BUDGET du mois'), fake.seen.last.system.slice(0, 200));
+    r = await owner('POST', `/api/ws/orgs/${org}/ai/ping`);
+    check("test de l'IA (administrateur) : réponse, durée, aucun secret", r.status === 200 && r.json.ok === true && typeof r.json.ms === 'number' && r.json.keySet === true && !JSON.stringify(r.json).includes('cle-de-test'), r.json);
+    r = await boss2('POST', `/api/ws/orgs/${org}/ai/ping`);
+    check("test de l'IA : simple membre -> 403", r.status === 403, r.json);
     r = await owner('GET', `/api/ws/orgs/${org}/ai/history?module=general`);
     check('historique conservé', r.json.messages.length === 2 && r.json.enabled === true, r.json);
     r = await owner('POST', `/api/ws/orgs/${org}/ai/chat`, { module: 'inconnu', message: 'x' });
