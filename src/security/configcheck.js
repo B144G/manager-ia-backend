@@ -37,7 +37,7 @@ async function run() {
       add('admin-2fa', t && Number(t.enabled) ? 'ok' : (prod ? 'bad' : 'warn'), 'Double authentification de l\'administrateur', t && Number(t.enabled) ? 'Active (application d\'authentification).' : 'Non activée : un mot de passe volé suffirait. Activez-la dans Sécurité.');
     } catch { /* base indisponible */ }
   }
-  add('smtp', config.smtp.host ? 'ok' : 'warn', 'Vérification des inscriptions par e-mail', config.smtp.host ? 'Active (code à 6 chiffres).' : 'E-mail non configuré : les comptes se créent sans vérifier l\'adresse.');
+  add('smtp', (config.smtp.host || (config.mailApi && config.mailApi.key)) ? 'ok' : 'warn', 'Vérification des inscriptions par e-mail', (config.smtp.host || (config.mailApi && config.mailApi.key)) ? 'Active (code à 6 chiffres).' : 'E-mail non configuré : les comptes se créent sans vérifier l\'adresse.');
   const url = String(config.database.url || '');
   if (config.database.driver === 'pg') {
     const ssl = /sslmode=(require|verify)/i.test(url) || config.database.ssl === undefined && /neon\.tech|render\.com|supabase/.test(url);

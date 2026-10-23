@@ -85,6 +85,12 @@ const config = {
     whatsapp: str('ADMIN_WHATSAPP', '237653621388').replace(/\D/g, ''),
   },
 
+  // E-mail par API web (HTTPS) : à utiliser quand l'hébergeur bloque les ports SMTP (plan gratuit de Render). Fournisseur géré : Brevo.
+  mailApi: {
+    provider: str('MAIL_API', str('BREVO_API_KEY') ? 'brevo' : '').toLowerCase(),
+    key: str('MAIL_API_KEY') || str('BREVO_API_KEY'),
+    baseUrl: str('MAIL_API_URL', 'https://api.brevo.com/v3').replace(/\/+$/, ''),
+  },
   smtp: {
     host: str('SMTP_HOST'),
     port: int('SMTP_PORT', 587),
