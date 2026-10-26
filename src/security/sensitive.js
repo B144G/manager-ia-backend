@@ -18,6 +18,7 @@ const TABLE = [
   ['PUT', /^\/integrations\/webhooks\/\d+$/, 'webhook.update', 'info'],
   ['DELETE', /^\/integrations\/webhooks\/\d+$/, 'webhook.delete', 'warn'],
   ['PUT', /^\/sales\/whatsapp$/, 'channel.whatsapp_credentials', 'high'],
+  ['POST', /^\/sales\/whatsapp\/embedded\/complete$/, 'channel.whatsapp_embedded', 'high'],
   ['DELETE', /^\/sales\/whatsapp$/, 'channel.whatsapp_disconnect', 'warn'],
   ['PUT', /^\/sales\/meta$/, 'channel.meta_credentials', 'high'],
   ['DELETE', /^\/sales\/meta$/, 'channel.meta_disconnect', 'warn'],

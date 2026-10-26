@@ -58,6 +58,7 @@ app.use((req, res, next) => {
 
 // Webhooks Meta (corps brut conservé pour la signature) : avant le lecteur JSON général.
 app.use('/webhooks', require('./routes/webhooks'));
+app.use('/api/webhooks/whatsapp', require('./routes/waShared')); // webhook commun (connexion en un clic)
 
 const jsonSmall = express.json({ limit: '100kb' });
 // Les fichiers joints (images, PDF) arrivent en base64 : cette seule route a une limite plus large (elle la règle elle-même, après connexion).

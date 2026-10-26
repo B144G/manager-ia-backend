@@ -342,6 +342,34 @@ WhatsApp interdit d'écrire à un client **plus de 24 heures après son dernier 
 
 ---
 
+## Connexion WhatsApp en un clic (Embedded Signup de Meta)
+
+**Ce que c'est.** Un bouton « Connecter WhatsApp » dans l'onglet Canaux : une fenêtre de Meta s'ouvre, l'entreprise cliente choisit son compte et son numéro, et MANAGER-IA reçoit un code qu'il échange côté serveur contre un jeton, enregistre le numéro, abonne l'application au compte WhatsApp Business et range les identifiants chiffrés. Le client ne copie plus aucun identifiant. L'outil est gratuit chez Meta (les conversations restent facturées selon les tarifs de Meta). La saisie manuelle reste disponible, repliée sous « Avancé : saisir les identifiants à la main ».
+
+**La fonction est désactivée tant que les variables ne sont pas renseignées** (le bouton n'apparaît pas).
+
+**Prérequis chez Meta (à faire par vous, l'éditeur) :**
+- entreprise vérifiée dans le Gestionnaire d'entreprise ;
+- application en mode **Live** ;
+- statut de **fournisseur de technologie** (Tech Provider) ;
+- revue (App Review) des permissions `whatsapp_business_management` et `whatsapp_business_messaging`, avec une vidéo de démonstration ;
+- une configuration **« Facebook Login for Business »** avec le produit **WhatsApp Embedded Signup** (son identifiant devient `META_EMBEDDED_CONFIG_ID`) ;
+- vos domaines autorisés (domaine du site et de l'application) déclarés dans les réglages de connexion de l'application.
+
+**Variables d'environnement :**
+| Variable | Rôle |
+|---|---|
+| `META_APP_ID` | identifiant de l'application Meta |
+| `META_APP_SECRET` | secret de l'application : échange du code et signature des webhooks |
+| `META_EMBEDDED_CONFIG_ID` | identifiant de configuration « Facebook Login for Business » |
+| `META_WEBHOOK_VERIFY_TOKEN` | texte au choix, à coller aussi dans Meta pour le webhook commun |
+
+**Webhook commun à coller dans Meta** (produit WhatsApp, champ `messages`) : `https://VOTRE-SERVEUR/api/webhooks/whatsapp`, avec le jeton `META_WEBHOOK_VERIFY_TOKEN`. Les messages de tous les numéros arrivent là ; chacun est rangé dans l'organisation propriétaire du numéro (un numéro ne peut être rattaché qu'à une seule organisation). Les messages d'un numéro inconnu sont ignorés.
+
+**Routes** (administrateurs de l'organisation) : `GET /api/ws/orgs/:id/sales/whatsapp/embedded/config` et `POST .../sales/whatsapp/embedded/complete`. Tests : `npm run test:embedded`.
+
+**Ce qui n'a PAS été testé contre le vrai Meta.** Tout a été vérifié avec un faux serveur Graph local : les échanges réels (format exact des réponses, erreur « déjà enregistré », code PIN de l'authentification en deux étapes d'un numéro, événements du kit JavaScript, délai d'expiration du code) peuvent différer et demanderont un premier essai réel avec un compte de test avant tout lancement.
+
 ## 1. Installation sur votre ordinateur (essai)
 
 1. Installez Node.js 20 ou plus : <https://nodejs.org> (version « LTS »).

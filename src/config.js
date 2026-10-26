@@ -109,6 +109,10 @@ const config = {
     verifyToken: str('META_VERIFY_TOKEN'),
     appSecret: str('META_APP_SECRET'),
     pageToken: str('PAGE_ACCESS_TOKEN'),
+    appId: str('META_APP_ID'),                              // « Connexion WhatsApp en un clic » (Embedded Signup)
+    embeddedConfigId: str('META_EMBEDDED_CONFIG_ID'),       // identifiant de configuration « Facebook Login for Business »
+    webhookVerifyToken: str('META_WEBHOOK_VERIFY_TOKEN'),   // jeton de vérification du webhook commun /api/webhooks/whatsapp
+    get embeddedEnabled() { return Boolean(this.appId && this.appSecret && this.embeddedConfigId); },
     graphUrl: str('META_GRAPH_URL', 'https://graph.facebook.com/v21.0').replace(/\/+$/, ''), // adresse de l'API Meta (changée seulement pour les tests)
   },
   dataKey: str('DATA_KEY'), // clé de chiffrement des jetons WhatsApp enregistrés (par défaut dérivée de JWT_SECRET)

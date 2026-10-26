@@ -13,7 +13,9 @@ const B = require('./sales-brief');
 const tts = require('../services/tts');
 const metaChat = require('../services/metaChat');
 const crypto = require('crypto');
-const { HttpError, asyncHandler, oneLine } = require('../util');
+const config = require('../config');
+const limits = require('../middleware/limits');
+const { HttpError, asyncHandler, oneLine, fetchJson } = require('../util');
 
 const router = express.Router({ mergeParams: true });
 router.use(A.need('manager'));
@@ -171,6 +173,7 @@ router.put('/whatsapp', A.need('admin'), async (req, res) => {
   if (number && (number.length < 8 || number.length > 15)) throw new HttpError(400, 'Numéro WhatsApp invalide : indiquez-le avec l\'indicatif du pays, par exemple 237677112233.');
   if (b.wabaId !== undefined && String(b.wabaId).trim() && !/^\d{5,30}$/.test(String(b.wabaId).trim())) throw new HttpError(400, "L'identifiant du compte WhatsApp Business doit contenir uniquement des chiffres (5 à 30).");
   const wabaId = b.wabaId === undefined ? (o.wa_waba || '') : String(b.wabaId).trim();
+  if (phoneId && phoneId !== o.wa_phone_id && await db.prepare('SELECT id FROM orgs WHERE wa_phone_id = ? AND id <> ?').get(phoneId, o.id)) throw new HttpError(409, 'Ce numéro WhatsApp est déjà connecté à une autre organisation.');
   const token = b.token ? String(b.token).trim() : '';
   const secret = b.appSecret ? String(b.appSecret).trim() : '';
   if (token && (token.length < 20 || token.length > 600 || /\s/.test(token))) throw new HttpError(400, 'Jeton d\'accès invalide (copiez-le en entier depuis Meta, sans espace).');
@@ -193,6 +196,50 @@ router.delete('/whatsapp', A.need('admin'), async (req, res) => {
   await A.logActivity(req.org.id, req.user.id, 'sales', 'WhatsApp déconnecté');
   res.json({ ok: true });
 });
+
+// ---------- Connexion WhatsApp en un clic (Embedded Signup de Meta) : désactivée tant que les variables d'environnement manquent ----------
+const graphVersion = () => (/\/(v\d+\.\d+)$/.exec(config.meta.graphUrl) || [])[1] || 'v21.0';
+const metaReason = (e) => oneLine(String((e && e.message) || '').replace(/^.*HTTP \d+ : /, ''), 140);
+router.get('/whatsapp/embedded/config', A.need('admin'), (req, res) => {
+  if (!config.meta.embeddedEnabled) return res.json({ enabled: false });
+  res.json({ enabled: true, appId: config.meta.appId, configId: config.meta.embeddedConfigId, graphVersion: graphVersion() });
+});
+const embeddedLimit = limits.make(10 * 60 * 1000, 20, 'Trop de tentatives. Réessayez dans quelques minutes.');
+router.post('/whatsapp/embedded/complete', A.need('admin'), embeddedLimit, asyncHandler(async (req, res) => {
+  if (!config.meta.embeddedEnabled) throw new HttpError(404, "La connexion en un clic n'est pas disponible sur ce serveur. Utilisez la saisie manuelle.");
+  const b = req.body || {};
+  const code = String(b.code || '').trim(); const phoneId = String(b.phoneNumberId || '').trim(); const wabaId = String(b.wabaId || '').trim();
+  if (!/^\d{5,30}$/.test(phoneId)) throw new HttpError(400, "L'identifiant du numéro est invalide (chiffres uniquement, 5 à 30).");
+  if (!/^\d{5,30}$/.test(wabaId)) throw new HttpError(400, "L'identifiant du compte WhatsApp Business est invalide (chiffres uniquement, 5 à 30).");
+  if (code.length < 10 || code.length > 600 || /\s/.test(code)) throw new HttpError(400, 'Le code reçu de Meta est invalide. Recommencez la connexion.');
+  const o = req.org;
+  if (await db.prepare('SELECT id FROM orgs WHERE wa_phone_id = ? AND id <> ?').get(phoneId, o.id)) throw new HttpError(409, 'Ce numéro WhatsApp est déjà connecté à une autre organisation.');
+  // (a) le code est échangé contre un jeton d'entreprise
+  const q = new URLSearchParams({ client_id: config.meta.appId, client_secret: config.meta.appSecret, code });
+  let token = '';
+  try {
+    const r = await fetchJson(`${config.meta.graphUrl}/oauth/access_token?${q.toString()}`);
+    token = r.ok && r.data && typeof r.data.access_token === 'string' ? r.data.access_token : '';
+    if (!token) throw new Error(`HTTP ${r.status} : ${(r.data && r.data.error && r.data.error.message) || 'réponse inattendue'}`);
+  } catch (e) { throw new HttpError(502, `Meta a refusé le code de connexion (il expire vite) : ${metaReason(e)}. Recommencez.`); }
+  const tmp = { wa_phone_id: phoneId, wa_waba: wabaId, wa_token: vault.encrypt(token), wa_secret: vault.encrypt(config.meta.appSecret) };
+  // (b) enregistrement du numéro auprès de l'API Cloud : le code PIN est généré ici, jamais renvoyé ni journalisé
+  try {
+    const r = await fetchJson(`${config.meta.graphUrl}/${encodeURIComponent(phoneId)}/register`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: { messaging_product: 'whatsapp', pin: String(crypto.randomInt(100000, 1000000)) } });
+    const msg = String((r.data && r.data.error && r.data.error.message) || '');
+    if (!r.ok && !/already.{0,20}regist|d[ée]j[àa].{0,20}enregistr/i.test(msg)) throw new Error(`HTTP ${r.status} : ${msg || 'réponse inattendue'}`);
+  } catch (e) { throw new HttpError(502, `Meta a refusé l'enregistrement du numéro : ${metaReason(e)}`); }
+  // (c) abonnement de l'application au compte WhatsApp Business, (d) lecture du numéro affiché
+  try { await waOrg.subscribeApp(tmp); } catch (e) { throw new HttpError(502, `Meta a refusé l'abonnement de l'application : ${metaReason(e)}`); }
+  let prof;
+  try { prof = await waOrg.profile(tmp); } catch (e) { throw new HttpError(502, `Impossible de lire le numéro auprès de Meta : ${metaReason(e)}`); }
+  const number = prof.number.replace(/\D/g, '').slice(0, 15);
+  // (e) tout est enregistré (jeton et secret chiffrés)
+  await db.prepare('UPDATE orgs SET wa_phone_id = ?, wa_waba = ?, wa_number = ?, wa_token = ?, wa_secret = ?, wa_verify = ? WHERE id = ?').run(
+    phoneId, wabaId, number, tmp.wa_token, tmp.wa_secret, crypto.randomBytes(12).toString('hex'), o.id);
+  await A.logActivity(o.id, req.user.id, 'sales', 'WhatsApp connecté en un clic');
+  res.json({ ok: true, ...waState(await db.prepare('SELECT * FROM orgs WHERE id = ?').get(o.id)) });
+}));
 
 // ---------- Commandes des clients (à valider) ----------
 router.get('/orders', async (req, res) => {

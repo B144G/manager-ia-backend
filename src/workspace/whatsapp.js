@@ -60,10 +60,15 @@ async function processBody(org, body) {
     for (const change of entry.changes || []) {
       const v = change.value || {};
       if (!v.metadata || String(v.metadata.phone_number_id) !== String(org.wa_phone_id)) continue; // pas notre numéro
-      for (const m of v.messages || []) {
-        try { await handleMessage(org, m); } catch (e) { log.warn('WhatsApp : message non traité :', oneLine(e.message, 200)); }
-      }
+      await handleChange(org, v);
     }
+  }
+}
+
+/** Traite le contenu (« value ») d'un changement Meta pour une organisation connue : réutilisé par le webhook commun à toutes les organisations. */
+async function handleChange(org, v) {
+  for (const m of (v && v.messages) || []) {
+    try { await handleMessage(org, m); } catch (e) { log.warn('WhatsApp : message non traité :', oneLine(e.message, 200)); }
   }
 }
 
@@ -109,3 +114,5 @@ async function handleMessage(org, m) {
 
 module.exports = router;
 module.exports.processBody = processBody;
+module.exports.handleChange = handleChange;
+module.exports.validSignature = validSignature;
