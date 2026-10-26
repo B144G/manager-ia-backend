@@ -102,7 +102,7 @@ async function deliver(org, user, sub, text, subject) {
   else if (await require('./wa-out').isOptedOut(org.id, to)) { waError = 'Ce numéro a demandé à ne plus recevoir de messages WhatsApp (STOP).'; }
   else {
     try {
-      if (sub.template_name) await waOrg.sendTemplate(org, to, sub.template_name, 'fr', [oneLine(text, 900)]);
+      if (sub.template_name && waOrg.modeOf(org) !== 'qr') await waOrg.sendTemplate(org, to, sub.template_name, 'fr', [oneLine(text, 900)]);
       else await waOrg.sendText(org, to, text);
       return { channel: 'whatsapp', status: 'delivered', waError: '' };
     } catch (e) {

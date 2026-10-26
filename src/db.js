@@ -1433,6 +1433,26 @@ const MIGRATIONS = [
   `
   ALTER TABLE orgs ADD COLUMN wa_waba TEXT NOT NULL DEFAULT '';
   `,
+  /* WhatsApp par QR code (appareil connecté, méthode non officielle) : mode de l'organisation, session, et état d'authentification CHIFFRÉ (jamais de fichier sur disque) */ `
+  ALTER TABLE orgs ADD COLUMN wa_mode TEXT NOT NULL DEFAULT 'meta';
+  CREATE TABLE wa_qr_sessions (
+    org_id BIGINT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    accepted_at TEXT NOT NULL,
+    accepted_by BIGINT,
+    number TEXT NOT NULL DEFAULT '',
+    since TEXT,
+    day_key TEXT NOT NULL DEFAULT '',
+    day_count BIGINT NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE wa_qr_auth (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_key TEXT NOT NULL,
+    item_value TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, item_key)
+  );
+  `,
 ];
 
 

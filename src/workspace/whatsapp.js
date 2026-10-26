@@ -91,6 +91,12 @@ async function handleMessage(org, m) {
   } else {
     return void (await waOrg.sendText(org, from, UNSUPPORTED));
   }
+  await processIncoming(org, from, { text, viaVoice, attachment });
+}
+
+/** Suite commune à Meta et au QR code : désabonnement (STOP), campagne (#nom), puis l'assistant. */
+async function processIncoming(org, from, { text = '', viaVoice = false, attachment = null } = {}) {
+  text = cleanText(text, 1000);
   if (!text && !attachment) return;
 
   // Désabonnement : « STOP » arrête toute relance sortante ; « REPRENDRE » la réactive.
@@ -116,3 +122,6 @@ module.exports = router;
 module.exports.processBody = processBody;
 module.exports.handleChange = handleChange;
 module.exports.validSignature = validSignature;
+module.exports.processIncoming = processIncoming;
+module.exports.tooMany = tooMany;
+module.exports.UNSUPPORTED = UNSUPPORTED;

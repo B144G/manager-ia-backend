@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const express = require('express');
 const { db, nowISO } = require('../db');
+const config = require('../config');
 const { requireUser } = require('../middleware/auth');
 const limits = require('../middleware/limits');
 const A = require('./access');
@@ -108,6 +109,7 @@ orgRouter.get('/', async (req, res) => {
     me, branches, modules: mods,
     limits: { members: lim.members, branches: lim.branches, aiMonth: lim.aiMonth, aiUsed: await A.aiUsed(req.org), aiResetAt: (await A.quotaWindow(req.org)).end, membersUsed: members.length },
     intakeToken: A.can(req, 'admin') ? req.org.intake_token : undefined,
+    features: { metaChannels: config.metaChannelsVisible, waQr: config.waQr.enabled },
   });
 });
 
@@ -122,6 +124,7 @@ orgRouter.put('/', A.need('admin'), async (req, res) => {
 
 orgRouter.delete('/', A.need('owner'), async (req, res) => {
   if ((req.body || {}).confirm !== req.org.name) throw new HttpError(400, "Pour supprimer, écrivez exactement le nom de l'organisation.");
+  await require('../services/waWeb').dropOrg(req.org.id).catch(() => {}); // ferme la session WhatsApp par QR code ; la base efface le reste en cascade
   await db.prepare('DELETE FROM orgs WHERE id = ?').run(req.org.id);
   res.json({ ok: true });
 });

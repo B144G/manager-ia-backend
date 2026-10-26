@@ -5,7 +5,12 @@ const vault = require('./vault');
 const { fetchJson, oneLine } = require('../util');
 
 const creds = (org) => ({ phoneId: org.wa_phone_id, token: vault.decrypt(org.wa_token) });
-const isConnected = (org) => Boolean(org.wa_phone_id && vault.decrypt(org.wa_token) && vault.decrypt(org.wa_secret));
+const waWeb = () => require('./waWeb');
+/** Canal de l'organisation : 'meta' (API officielle, par défaut) ou 'qr' (appareil connecté par QR code). */
+const modeOf = (org) => (org && org.wa_mode === 'qr' ? 'qr' : 'meta');
+const metaConnected = (org) => Boolean(org.wa_phone_id && vault.decrypt(org.wa_token) && vault.decrypt(org.wa_secret));
+const isConnected = (org) => (modeOf(org) === 'qr' ? waWeb().isOpen(org.id) : metaConnected(org));
+const NO_TPL = new Error('Les modèles de message de Meta ne sont pas disponibles avec la connexion par QR code.');
 const fail = (r, what) => {
   const err = new Error(`${what} HTTP ${r.status} : ${oneLine(String((r.data && r.data.error && (r.data.error.message || r.data.error)) || 'réponse inattendue'), 160)}`);
   // Code d'erreur de Meta (ex. 131047 = fenêtre de 24 h fermée) : permet de distinguer les refus, sans jamais exposer de secret.
@@ -15,6 +20,7 @@ const fail = (r, what) => {
 };
 
 async function sendText(org, to, body) {
+  if (modeOf(org) === 'qr') return await waWeb().sendText(org.id, to, body);
   const c = creds(org);
   if (!c.phoneId || !c.token) throw new Error('WhatsApp non connecté');
   const r = await fetchJson(`${config.meta.graphUrl}/${encodeURIComponent(c.phoneId)}/messages`, {
@@ -27,6 +33,7 @@ async function sendText(org, to, body) {
 
 /** Message « modèle » (template) approuvé par Meta : seul moyen d'écrire à un client plus de 24 h après son dernier message. */
 async function sendTemplate(org, to, name, language, params) {
+  if (modeOf(org) === 'qr') throw NO_TPL;
   const c = creds(org);
   if (!c.phoneId || !c.token) throw new Error('WhatsApp non connecté');
   const template = { name, language: { code: language || 'fr' } };
@@ -57,6 +64,7 @@ async function uploadMedia(org, buf, mime, filename) {
 }
 /** Envoie une image ou une vidéo déjà envoyée à Meta (kind = 'image' ou 'video'), avec une légende facultative. */
 async function sendMedia(org, to, kind, mediaId, caption) {
+  if (modeOf(org) === 'qr') throw new Error('Envoi par identifiant Meta impossible en mode QR code.');
   const c = creds(org);
   if (!c.phoneId || !c.token) throw new Error('WhatsApp non connecté');
   const body = { messaging_product: 'whatsapp', to: String(to).replace(/\D/g, ''), type: kind, [kind]: { id: mediaId } };
@@ -102,4 +110,7 @@ async function downloadMedia(org, mediaId) {
   } finally { clearTimeout(timer); }
 }
 
-module.exports = { subscribeApp, isConnected, sendText, sendTemplate, uploadMedia, sendMedia, profile, downloadMedia };
+/** Envoie un fichier dont on a le contenu (mode QR code). kind : image, video, audio (message vocal). */
+const sendFile = async (org, to, kind, buf, mime, caption) => await waWeb().sendFile(org.id, to, kind, buf, mime, caption);
+
+module.exports = { modeOf, sendFile, subscribeApp, isConnected, sendText, sendTemplate, uploadMedia, sendMedia, profile, downloadMedia };

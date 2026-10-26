@@ -342,6 +342,24 @@ WhatsApp interdit d'écrire à un client **plus de 24 heures après son dernier 
 
 ---
 
+## Connexion WhatsApp par QR code (« Appareils connectés »)
+
+**Ce que c'est.** L'administrateur d'une organisation ouvre *Assistant commercial → WhatsApp*, lit l'avertissement, coche « Je comprends les risques », puis scanne un QR code avec WhatsApp (*Paramètres → Appareils connectés → Connecter un appareil*), comme pour WhatsApp Web. Un code de jumelage à 8 caractères est possible à la place. Ensuite l'IA répond depuis ce numéro, avec la même logique que par Meta (prospects, commandes, prise en main par un conseiller, délai avant réponse, messages vocaux si la transcription est activée, photos et PDF). Le parcours Meta (identifiants, webhook, connexion en un clic, Messenger, Instagram) est **masqué** (`META_CHANNELS=0`) mais le code est conservé.
+
+**Comment ça marche.** Bibliothèque `@whiskeysockets/baileys` (version exacte 7.0.0-rc14 : la branche « legacy » 6.7.x dépend d'un dépôt Git pour `libsignal`, plus fragile pour `npm ci` sur Render ; les deux sont publiées le même jour). Elle est chargée à la demande : si elle manque, la fonction se désactive avec un message clair et le serveur démarre quand même. L'état d'authentification est enregistré dans PostgreSQL (tables `wa_qr_auth` et `wa_qr_sessions`), chaque valeur **chiffrée** avec `DATA_KEY` (comme les jetons Meta) : aucun fichier sur le disque. Un verrou consultatif PostgreSQL par organisation empêche deux serveurs d'ouvrir le même numéro. Les sessions sont reprises au démarrage, de façon échelonnée. Routes (administrateurs) : `GET /api/ws/orgs/:orgId/sales/wa-qr/status`, `POST .../start` (`{ "accept": true }`), `POST .../pairing` (`{ "phone": "237…" }`), `POST .../stop`.
+
+**Comportement « humain » (réduit le risque de blocage, ne l'élimine pas).** Réponses seulement aux messages entrants de conversations individuelles (groupes, statuts, diffusions, messages de soi-même et messages de plus de 10 minutes ignorés) ; jamais d'écriture en premier à un inconnu ; « en train d'écrire » puis délai aléatoire de 1 à 4 secondes selon la longueur ; file d'attente par organisation, 20 messages par minute et 1 000 par jour par défaut. Les modèles de message Meta (relances automatiques, rappels de facture) ne sont **pas** envoyés dans ce mode.
+
+**Risques, à dire honnêtement aux clients.**
+- Méthode **non officielle** : WhatsApp peut **bloquer le numéro**, y compris définitivement. N'utilisez pas un numéro que vous ne pouvez pas perdre.
+- Connexion **fragile** : elle peut sauter (déconnexion depuis le téléphone, mise à jour de WhatsApp, changement du protocole) et demander un nouveau scan.
+- Le serveur doit être **toujours allumé**. Sur Render : plan payant (Starter). Astuce non garantie : un service gratuit de ping (par exemple UptimeRobot) appelle `/api/health` toutes les 10 minutes pour empêcher l'endormissement du plan gratuit ; les messages reçus pendant l'endormissement peuvent être perdus ou arriver en retard.
+- Neon : pour que les verrous consultatifs fonctionnent, renseignez `DATABASE_URL_UNPOOLED` (connexion directe) ; l'adresse « pooled » ne conserve pas les verrous de session.
+
+**Variables** (voir `.env.example`) : `WA_QR_ENABLED` (défaut `1`), `WA_QR_MAX_SESSIONS` (défaut `20`, sessions simultanées par serveur), `META_CHANNELS` (défaut `0` : interface Meta masquée ; `1` pour la réafficher), `WA_QR_SEND_PER_MIN` (20), `WA_QR_SEND_PER_DAY` (1000), `WA_QR_MAX_QUEUE` (60), `WA_QR_MAX_AGE_MIN` (10). Le serveur accepte toujours les webhooks Meta existants.
+
+**Ce qui N'A PAS été testé avec le vrai WhatsApp.** Tous les tests (`npm run test:waqr`, 69 cas) utilisent une fausse socket : aucun scan réel, aucun vrai code de jumelage, aucune vraie reconnexion, aucune réception de vocal, photo ou PDF réels, aucune résolution réelle des identifiants « LID », aucun envoi réel d'image, de vidéo ou de message vocal. Le comportement face aux blocages de WhatsApp est inconnu. À faire avant de vendre la fonction : un essai avec un numéro jetable (scan, code de jumelage, redémarrage du serveur, message texte, vocal, photo).
+
 ## Connexion WhatsApp en un clic (Embedded Signup de Meta)
 
 **Ce que c'est.** Un bouton « Connecter WhatsApp » dans l'onglet Canaux : une fenêtre de Meta s'ouvre, l'entreprise cliente choisit son compte et son numéro, et MANAGER-IA reçoit un code qu'il échange côté serveur contre un jeton, enregistre le numéro, abonne l'application au compte WhatsApp Business et range les identifiants chiffrés. Le client ne copie plus aucun identifiant. L'outil est gratuit chez Meta (les conversations restent facturées selon les tarifs de Meta). La saisie manuelle reste disponible, repliée sous « Avancé : saisir les identifiants à la main ».

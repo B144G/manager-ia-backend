@@ -33,6 +33,53 @@ function translate(sql) {
 const norm = (v) => (v === undefined ? null : v === true ? 1 : v === false ? 0 : v instanceof Date ? v.toISOString() : v);
 const normAll = (params) => params.map(norm);
 
+const LOCK_NS = 727275; // espace de noms des verrous « session WhatsApp » : pg_try_advisory_lock(727275, <identifiant d'organisation>)
+
+/** Gestionnaire de verrous consultatifs. Sur Neon, la connexion « directe » (DATABASE_URL_UNPOOLED) est préférable : un « pooler » en mode transaction ne garde pas les verrous de session. */
+function makeLocks(isLite, getPool) {
+  const held = new Set(); let client = null; let lostCb = null; let timer = null; let opening = null;
+  const lost = () => { const had = [...held]; held.clear(); if (timer) { clearInterval(timer); timer = null; } client = null; if (had.length && lostCb) lostCb(had); };
+  async function open() {
+    if (client) return client;
+    if (opening) return opening;
+    opening = (async () => {
+      const c = await getPool().connect();
+      c.on('error', () => { try { c.release(true); } catch { /* déjà libérée */ } lost(); });
+      client = c;
+      timer = setInterval(async () => { try { await c.query('SELECT 1'); } catch { try { c.release(true); } catch { /* déjà libérée */ } lost(); } }, 20000);
+      if (timer.unref) timer.unref();
+      return c;
+    })();
+    try { return await opening; } finally { opening = null; }
+  }
+  return {
+    /** true si le verrou est obtenu (ou déjà tenu par ce processus), false s'il est tenu ailleurs. */
+    async tryAcquire(id) {
+      id = Number(id);
+      if (held.has(id)) return true;
+      if (isLite) { held.add(id); return true; }
+      const c = await open();
+      const r = await c.query('SELECT pg_try_advisory_lock($1::int, $2::int) AS ok', [LOCK_NS, id]);
+      if (r.rows[0] && r.rows[0].ok) { held.add(id); return true; }
+      return false;
+    },
+    async release(id) {
+      id = Number(id);
+      if (!held.delete(id)) return;
+      if (isLite || !client) return;
+      try { await client.query('SELECT pg_advisory_unlock($1::int, $2::int)', [LOCK_NS, id]); } catch { /* connexion perdue : le verrou a disparu avec elle */ }
+    },
+    async releaseAll() {
+      for (const id of [...held]) await this.release(id);
+      if (timer) { clearInterval(timer); timer = null; }
+      if (client) { try { client.release(); } catch { /* déjà libérée */ } client = null; }
+    },
+    has: (id) => held.has(Number(id)),
+    /** Appelé (avec la liste des verrous perdus) si la connexion dédiée tombe. */
+    onLost(fn) { lostCb = fn; },
+  };
+}
+
 function createDb(cfg) {
   const isLite = cfg.driver === 'pglite';
   let backend; // { query(sql, params) -> { rows, rowCount }, exec(sql), tx(fn), end() }
@@ -73,6 +120,7 @@ function createDb(cfg) {
         try { await c.query('BEGIN'); const r = await fn(wrapClient(c, false)); await c.query('COMMIT'); return r; } catch (e) { try { await c.query('ROLLBACK'); } catch (x) { /* connexion perdue */ } throw e; } finally { c.release(); }
       },
       end: () => pool.end(),
+      pool,
       direct: cfg.directUrl && cfg.directUrl !== cfg.url ? mk(cfg.directUrl) : null,
     };
   }
@@ -126,7 +174,10 @@ function createDb(cfg) {
       await tx(backend.direct ? { tx: async (fn) => { const c = await backend.direct.connect(); try { await c.query('BEGIN'); const r = await fn({ query: async (s, p) => { const x = await c.query(s, p); return { rows: x.rows, rowCount: x.rowCount }; }, exec: (s) => c.query(s) }); await c.query('COMMIT'); return r; } catch (e) { await c.query('ROLLBACK').catch(() => {}); throw e; } finally { c.release(); } } } : backend);
       await db.refreshIdTables();
     },
-    async close() { if (backend.direct) await backend.direct.end(); await backend.end(); },
+    async close() { await db.locks.releaseAll(); if (backend.direct) await backend.direct.end(); await backend.end(); },
+    /** Verrous consultatifs « de session » (pg_try_advisory_lock) : tenus par UNE connexion dédiée, libérés si le processus s'arrête.
+     *  Sert à ce qu'un seul serveur ouvre la session WhatsApp d'une organisation. Avec PGlite (un seul processus), les verrous sont gardés en mémoire. */
+    locks: makeLocks(isLite, () => (backend.direct || backend.pool)),
   };
   return db;
 }

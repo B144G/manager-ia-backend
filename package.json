@@ -11,7 +11,7 @@
     "setup": "node scripts/setup.js",
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "npm run test:ai && npm run test:webhooks && npm run smoke && npm run smoke:signup && npm run smoke:security && npm run smoke:central && npm run smoke:ws && npm run test:finance && npm run test:commerce && npm run test:ops && npm run test:intelligence && npm run test:mail && npm run test:embedded",
+    "test": "npm run test:ai && npm run test:webhooks && npm run smoke && npm run smoke:signup && npm run smoke:security && npm run smoke:central && npm run smoke:ws && npm run test:finance && npm run test:commerce && npm run test:ops && npm run test:intelligence && npm run test:mail && npm run test:embedded && npm run test:waqr",
     "smoke": "node scripts/smoke.js",
     "smoke:ws": "node scripts/smoke-workspace.js",
     "smoke:signup": "node scripts/smoke-signup.js",
@@ -29,9 +29,11 @@
     "test:ops": "node scripts/test-ops.js",
     "test:intelligence": "node scripts/test-intelligence.js",
     "test:mail": "node scripts/test-mail-api.js",
-    "test:embedded": "node scripts/test-embedded.js"
+    "test:embedded": "node scripts/test-embedded.js",
+    "test:waqr": "node scripts/test-waqr.js"
   },
   "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14",
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
@@ -42,7 +44,8 @@
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
     "nodemailer": "^10.1.1",
-    "pg": "^8.23.1"
+    "pg": "^8.23.1",
+    "qrcode": "1.5.4"
   },
   "license": "UNLICENSED",
   "keywords": [

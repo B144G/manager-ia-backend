@@ -44,7 +44,8 @@ async function sendItem(org, chat, item, kind) {
   for (const m of picks) {
     if (day + out.sent >= PER_DAY) break;
     const caption = out.sent === 0 ? `${item.name} · ${Number(item.price).toLocaleString('fr-FR')} ${org.currency}${item.unit ? ' / ' + item.unit : ''}` : '';
-    if (chat.channel === 'whatsapp') await waOrg.sendMedia(org, to, m.kind, await metaId(org, m), caption);
+    if (chat.channel === 'whatsapp' && waOrg.modeOf(org) === 'qr') await waOrg.sendFile(org, to, m.kind, m.data, m.mime, caption);
+    else if (chat.channel === 'whatsapp') await waOrg.sendMedia(org, to, m.kind, await metaId(org, m), caption);
     else {
       if (caption) await channels.sendText(org, chat, caption); // Messenger et Instagram : pas de légende sur un fichier, on l'écrit juste avant
       await channels.sendCatalogLink(org, chat, m);

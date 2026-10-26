@@ -115,6 +115,16 @@ const config = {
     get embeddedEnabled() { return Boolean(this.appId && this.appSecret && this.embeddedConfigId); },
     graphUrl: str('META_GRAPH_URL', 'https://graph.facebook.com/v21.0').replace(/\/+$/, ''), // adresse de l'API Meta (changée seulement pour les tests)
   },
+  // WhatsApp par QR code (« Appareils connectés », méthode NON officielle) et canaux Meta (API officielle, Messenger, Instagram).
+  waQr: {
+    enabled: bool('WA_QR_ENABLED', true),
+    maxSessions: Math.max(1, int('WA_QR_MAX_SESSIONS', 20)),      // sessions ouvertes en même temps sur ce serveur
+    perMinute: Math.max(1, int('WA_QR_SEND_PER_MIN', 20)),        // messages envoyés par minute et par organisation
+    perDay: Math.max(1, int('WA_QR_SEND_PER_DAY', 1000)),         // messages envoyés par jour et par organisation
+    maxQueue: Math.max(1, int('WA_QR_MAX_QUEUE', 60)),            // messages en attente d'envoi, par organisation
+    maxAgeMin: Math.max(1, int('WA_QR_MAX_AGE_MIN', 10)),         // les messages reçus plus anciens (reconnexion) sont ignorés
+  },
+  metaChannelsVisible: bool('META_CHANNELS', false),              // interface Meta (WhatsApp Cloud, un clic, Messenger, Instagram) : masquée par défaut
   dataKey: str('DATA_KEY'), // clé de chiffrement des jetons WhatsApp enregistrés (par défaut dérivée de JWT_SECRET)
 
   // Fournisseur d'IA interchangeable : 'anthropic' (par défaut) ou 'openai' (tout service compatible OpenAI :

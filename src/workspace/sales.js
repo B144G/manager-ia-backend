@@ -23,16 +23,20 @@ router.use('/wa', require('./wa-out').router);
 router.use('/', require('./wa-media').router);
 router.use('/', require('./sales-appt').router);
 router.use('/meta', require('./meta-channels').settings);
+router.use('/wa-qr', require('./wa-qr'));
 
 const today = () => nowISO().slice(0, 10);
 const catItem = (r) => ({ id: r.id, name: r.name, description: r.description, price: r.price, unit: r.unit, active: Boolean(r.active), photos: r.n_img || 0, videos: r.n_vid || 0 });
 
+const waNumberOf = (org, qrNumber) => (waOrg.modeOf(org) === 'qr' && qrNumber ? qrNumber : org.wa_number);
 router.get('/', async (req, res) => {
   const o = req.org.id;
+  const qrRow = waOrg.modeOf(req.org) === 'qr' ? await db.prepare('SELECT number FROM wa_qr_sessions WHERE org_id = ?').get(o) : null;
+  const qrNumber = qrRow ? qrRow.number : '';
   const since = new Date(Date.now() - 7 * 86400000).toISOString();
   const one = async (sql, ...a) => (await db.prepare(sql).get(o, ...a)).c;
   res.json({
-    settings: { chatEnabled: Boolean(req.org.chat_enabled), salesInfo: req.org.sales_info, token: A.can(req, 'admin') ? req.org.intake_token : undefined, voice: stt.isConfigured(), autoAssign: Boolean(req.org.auto_assign), waNumber: req.org.wa_number, waConnected: waOrg.isConnected(req.org), replyDelay: req.org.reply_delay, voiceReply: req.org.voice_reply, handoffOrder: Boolean(req.org.handoff_order), handoffAppt: Boolean(req.org.handoff_appt), apptReminder: Boolean(req.org.appt_reminder), ttsAvailable: tts.isConfigured() },
+    settings: { chatEnabled: Boolean(req.org.chat_enabled), salesInfo: req.org.sales_info, token: A.can(req, 'admin') ? req.org.intake_token : undefined, voice: stt.isConfigured(), autoAssign: Boolean(req.org.auto_assign), waNumber: waNumberOf(req.org, qrNumber), waMode: waOrg.modeOf(req.org), waConnected: waOrg.isConnected(req.org), replyDelay: req.org.reply_delay, voiceReply: req.org.voice_reply, handoffOrder: Boolean(req.org.handoff_order), handoffAppt: Boolean(req.org.handoff_appt), apptReminder: Boolean(req.org.appt_reminder), ttsAvailable: tts.isConfigured() },
     stats: {
       chats7: await one('SELECT COUNT(*) c FROM chats WHERE org_id = ? AND created_at >= ?', since),
       prospects: await one("SELECT COUNT(*) c FROM customers WHERE org_id = ? AND stage = 'prospect'"),
@@ -132,7 +136,7 @@ async function replyToChat(org, user, chat, text) {
   const wa = chat.channel === 'whatsapp';
   if (!(wa ? waOrg.isConnected(org) : metaChat.isConnected(org))) throw new HttpError(400, wa ? "WhatsApp n'est pas connecté." : "Messenger / Instagram n'est pas connecté.");
   const last = await db.prepare("SELECT created_at FROM chat_messages WHERE chat_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1").get(chat.id);
-  if (!last || Date.now() - Date.parse(last.created_at) > 24 * 3600000) throw new HttpError(400, "Plus de 24 h depuis le dernier message du client : Meta n'autorise plus d'écrire librement. Attendez qu'il vous réécrive.");
+  if (!last || Date.now() - Date.parse(last.created_at) > 24 * 3600000) throw new HttpError(400, waOrg.modeOf(org) === 'qr' && wa ? "Plus de 24 h depuis le dernier message du client : pour protéger votre numéro, écrivez-lui seulement quand il vous a écrit récemment." : "Plus de 24 h depuis le dernier message du client : Meta n'autorise plus d'écrire librement. Attendez qu'il vous réécrive.");
   try { await (wa ? await waOrg.sendText(org, chat.contact, text) : await metaChat.sendText(org, chat.contact, text)); } catch (e) { throw new HttpError(502, "Le message n'a pas pu partir. Vérifiez la connexion dans les réglages."); }
   await db.prepare("INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, 'staff', ?, ?)").run(chat.id, text, nowISO());
   await db.prepare("UPDATE chats SET status = 'handoff', updated_at = ? WHERE id = ?").run(nowISO(), chat.id);

@@ -140,8 +140,9 @@ async function start() {
   security.configcheck.run().then((r) => { if (r.summary.bad || r.summary.warn) log.warn(`Sécurité : ${r.summary.bad} point(s) dangereux, ${r.summary.warn} à améliorer (npm run security:check pour le détail).`); else log.info('Sécurité : configuration solide.'); }).catch(() => {});
   require('./jobs').start();
   require('./workspace/inbound').start(); // réponses différées (délai choisi par l'organisation)
+  if (config.waQr.enabled) require('./services/waWeb').startWatcher(); // reprise échelonnée des sessions WhatsApp par QR code
   require('./workspace/sales-appt').startReminders(); // rappels de rendez-vous la veille
-  const stop = () => server.close(() => { Promise.resolve(db.close()).catch(() => {}).then(() => process.exit(0)); });
+  const stop = () => server.close(() => { Promise.resolve(require('./services/waWeb').shutdown()).catch(() => {}).then(() => db.close()).catch(() => {}).then(() => process.exit(0)); });
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
   return server;

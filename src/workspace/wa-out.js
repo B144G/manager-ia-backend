@@ -33,6 +33,7 @@ async function sendTemplate(org, { phone, tpl, params, chat, refKind, refId }) {
   const log1 = async (status, error) => await db.prepare('INSERT INTO wa_outbound (org_id, chat_id, ref_kind, ref_id, phone, template, status, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(org.id, chat ? chat.id : null, refKind || '', refId || null, to, tpl.name, status, error || '', nowISO());
   if (!waOrg.isConnected(org)) return { ok: false, error: "WhatsApp n'est pas connecté." };
+  if (waOrg.modeOf(org) === 'qr') return { ok: false, error: "Les modèles de message ne sont pas disponibles avec la connexion par QR code (envoi non sollicité évité pour protéger votre numéro)." };
   if (to.length < 8 || to.length > 15) return { ok: false, error: 'Numéro de téléphone invalide.' };
   if (await isOptedOut(org.id, to)) return { ok: false, error: 'Cette personne a demandé à ne plus recevoir de messages.' };
   if (await sentToday(org.id) >= DAY_CAP) return { ok: false, error: `Plafond de ${DAY_CAP} messages sortants par 24 h atteint.` };
@@ -82,7 +83,7 @@ async function sendInvoice(org, tpl, inv) {
 
 /** Relances automatiques (appelées chaque heure pour les organisations qui les ont activées). */
 async function runAuto(org, max = 20) {
-  if (!org.wa_followup || !waOrg.isConnected(org)) return 0;
+  if (!org.wa_followup || !waOrg.isConnected(org) || waOrg.modeOf(org) === 'qr') return 0;
   let n = 0;
   const t1 = await tplOf(org.id, 'relance'); const t2 = await tplOf(org.id, 'impaye');
   if (t1) for (const l of await silentLeads(org)) { if (n >= max) break; const r = await sendLead(org, t1, l); if (r.ok) n++; else if (/Plafond|connecté/.test(r.error)) return n; }
@@ -101,7 +102,7 @@ const tplView = (t) => ({ id: t.id, name: t.name, language: t.language, purpose:
 router.get('/', async (req, res) => {
   const o = req.org;
   res.json({
-    connected: waOrg.isConnected(o), autoFollowup: Boolean(o.wa_followup), purposes: Object.fromEntries(Object.entries(PURPOSES).map(([k, v]) => [k, { label: v.label, params: v.params, hint: v.hint, example: v.example }])),
+    connected: waOrg.isConnected(o), mode: waOrg.modeOf(o), autoFollowup: Boolean(o.wa_followup), purposes: Object.fromEntries(Object.entries(PURPOSES).map(([k, v]) => [k, { label: v.label, params: v.params, hint: v.hint, example: v.example }])),
     templates: (await db.prepare('SELECT * FROM wa_templates WHERE org_id = ? ORDER BY id').all(o.id)).map(tplView),
     silent: (await silentLeads(o)).map((l) => ({ id: l.id, name: l.customer || '', contact: l.contact, lastAt: l.lastUser })),
     overdue: (await overdueInvoices(o)).map((i) => ({ id: i.id, number: i.number, customer: i.customer, phone: i.phone, left: i.total - i.paid, due: i.due })),

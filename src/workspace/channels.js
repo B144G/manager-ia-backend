@@ -12,6 +12,7 @@ const sendText = async (org, chat, text) => (chat.channel === 'whatsapp' ? await
 async function sendVoice(org, chat, text) {
   if (chat.channel === 'whatsapp') {
     const buf = await tts.speak(text, 'opus');
+    if (waOrg.modeOf(org) === 'qr') return await waOrg.sendFile(org, chat.contact, 'audio', buf, 'audio/ogg');
     const id = await waOrg.uploadMedia(org, buf, 'audio/ogg', 'voix.ogg');
     return await waOrg.sendMedia(org, chat.contact, 'audio', id);
   }
