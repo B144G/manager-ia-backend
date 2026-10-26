@@ -17,7 +17,7 @@ function fake(handler) {
 }
 const load = (env) => {
   Object.keys(require.cache).forEach((k) => { if (/[\\/]src[\\/]/.test(k)) delete require.cache[k]; });
-  for (const k of ['AI_PROVIDER', 'AI_API_KEY', 'AI_MODEL', 'AI_MODEL_FAST', 'AI_BASE_URL', 'AI_PROMPT_CACHE', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_BASE_URL', 'AI_REASONING_EFFORT', 'AI_TIMEOUT_MS']) delete process.env[k];
+  for (const k of ['AI_PROVIDER', 'AI_API_KEY', 'AI_MODEL', 'AI_MODEL_FAST', 'AI_BASE_URL', 'AI_PROMPT_CACHE', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_BASE_URL', 'AI_REASONING_EFFORT', 'AI_TIMEOUT_MS', 'AI_AUTH_HEADER']) delete process.env[k];
   Object.assign(process.env, { DATABASE_URL: 'pglite://memory', ...env });
   return require('../src/services/claude');
 };
@@ -58,6 +58,10 @@ const load = (env) => {
   c = load({ AI_PROVIDER: 'openai', AI_API_KEY: 'k2', AI_BASE_URL: `http://127.0.0.1:${o.port}/v1`, AI_MODEL: 'gemini-x', AI_REASONING_EFFORT: 'LOW' });
   await c.ask({ messages: [{ role: 'user', content: 'x' }] });
   ok(o.seen[o.seen.length - 1].body.reasoning_effort === 'low', "AI_REASONING_EFFORT transmis (en minuscules)");
+  c = load({ AI_PROVIDER: 'openai', AI_API_KEY: 'AQ.cle-google', AI_BASE_URL: `http://127.0.0.1:${o.port}/v1`, AI_MODEL: 'gemini-x', AI_AUTH_HEADER: 'X-Goog-Api-Key' });
+  await c.ask({ messages: [{ role: 'user', content: 'x' }] });
+  const hh = o.seen[o.seen.length - 1].headers;
+  ok(hh['x-goog-api-key'] === 'AQ.cle-google' && !hh.authorization, "AI_AUTH_HEADER : la clé part dans l'en-tête choisi, sans « Authorization »");
   o.srv.close();
 
   console.log('Pièces jointes (Anthropic)');

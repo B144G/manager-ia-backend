@@ -142,6 +142,8 @@ const config = {
       cache: str('AI_PROMPT_CACHE', '1') !== '0', // mise en cache des consignes répétées (Anthropic)
       // Services « compatibles OpenAI » : effort de réflexion des modèles qui réfléchissent (minimal, low, medium, high). Vide = réglage du service.
       reasoning: str('AI_REASONING_EFFORT').toLowerCase(),
+      // Nom de l'en-tête qui porte la clé (ex. x-goog-api-key pour les clés Google « AQ. »). Vide = « Authorization: Bearer » (OpenAI, Groq, Mistral, OpenRouter).
+      authHeader: str('AI_AUTH_HEADER').toLowerCase().replace(/[^a-z0-9-]/g, ''),
       timeoutMs: Math.min(Math.max(int('AI_TIMEOUT_MS', 45000), 5000), 120000),
     };
   })(),
