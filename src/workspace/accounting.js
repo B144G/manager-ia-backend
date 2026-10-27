@@ -119,30 +119,47 @@ async function entries(org, { journal, from, to, q, limit = 200 }) {
 const vatSplit = (ttc, rate) => { const ht = rate > 0 ? Math.round(ttc / (1 + rate / 100)) : ttc; return { ht, tva: ttc - ht }; };
 
 async function pending(org) {
-  const inv = await db.prepare(`SELECT d.*, c.name AS customer FROM documents d JOIN customers c ON c.id = d.customer_id WHERE d.org_id = ? AND d.kind = 'invoice' AND d.status IN ('sent','paid') AND d.total > 0
+  const inv = await db.prepare(`SELECT d.*, c.name AS customer FROM documents d JOIN customers c ON c.id = d.customer_id WHERE d.org_id = ? AND d.kind = 'invoice' AND d.status IN ('sent','paid','credited') AND d.total > 0
     AND NOT EXISTS (SELECT 1 FROM acc_entries e WHERE e.org_id = d.org_id AND e.source = 'invoice' AND e.source_id = d.id) ORDER BY d.issued, d.id`).all(org.id);
-  const pay = await db.prepare(`SELECT p.*, d.number, c.name AS customer FROM doc_payments p JOIN documents d ON d.id = p.doc_id JOIN customers c ON c.id = d.customer_id WHERE p.org_id = ?
+  const cn = await db.prepare(`SELECT d.*, c.name AS customer FROM documents d JOIN customers c ON c.id = d.customer_id WHERE d.org_id = ? AND d.kind = 'credit' AND d.status = 'sent' AND d.total > 0
+    AND NOT EXISTS (SELECT 1 FROM acc_entries e WHERE e.org_id = d.org_id AND e.source = 'credit_note' AND e.source_id = d.id) ORDER BY d.issued, d.id`).all(org.id);
+  const pay = await db.prepare(`SELECT p.*, d.number, c.name AS customer FROM doc_payments p JOIN documents d ON d.id = p.doc_id JOIN customers c ON c.id = d.customer_id WHERE p.org_id = ? AND p.status = 'confirmed'
     AND NOT EXISTS (SELECT 1 FROM acc_entries e WHERE e.org_id = p.org_id AND e.source = 'payment' AND e.source_id = p.id) ORDER BY p.date, p.id`).all(org.id);
+  // Achats : anciennes commandes reçues d'un coup (une écriture par commande) puis réceptions (une écriture par réception, partielle ou non).
   const buy = await db.prepare(`SELECT o.*, s.name AS item, sp.name AS supplier FROM purchase_orders o JOIN stock_items s ON s.id = o.item_id LEFT JOIN suppliers sp ON sp.id = o.supplier_id WHERE o.org_id = ? AND o.status = 'received' AND o.unit_price > 0
+    AND NOT EXISTS (SELECT 1 FROM purchase_receipts r WHERE r.order_id = o.id)
     AND NOT EXISTS (SELECT 1 FROM acc_entries e WHERE e.org_id = o.org_id AND e.source = 'purchase' AND e.source_id = o.id) ORDER BY o.updated_at, o.id`).all(org.id);
-  return { inv, pay, buy };
+  const rec = await db.prepare(`SELECT r.*, s.name AS item, sp.name AS supplier FROM purchase_receipts r JOIN purchase_orders o ON o.id = r.order_id JOIN stock_items s ON s.id = o.item_id LEFT JOIN suppliers sp ON sp.id = o.supplier_id WHERE r.org_id = ? AND r.unit_price > 0
+    AND NOT EXISTS (SELECT 1 FROM acc_entries e WHERE e.org_id = r.org_id AND e.source = 'receipt' AND e.source_id = r.id) ORDER BY r.created_at, r.id`).all(org.id);
+  return { inv, cn, pay, buy, rec };
 }
 
 async function generate(req) {
-  const st = req.acc; const p = await pending(req.org); const out = { invoices: 0, payments: 0, purchases: 0, skipped: [] };
+  const st = req.acc; const p = await pending(req.org); const out = { invoices: 0, creditNotes: 0, payments: 0, purchases: 0, skipped: [] };
   const lockedSkip = (date, what) => { if (st.locked_until && date <= st.locked_until) { out.skipped.push(`${what} (période clôturée)`); return true; } return false; };
   for (const d of p.inv) {
     if (lockedSkip(d.issued, d.number)) continue;
-    const { ht, tva } = vatSplit(d.total, st.vat_rate);
+    const { ht, tva } = d.vat_rate === null || d.vat_rate === undefined ? vatSplit(d.total, st.vat_rate) : { ht: Number(d.subtotal_ht), tva: Number(d.vat_amount) }; // facture récente : TVA du document ; ancienne : réglage de la compta
     const lines = [{ account: '411', debit: d.total, memo: d.customer }, { account: '701', credit: ht }];
     if (tva > 0) lines.push({ account: '4431', credit: tva });
     await post(req.org, req.user.id, { journal: 'VT', date: d.issued, label: `Facture ${d.number} - ${d.customer}`, piece: d.number, lines, source: 'invoice', sourceId: d.id }, st);
     out.invoices++;
   }
+  for (const d of p.cn) {
+    if (lockedSkip(d.issued, d.number)) continue;
+    const { ht, tva } = d.vat_rate === null || d.vat_rate === undefined ? vatSplit(d.total, st.vat_rate) : { ht: Number(d.subtotal_ht), tva: Number(d.vat_amount) };
+    const lines = [{ account: '701', debit: ht }];
+    if (tva > 0) lines.push({ account: '4431', debit: tva });
+    lines.push({ account: '411', credit: d.total, memo: d.customer });
+    await post(req.org, req.user.id, { journal: 'VT', date: d.issued, label: `Avoir ${d.number} - ${d.customer}`, piece: d.number, lines, source: 'credit_note', sourceId: d.id }, st);
+    out.creditNotes++;
+  }
   for (const x of p.pay) {
     if (lockedSkip(x.date, `paiement ${x.number}`)) continue;
-    const journal = x.account_journal || (st.pay_account === '571' ? 'CA' : st.pay_account === '589' ? 'MM' : 'BQ');
-    await post(req.org, req.user.id, { journal, date: x.date, label: `Encaissement ${x.number} - ${x.customer}`, piece: x.number, lines: [{ account: st.pay_account, debit: x.amount }, { account: '411', credit: x.amount, memo: x.customer }], source: 'payment', sourceId: x.id }, st);
+    // Le mode de paiement choisit le compte de trésorerie : espèces = caisse, virement et chèque = banque, mobile money = 589 ; sans mode, réglage de la compta.
+    const acct = { cash: '571', transfer: '521', cheque: '521', mtn_momo: '589', orange_money: '589' }[x.method] || st.pay_account;
+    const journal = acct === '571' ? 'CA' : acct === '589' ? 'MM' : 'BQ';
+    await post(req.org, req.user.id, { journal, date: x.date, label: `Encaissement ${x.number} - ${x.customer}`, piece: x.reference || x.number, lines: [{ account: acct, debit: x.amount, memo: x.reference || '' }, { account: '411', credit: x.amount, memo: x.customer }], source: 'payment', sourceId: x.id }, st);
     out.payments++;
   }
   for (const o of p.buy) {
@@ -152,6 +169,15 @@ async function generate(req) {
     if (st.purchase_vat) { const { ht, tva } = vatSplit(total, st.vat_rate); lines.push({ account: '601', debit: ht, memo: o.item }); if (tva > 0) lines.push({ account: '4452', debit: tva }); } else lines.push({ account: '601', debit: total, memo: o.item });
     lines.push({ account: '401', credit: total, memo: o.supplier || '' });
     await post(req.org, req.user.id, { journal: 'AC', date, label: `Achat #${o.id} - ${o.item}${o.supplier ? ' - ' + o.supplier : ''}`, piece: `CMD-${o.id}`, lines, source: 'purchase', sourceId: o.id }, st);
+    out.purchases++;
+  }
+  for (const r of p.rec) {
+    const date = r.created_at.slice(0, 10); const total = Math.max(Math.round(r.quantity * r.unit_price), 1);
+    if (lockedSkip(date, `réception #${r.id}`)) continue;
+    const lines = [];
+    if (st.purchase_vat) { const { ht, tva } = vatSplit(total, st.vat_rate); lines.push({ account: '601', debit: ht, memo: r.item }); if (tva > 0) lines.push({ account: '4452', debit: tva }); } else lines.push({ account: '601', debit: total, memo: r.item });
+    lines.push({ account: '401', credit: total, memo: r.supplier || '' });
+    await post(req.org, req.user.id, { journal: 'AC', date, label: `Réception commande #${r.order_id} - ${r.item}${r.supplier ? ' - ' + r.supplier : ''}`, piece: `CMD-${r.order_id}`, lines, source: 'receipt', sourceId: r.id }, st);
     out.purchases++;
   }
   return out;
@@ -200,7 +226,7 @@ router.get('/', async (req, res) => {
     settings: { vatRate: req.acc.vat_rate, payAccount: req.acc.pay_account, purchaseVat: Boolean(req.acc.purchase_vat), lockedUntil: req.acc.locked_until || '' },
     journals: JOURNALS, year: y,
     kpi: { ventes: s.resultat.ventes, achats: s.resultat.achats, resultat: s.resultat.resultat, clients: sum(bal, (r) => r.account === '411'), fournisseurs: -sum(bal, (r) => r.account === '401'), tresorerie: sum(bal, (r) => r.account[0] === '5') },
-    toPost: { invoices: p.inv.length, payments: p.pay.length, purchases: p.buy.length },
+    toPost: { invoices: p.inv.length + p.cn.length, payments: p.pay.length, purchases: p.buy.length + p.rec.length },
     entries: await entries(req.org, { limit: 15 }),
     count: (await db.prepare('SELECT COUNT(*) c FROM acc_entries WHERE org_id = ?').get(req.org.id)).c,
     disclaimer: "Outil d'aide à la tenue des comptes. Il ne remplace pas un expert-comptable et ne produit pas la liasse fiscale officielle (DSF).",

@@ -234,7 +234,7 @@ router.post('/orders/:id/close', A.need('manager'), async (req, res) => {
     for (const n of needs) if (n.needed > 0) await U.moveStock(req, n.itemId, -n.needed, reason);
     if (produced > 0) {
       const prod = await U.stockItem(req, o.product_id);
-      await U.moveStock(req, prod.id, produced, reason);
+      await U.moveStock(req, prod.id, produced, reason, { unitCost });
       const base = Math.max(prod.quantity, 0);
       const avg = Math.round((base * prod.unit_cost + produced * unitCost) / (base + produced));
       await db.prepare('UPDATE stock_items SET unit_cost = ? WHERE id = ?').run(avg, prod.id);

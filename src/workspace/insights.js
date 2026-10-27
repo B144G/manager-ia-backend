@@ -39,13 +39,26 @@ async function alerts(req) {
   const low = stock.filter((i) => i.quantity > 0 && i.min_quantity > 0 && i.quantity <= i.min_quantity);
   if (out0.length) add('high', 'stock', 'Stock', `${plural(out0.length, 'article en rupture', 'articles en rupture')} : ${out0.slice(0, 3).map((i) => i.name).join(', ')}`);
   if (low.length) add('medium', 'stock', 'Stock', `${plural(low.length, 'article sous son seuil', 'articles sous leur seuil')} : ${low.slice(0, 3).map((i) => i.name).join(', ')}`);
+  const over = stock.filter((i) => i.max_quantity > 0 && i.quantity > i.max_quantity);
+  if (over.length) add('info', 'stock', 'Stock', `${plural(over.length, 'article en surstock', 'articles en surstock')} : ${over.slice(0, 3).map((i) => i.name).join(', ')}`);
+  const lots = await require('./stock').expiringLots(req, 30);
+  const lotsOut = lots.filter((l) => l.expired); const lotsSoon = lots.filter((l) => !l.expired);
+  if (lotsOut.length) add('high', 'stock', 'Stock', `${plural(lotsOut.length, 'lot périmé', 'lots périmés')} encore en stock : ${lotsOut.slice(0, 3).map((l) => `${l.item} (${l.lotNo})`).join(', ')}`, lotsOut[0].expiry + 'T00:00:00.000Z');
+  if (lotsSoon.length) add('medium', 'stock', 'Stock', `${plural(lotsSoon.length, 'lot périme', 'lots périment')} dans moins de 30 jours : ${lotsSoon.slice(0, 3).map((l) => `${l.item} (${l.lotNo})`).join(', ')}`, lotsSoon[0].expiry + 'T00:00:00.000Z');
+  // Parc : assurance, visite technique, permis (échéances périmées ou à moins de 30 jours)
+  for (const c of await require('./logistics-fleet').alertItems(req)) {
+    const what = { insurance: 'assurance', inspection: 'visite technique', tax: 'vignette / taxe', license: 'permis', medical: 'visite médicale', other: 'échéance' }[c.kind] || c.kind;
+    add(c.state === 'soon' ? 'medium' : 'high', 'logistics', 'Parc', c.state === 'expired' ? `${what} de ${c.who} périmée depuis le ${c.expiresAt}` : `${what} de ${c.who} à renouveler avant le ${c.expiresAt}`, c.expiresAt + 'T00:00:00.000Z');
+  }
   if (A.can(req, 'manager')) {
+    const lateOrd = (await db.prepare("SELECT o.*, i.name AS item FROM purchase_orders o JOIN stock_items i ON i.id = o.item_id WHERE o.org_id = ? AND o.status IN ('ordered','partial') AND o.promised_date IS NOT NULL AND o.promised_date < ?").all(o, today));
+    if (lateOrd.length) add('medium', 'stock', 'Achats', `${plural(lateOrd.length, 'commande fournisseur en retard', 'commandes fournisseurs en retard')} sur la date promise : ${lateOrd.slice(0, 3).map((x) => x.item).join(', ')}`, lateOrd[0].promised_date + 'T00:00:00.000Z');
     const waiting = await db.prepare("SELECT COUNT(*) c, MIN(created_at) m FROM purchase_orders WHERE org_id = ? AND status = 'pending'").get(o);
     if (waiting.c) add('info', 'stock', 'Achats', `${plural(waiting.c, 'commande attend', 'commandes attendent')} votre validation`, waiting.m);
     // Ventes : factures impayées (responsables et plus)
     const late = await require('./crm').overdueList(req);
     if (late.length) {
-      const sum = late.reduce((a, d) => a + d.total - d.paid, 0);
+      const sum = late.reduce((a, d) => a + d.total - d.credited - d.paid, 0);
       const oldest = late[0];
       const age = Math.round((Date.now() - Date.parse(oldest.due)) / 86400000);
       add(age > 30 ? 'high' : 'medium', 'crm', 'Clients et ventes', `${plural(late.length, 'facture impayée en retard', 'factures impayées en retard')} (${Number(sum).toLocaleString('fr-FR')} ${req.org.currency}), la plus ancienne depuis ${age} jours`, oldest.due + 'T00:00:00.000Z');

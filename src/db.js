@@ -1453,6 +1453,196 @@ const MIGRATIONS = [
     PRIMARY KEY (org_id, item_key)
   );
   `,
+  /* VAGUE 1 · facture conforme : NIU, TVA, mentions, numérotation par séquence, modes de paiement, avoirs. Les anciens documents gardent total = TTC (vat_rate vide = « ancien document »). */ `
+  ALTER TABLE orgs ADD COLUMN niu TEXT NOT NULL DEFAULT '';
+  ALTER TABLE orgs ADD COLUMN rccm TEXT NOT NULL DEFAULT '';
+  ALTER TABLE orgs ADD COLUMN address TEXT NOT NULL DEFAULT '';
+  ALTER TABLE orgs ADD COLUMN pay_info TEXT NOT NULL DEFAULT '';
+  ALTER TABLE orgs ADD COLUMN invoice_footer TEXT NOT NULL DEFAULT '';
+  ALTER TABLE orgs ADD COLUMN vat_rate DOUBLE PRECISION NOT NULL DEFAULT 19.25;
+  ALTER TABLE customers ADD COLUMN niu TEXT NOT NULL DEFAULT '';
+  ALTER TABLE customers ADD COLUMN address TEXT NOT NULL DEFAULT '';
+  ALTER TABLE documents ADD COLUMN vat_rate DOUBLE PRECISION;
+  ALTER TABLE documents ADD COLUMN prices_incl BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE documents ADD COLUMN subtotal_ht BIGINT;
+  ALTER TABLE documents ADD COLUMN vat_amount BIGINT;
+  ALTER TABLE documents ADD COLUMN credited BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE documents ADD COLUMN credit_of BIGINT REFERENCES documents(id) ON DELETE SET NULL;
+  ALTER TABLE documents ADD COLUMN credit_reason TEXT NOT NULL DEFAULT '';
+  CREATE TABLE doc_sequences (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    year TEXT NOT NULL,
+    last BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (org_id, kind, year)
+  );
+  INSERT INTO doc_sequences (org_id, kind, year, last)
+    SELECT org_id, kind, split_part(number, '-', 2), MAX(CAST(split_part(number, '-', 3) AS BIGINT)) FROM documents
+    WHERE number ~ '^[A-Z]+-[0-9]{4}-[0-9]+$' GROUP BY org_id, kind, split_part(number, '-', 2);
+  DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM documents GROUP BY org_id, number HAVING COUNT(*) > 1) THEN
+      CREATE UNIQUE INDEX uq_documents_number ON documents(org_id, number);
+    END IF;
+  END $$;
+  ALTER TABLE doc_payments ADD COLUMN method TEXT NOT NULL DEFAULT '';
+  ALTER TABLE doc_payments ADD COLUMN reference TEXT NOT NULL DEFAULT '';
+  ALTER TABLE doc_payments ADD COLUMN operator TEXT NOT NULL DEFAULT '';
+  ALTER TABLE doc_payments ADD COLUMN payer_phone TEXT NOT NULL DEFAULT '';
+  ALTER TABLE doc_payments ADD COLUMN status TEXT NOT NULL DEFAULT 'confirmed';
+  ALTER TABLE doc_payments ADD COLUMN note TEXT NOT NULL DEFAULT '';
+  CREATE UNIQUE INDEX uq_doc_payments_ref ON doc_payments(org_id, method, reference) WHERE reference <> '' AND status <> 'failed';
+  `,
+  /* VAGUE 1 · stock : lots et péremption, séries / VIN, CUMP, SKU et codes-barres, stock maximum, inventaire physique, réceptions partielles et retards fournisseurs */ `
+  ALTER TABLE stock_items ADD COLUMN sku TEXT NOT NULL DEFAULT '';
+  ALTER TABLE stock_items ADD COLUMN barcode TEXT NOT NULL DEFAULT '';
+  ALTER TABLE stock_items ADD COLUMN max_quantity DOUBLE PRECISION NOT NULL DEFAULT 0;
+  ALTER TABLE stock_items ADD COLUMN tracking TEXT NOT NULL DEFAULT 'none';
+  ALTER TABLE stock_items ADD COLUMN pick_rule TEXT NOT NULL DEFAULT 'fefo';
+  ALTER TABLE stock_items ADD COLUMN avg_cost DOUBLE PRECISION NOT NULL DEFAULT 0;
+  UPDATE stock_items SET avg_cost = unit_cost;
+  CREATE UNIQUE INDEX uq_stock_items_sku ON stock_items(org_id, sku) WHERE sku <> '';
+  CREATE UNIQUE INDEX uq_stock_items_barcode ON stock_items(org_id, barcode) WHERE barcode <> '';
+  ALTER TABLE stock_moves ADD COLUMN unit_cost DOUBLE PRECISION;
+  ALTER TABLE stock_moves ADD COLUMN ref_kind TEXT NOT NULL DEFAULT '';
+  ALTER TABLE stock_moves ADD COLUMN ref_id BIGINT;
+  CREATE TABLE stock_lots (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    lot_no TEXT NOT NULL,
+    expiry TEXT,
+    quantity DOUBLE PRECISION NOT NULL DEFAULT 0,
+    unit_cost BIGINT NOT NULL DEFAULT 0,
+    received_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_stock_lots_item ON stock_lots(item_id, expiry);
+  CREATE INDEX idx_stock_lots_org ON stock_lots(org_id, expiry);
+  CREATE TABLE stock_serials (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    serial TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'in_stock',
+    received_at TEXT NOT NULL,
+    out_at TEXT,
+    out_note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, serial)
+  );
+  CREATE INDEX idx_stock_serials_item ON stock_serials(item_id, status);
+  ALTER TABLE purchase_orders ADD COLUMN promised_date TEXT;
+  ALTER TABLE purchase_orders ADD COLUMN received_qty DOUBLE PRECISION NOT NULL DEFAULT 0;
+  ALTER TABLE purchase_orders ADD COLUMN received_at TEXT;
+  UPDATE purchase_orders SET received_qty = quantity, received_at = updated_at WHERE status = 'received';
+  CREATE TABLE purchase_receipts (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    order_id BIGINT NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+    quantity DOUBLE PRECISION NOT NULL,
+    unit_price BIGINT NOT NULL DEFAULT 0,
+    lot_no TEXT NOT NULL DEFAULT '',
+    expiry TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_purchase_receipts_order ON purchase_receipts(order_id);
+  CREATE TABLE stock_counts (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    branch_id BIGINT REFERENCES branches(id) ON DELETE SET NULL,
+    seq BIGINT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    submitted_at TEXT,
+    decided_by BIGINT,
+    decided_at TEXT,
+    decision_note TEXT NOT NULL DEFAULT '',
+    UNIQUE (org_id, seq)
+  );
+  CREATE TABLE stock_count_lines (
+    id BIGSERIAL PRIMARY KEY,
+    count_id BIGINT NOT NULL REFERENCES stock_counts(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    expected DOUBLE PRECISION NOT NULL,
+    counted DOUBLE PRECISION,
+    unit_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+    UNIQUE (count_id, item_id)
+  );
+  `,
+  /* VAGUE 1 · logistique et parc : véhicules, chauffeurs, échéances réglementaires, carburant, stock des livraisons */ `
+  CREATE TABLE logistics_vehicles (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    branch_id BIGINT REFERENCES branches(id) ON DELETE SET NULL,
+    plate TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'van',
+    vin TEXT NOT NULL DEFAULT '',
+    capacity TEXT NOT NULL DEFAULT '',
+    odometer DOUBLE PRECISION NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    equipment_id BIGINT REFERENCES maintenance_equipment(id) ON DELETE SET NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, plate)
+  );
+  CREATE TABLE logistics_drivers (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    phone TEXT NOT NULL DEFAULT '',
+    license_no TEXT NOT NULL DEFAULT '',
+    license_category TEXT NOT NULL DEFAULT '',
+    active BIGINT NOT NULL DEFAULT 1,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE logistics_compliance (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    subject TEXT NOT NULL,
+    vehicle_id BIGINT REFERENCES logistics_vehicles(id) ON DELETE CASCADE,
+    driver_id BIGINT REFERENCES logistics_drivers(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    reference TEXT NOT NULL DEFAULT '',
+    expires_at TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_log_compliance_org ON logistics_compliance(org_id, expires_at);
+  CREATE TABLE logistics_fuel (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    vehicle_id BIGINT NOT NULL REFERENCES logistics_vehicles(id) ON DELETE CASCADE,
+    driver_id BIGINT REFERENCES logistics_drivers(id) ON DELETE SET NULL,
+    date TEXT NOT NULL,
+    liters DOUBLE PRECISION NOT NULL,
+    amount BIGINT NOT NULL DEFAULT 0,
+    odometer DOUBLE PRECISION NOT NULL,
+    station TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_log_fuel_vehicle ON logistics_fuel(vehicle_id, odometer);
+  ALTER TABLE logistics_rounds ADD COLUMN vehicle_id BIGINT REFERENCES logistics_vehicles(id) ON DELETE SET NULL;
+  ALTER TABLE logistics_rounds ADD COLUMN driver_id BIGINT REFERENCES logistics_drivers(id) ON DELETE SET NULL;
+  ALTER TABLE logistics_deliveries ADD COLUMN stock_out BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_deliveries ADD COLUMN stock_back BIGINT NOT NULL DEFAULT 0;
+  CREATE TABLE logistics_delivery_items (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    delivery_id BIGINT NOT NULL REFERENCES logistics_deliveries(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    quantity DOUBLE PRECISION NOT NULL,
+    serials TEXT NOT NULL DEFAULT '[]',
+    allocations TEXT NOT NULL DEFAULT '[]'
+  );
+  CREATE INDEX idx_log_delivery_items ON logistics_delivery_items(delivery_id);
+  `,
 ];
 
 

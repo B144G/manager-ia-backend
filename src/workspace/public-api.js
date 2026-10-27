@@ -54,9 +54,9 @@ router.get('/orders', async (req, res) => {
 });
 router.get('/invoices', async (req, res) => {
   const { limit, after } = page(req);
-  const st = ['draft', 'sent', 'paid', 'cancelled'].includes(req.query.status) ? req.query.status : null;
-  const rows = await db.prepare(`SELECT d.id, d.number, d.status, d.total, d.paid, d.issued, d.due, c.name AS customer, c.phone FROM documents d JOIN customers c ON c.id = d.customer_id WHERE d.org_id = ? AND d.kind = 'invoice' AND d.id > ?${st ? ' AND d.status = ?' : ''} ORDER BY d.id LIMIT ?`).all(...[req.org.id, after, ...(st ? [st] : []), limit]);
-  res.json({ data: rows.map((r) => ({ ...r, balance: Math.max(r.total - r.paid, 0) })), next: rows.length === limit ? rows[rows.length - 1].id : null });
+  const st = ['draft', 'sent', 'paid', 'credited', 'cancelled'].includes(req.query.status) ? req.query.status : null;
+  const rows = await db.prepare(`SELECT d.id, d.number, d.status, d.total, d.paid, d.credited, d.issued, d.due, c.name AS customer, c.phone FROM documents d JOIN customers c ON c.id = d.customer_id WHERE d.org_id = ? AND d.kind = 'invoice' AND d.id > ?${st ? ' AND d.status = ?' : ''} ORDER BY d.id LIMIT ?`).all(...[req.org.id, after, ...(st ? [st] : []), limit]);
+  res.json({ data: rows.map((r) => ({ ...r, balance: Math.max(r.total - r.credited - r.paid, 0) })), next: rows.length === limit ? rows[rows.length - 1].id : null });
 });
 router.use((req, res) => res.status(404).json({ error: 'Route introuvable.' }));
 

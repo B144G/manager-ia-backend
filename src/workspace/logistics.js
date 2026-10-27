@@ -3,10 +3,14 @@
 const express = require('express');
 const { db, nowISO } = require('../db');
 const A = require('./access');
+const L = require('./stock-lib');
 const { HttpError, oneLine } = require('../util');
 
 const money0 = (v) => (v === undefined || v === null || v === '' || Number(v) === 0 ? 0 : A.amount(v));
 const router = express.Router({ mergeParams: true });
+// Parc : véhicules, chauffeurs, échéances réglementaires, carburant (logistics-fleet.js)
+const fleet = require('./logistics-fleet');
+router.use(fleet);
 
 const STATUSES = ['to_prepare', 'shipped', 'on_route', 'delivered', 'failed', 'returned'];
 const STATUS_LABEL = { to_prepare: 'À préparer', shipped: 'Expédiée', on_route: 'En route', delivered: 'Livrée', failed: 'Échec', returned: 'Retournée' };
@@ -35,6 +39,49 @@ const view = (d, names = {}) => ({
 const BASE = `SELECT d.*, z.name AS zone_name, c.name AS carrier_name, o.number AS doc_number FROM logistics_deliveries d
   LEFT JOIN logistics_zones z ON z.id = d.zone_id LEFT JOIN logistics_carriers c ON c.id = d.carrier_id LEFT JOIN documents o ON o.id = d.doc_id`;
 const names = (r) => ({ zone: r.zone_name, carrier: r.carrier_name, docNumber: r.doc_number });
+
+// ---------- Pont avec le stock : expédier sort du stock, un retour le réintègre (une seule fois chacun) ----------
+const itemsOf = async (deliveryId) => (await db.prepare('SELECT x.*, i.name, i.unit, i.tracking FROM logistics_delivery_items x JOIN stock_items i ON i.id = x.item_id WHERE x.delivery_id = ? ORDER BY x.id').all(deliveryId))
+  .map((x) => ({ id: x.id, itemId: x.item_id, name: x.name, unit: x.unit, tracking: x.tracking, quantity: x.quantity, serials: JSON.parse(x.serials) }));
+
+async function cleanItems(req, list) {
+  if (list === undefined || list === null) return [];
+  if (!Array.isArray(list) || list.length > 40) throw new HttpError(400, 'Liste d\'articles invalide (40 au plus).');
+  const seen = new Set(); const out = [];
+  for (const x of list) {
+    const it = await db.prepare('SELECT * FROM stock_items WHERE id = ? AND org_id = ?').get(A.id(x && x.itemId, 'Article invalide.'), req.org.id);
+    if (!it || !A.visible(req, it)) throw new HttpError(404, 'Article introuvable dans le stock.');
+    if (seen.has(it.id)) throw new HttpError(400, `L'article « ${it.name} » apparaît deux fois.`);
+    seen.add(it.id);
+    const serials = it.tracking === 'serial' ? L.parseSerials(x.serials) : [];
+    out.push({ itemId: it.id, quantity: it.tracking === 'serial' ? serials.length : A.qty(x.quantity), serials });
+    if (it.tracking === 'serial' && !serials.length) throw new HttpError(400, `« ${it.name} » est suivi par numéro de série : indiquez les numéros expédiés.`);
+  }
+  return out;
+}
+async function saveItems(req, deliveryId, list) {
+  await db.prepare('DELETE FROM logistics_delivery_items WHERE delivery_id = ?').run(deliveryId);
+  for (const x of list) await db.prepare('INSERT INTO logistics_delivery_items (org_id, delivery_id, item_id, quantity, serials) VALUES (?, ?, ?, ?, ?)').run(req.org.id, deliveryId, x.itemId, x.quantity, JSON.stringify(x.serials));
+}
+/** Sortie (expédition) ou retour de stock d'une livraison. Dans la transaction du changement d'état. */
+async function stockBridge(req, d, status) {
+  const rows = await db.prepare('SELECT * FROM logistics_delivery_items WHERE delivery_id = ?').all(d.id);
+  if (!rows.length) return '';
+  if (['shipped', 'on_route', 'delivered'].includes(status) && (!d.stock_out || d.stock_back)) {
+    for (const x of rows) {
+      const r = await L.adjust(req, x.item_id, -x.quantity, `Expédition livraison #${d.id}`, { serials: JSON.parse(x.serials), refKind: 'delivery', refId: d.id });
+      await db.prepare('UPDATE logistics_delivery_items SET allocations = ? WHERE id = ?').run(JSON.stringify(r.allocations), x.id);
+    }
+    await db.prepare('UPDATE logistics_deliveries SET stock_out = 1, stock_back = 0 WHERE id = ?').run(d.id);
+    return 'Stock sorti';
+  }
+  if (status === 'returned' && d.stock_out && !d.stock_back) {
+    for (const x of rows) await L.adjust(req, x.item_id, x.quantity, `Retour livraison #${d.id}`, { serials: JSON.parse(x.serials), allocations: JSON.parse(x.allocations), refKind: 'delivery', refId: d.id });
+    await db.prepare('UPDATE logistics_deliveries SET stock_back = 1 WHERE id = ?').run(d.id);
+    return 'Stock réintégré';
+  }
+  return '';
+}
 
 async function addEvent(req, d, status, note) {
   await db.prepare('INSERT INTO logistics_events (org_id, delivery_id, status, note, user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(req.org.id, d, status, A.text(note, 300), req.user.id, nowISO());
@@ -71,11 +118,18 @@ router.get('/documents', async (req, res) => {
 });
 
 // ---------- Livraisons ----------
+router.put('/deliveries/:id/items', async (req, res) => {
+  const d = await delOf(req, req.params.id);
+  if (d.stock_out && !d.stock_back) throw new HttpError(400, 'Le stock est déjà sorti pour cette livraison : les articles ne se modifient plus.');
+  await db.transaction(async () => { await saveItems(req, d.id, await cleanItems(req, (req.body || {}).items)); })();
+  res.json({ ok: true });
+});
+
 router.get('/deliveries/:id', async (req, res) => {
   const d = await delOf(req, req.params.id);
   const full = await db.prepare(`${BASE} WHERE d.id = ?`).get(d.id);
   const events = await db.prepare('SELECT e.id, e.status, e.note, e.created_at, u.name AS who FROM logistics_events e LEFT JOIN users u ON u.id = e.user_id WHERE e.delivery_id = ? ORDER BY e.id').all(d.id);
-  res.json({ delivery: view(full, names(full)), events: events.map((e) => ({ id: e.id, status: e.status, statusLabel: STATUS_LABEL[e.status] || e.status, note: e.note, at: e.created_at, who: e.who })) });
+  res.json({ delivery: { ...view(full, names(full)), stockOut: Boolean(Number(d.stock_out)), stockBack: Boolean(Number(d.stock_back)), items: await itemsOf(d.id) }, events: events.map((e) => ({ id: e.id, status: e.status, statusLabel: STATUS_LABEL[e.status] || e.status, note: e.note, at: e.created_at, who: e.who })) });
 });
 
 async function checkLinks(req, b, cur) {
@@ -107,6 +161,7 @@ router.post('/deliveries', async (req, res) => {
     id = Number((await db.prepare('INSERT INTO logistics_deliveries (org_id, branch_id, doc_id, customer_name, phone, address, zone_id, carrier_id, round_id, fee, planned_date, status, tracking, note, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
       req.org.id, branch === null && b.branchId !== undefined ? await A.branchOf(req, b.branchId) : branch, docId, name, A.text(b.phone, 40) || phone, A.text(b.address, 300), links.zoneId, links.carrierId, links.roundId, fee, planned,
       'to_prepare', A.text(b.tracking, 80), A.text(b.note, 500), req.user.id, now, now)).lastInsertRowid);
+    await saveItems(req, id, await cleanItems(req, b.items));
     await addEvent(req, id, 'to_prepare', 'Livraison créée');
   })();
   await A.logActivity(req.org.id, req.user.id, 'logistics', `Livraison pour ${name} créée`);
@@ -134,8 +189,9 @@ router.put('/deliveries/:id/status', async (req, res) => {
   if (st === 'delivered' && !receivedBy && !proof) throw new HttpError(400, 'Indiquez le nom de la personne qui a reçu le colis ou une preuve de livraison.');
   if (['failed', 'returned'].includes(st) && !A.text(b.note, 300)) throw new HttpError(400, 'Indiquez le motif (client absent, adresse introuvable, refus…).');
   await db.transaction(async () => {
+    const stock = await stockBridge(req, d, st);
     await db.prepare('UPDATE logistics_deliveries SET status = ?, received_by = ?, proof = ?, updated_at = ? WHERE id = ?').run(st, st === 'delivered' ? receivedBy : d.received_by, st === 'delivered' ? proof : d.proof, nowISO(), d.id);
-    await addEvent(req, d.id, st, [A.text(b.note, 300), st === 'delivered' && receivedBy ? `Reçu par ${receivedBy}` : ''].filter(Boolean).join(' · '));
+    await addEvent(req, d.id, st, [A.text(b.note, 300), st === 'delivered' && receivedBy ? `Reçu par ${receivedBy}` : '', stock].filter(Boolean).join(' · '));
   })();
   res.json({ ok: true });
 });
@@ -214,20 +270,44 @@ router.delete('/zones/:id', A.need('manager'), async (req, res) => {
 // ---------- Tournées ----------
 router.get('/rounds', async (req, res) => {
   const sc = A.scope(req, 'd.branch_id');
-  const rounds = await db.prepare('SELECT r.*, c.name AS carrier FROM logistics_rounds r LEFT JOIN logistics_carriers c ON c.id = r.carrier_id WHERE r.org_id = ? ORDER BY r.date DESC, r.id DESC LIMIT 60').all(req.org.id);
+  const rounds = await db.prepare('SELECT r.*, c.name AS carrier, v.plate AS vehicle, dr.name AS driver FROM logistics_rounds r LEFT JOIN logistics_carriers c ON c.id = r.carrier_id LEFT JOIN logistics_vehicles v ON v.id = r.vehicle_id LEFT JOIN logistics_drivers dr ON dr.id = r.driver_id WHERE r.org_id = ? ORDER BY r.date DESC, r.id DESC LIMIT 60').all(req.org.id);
   const ds = await db.prepare(`${BASE} WHERE d.org_id = ? AND d.round_id IS NOT NULL${sc.sql} ORDER BY d.round_pos, d.id`).all(req.org.id, ...sc.args);
-  res.json({ rounds: rounds.map((r) => ({ id: r.id, name: r.name, date: r.date, carrierId: r.carrier_id, carrier: r.carrier, note: r.note, deliveries: ds.filter((d) => d.round_id === r.id).map((d) => view(d, names(d))) })) });
+  res.json({ rounds: rounds.map((r) => ({ id: r.id, name: r.name, date: r.date, carrierId: r.carrier_id, carrier: r.carrier, vehicleId: r.vehicle_id, vehicle: r.vehicle, driverId: r.driver_id, driver: r.driver, note: r.note, deliveries: ds.filter((d) => d.round_id === r.id).map((d) => view(d, names(d))) })) });
 });
+/** Affectation d'un véhicule et d'un chauffeur à une tournée : actifs, et pas déjà pris par une autre tournée le même jour. */
+async function assignment(req, b, cur, date) {
+  const vid = b.vehicleId === undefined ? (cur ? cur.vehicle_id : null) : (b.vehicleId === null || b.vehicleId === '' ? null : A.id(b.vehicleId));
+  const did = b.driverId === undefined ? (cur ? cur.driver_id : null) : (b.driverId === null || b.driverId === '' ? null : A.id(b.driverId));
+  const other = (col, v) => db.prepare(`SELECT name FROM logistics_rounds WHERE org_id = ? AND date = ? AND ${col} = ?${cur ? ' AND id <> ?' : ''}`).get(req.org.id, date, v, ...(cur ? [cur.id] : []));
+  if (vid) {
+    const v = await fleet.vehicleOf(req, vid);
+    if (v.status !== 'active') throw new HttpError(400, `Le véhicule ${v.plate} n'est pas disponible (${v.status === 'maintenance' ? 'en maintenance' : 'retiré du parc'}).`);
+    const o = await other('vehicle_id', vid); if (o) throw new HttpError(409, `Le véhicule ${v.plate} est déjà affecté à la tournée « ${o.name} » ce jour-là.`);
+  }
+  if (did) {
+    const d = await fleet.driverOf(req, did);
+    if (!Number(d.active)) throw new HttpError(400, `Le chauffeur ${d.name} est en pause.`);
+    const o = await other('driver_id', did); if (o) throw new HttpError(409, `Le chauffeur ${d.name} est déjà affecté à la tournée « ${o.name} » ce jour-là.`);
+    // Permis périmé : on refuse l'affectation.
+    const lic = await db.prepare("SELECT 1 FROM logistics_compliance WHERE driver_id = ? AND kind = 'license' AND expires_at < ?").get(did, date);
+    const valid = await db.prepare("SELECT 1 FROM logistics_compliance WHERE driver_id = ? AND kind = 'license' AND expires_at >= ?").get(did, date);
+    if (lic && !valid) throw new HttpError(400, `Le permis de ${d.name} est périmé à la date de la tournée.`);
+  }
+  return { vehicleId: vid, driverId: did };
+}
 router.post('/rounds', async (req, res) => {
   const b = req.body || {};
   const date = A.date(b.date);
   if (!date) throw new HttpError(400, 'Indiquez le jour de la tournée.');
-  const id = (await db.prepare('INSERT INTO logistics_rounds (org_id, name, date, carrier_id, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(req.org.id, A.text(b.name, 100, { required: true, msg: 'Donnez un nom à la tournée.' }), date, await optional(req, 'logistics_carriers', b.carrierId, 'Transporteur'), A.text(b.note, 300), req.user.id, nowISO())).lastInsertRowid;
+  const asg = await assignment(req, b, null, date);
+  const id = (await db.prepare('INSERT INTO logistics_rounds (org_id, name, date, carrier_id, note, created_by, created_at, vehicle_id, driver_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, A.text(b.name, 100, { required: true, msg: 'Donnez un nom à la tournée.' }), date, await optional(req, 'logistics_carriers', b.carrierId, 'Transporteur'), A.text(b.note, 300), req.user.id, nowISO(), asg.vehicleId, asg.driverId)).lastInsertRowid;
   res.status(201).json({ id: Number(id) });
 });
 router.put('/rounds/:id', async (req, res) => {
   const r = await one(req, 'logistics_rounds', req.params.id, 'Tournée');
   const b = req.body || {};
+  const asg = await assignment(req, b, r, b.date === undefined ? r.date : (A.date(b.date) || r.date));
+  await db.prepare('UPDATE logistics_rounds SET vehicle_id = ?, driver_id = ? WHERE id = ?').run(asg.vehicleId, asg.driverId, r.id);
   await db.prepare('UPDATE logistics_rounds SET name = ?, date = ?, carrier_id = ?, note = ? WHERE id = ?').run(b.name === undefined ? r.name : A.text(b.name, 100, { required: true, msg: 'Donnez un nom à la tournée.' }), b.date === undefined ? r.date : (A.date(b.date) || r.date),
     b.carrierId === undefined ? r.carrier_id : await optional(req, 'logistics_carriers', b.carrierId, 'Transporteur'), b.note === undefined ? r.note : A.text(b.note, 300), r.id);
   res.json({ ok: true });
@@ -268,7 +348,9 @@ module.exports.ctx = async (req) => {
   const cost = all.filter((d) => (d.planned_date || d.created_at.slice(0, 10)) >= m.from && (d.planned_date || d.created_at.slice(0, 10)) < m.to && d.status !== 'returned').reduce((a, d) => a + Number(d.fee), 0);
   const line = (d) => `- #${d.id} ${oneLine(d.customer_name, 50)}${d.zone_name ? `, zone ${oneLine(d.zone_name, 40)}` : ''} [${STATUS_LABEL[d.status]}]${d.planned_date ? ` prévue ${d.planned_date}` : ''}${isLate(d) ? ' EN RETARD' : ''}${d.carrier_name ? `, par ${oneLine(d.carrier_name, 40)}` : ''}`;
   return [`LOGISTIQUE : ${open.length} livraison(s) en cours, ${open.filter((d) => d.planned_date === t).length} prévue(s) aujourd'hui, ${late.length} en retard, taux de réussite ${fin.length ? Math.round((100 * fin.filter((d) => d.status === 'delivered').length) / fin.length) + ' %' : 'inconnu'}, frais de livraison du mois ${Number(cost).toLocaleString('fr-FR')} ${cur}.`,
-    'Livraisons en retard :', ...(late.slice(0, 8).map(line)), ...(late.length ? [] : ['(aucune)']), 'Autres livraisons en cours :', ...(open.filter((d) => !isLate(d)).slice(0, 12).map(line))].join('\n').slice(0, 3000);
+    'Livraisons en retard :', ...(late.slice(0, 8).map(line)), ...(late.length ? [] : ['(aucune)']), 'Autres livraisons en cours :', ...(open.filter((d) => !isLate(d)).slice(0, 12).map(line)),
+    `PARC : ${(await db.prepare("SELECT COUNT(*) c FROM logistics_vehicles WHERE org_id = ? AND status = 'active'").get(req.org.id)).c} véhicule(s) actif(s), ${(await db.prepare('SELECT COUNT(*) c FROM logistics_drivers WHERE org_id = ? AND active = 1').get(req.org.id)).c} chauffeur(s).`,
+    'Échéances réglementaires à surveiller (périmées ou à moins de 30 jours) :', ...((await fleet.alertItems(req)).slice(0, 10).map((c) => `- ${oneLine(c.who, 60)} : ${c.kind}${c.reference ? ' ' + oneLine(c.reference, 30) : ''} ${c.state === 'expired' ? 'PÉRIMÉE depuis' : 'échéance'} ${c.expiresAt}`)), ...((await fleet.alertItems(req)).length ? [] : ['(aucune)'])].join('\n').slice(0, 3500);
 };
-module.exports.prompt = "Tu aides à suivre les livraisons : retards, tournées du jour, messages courts pour prévenir les clients, organisation des livreurs et des zones. Réponds en français simple. Tu ne modifies rien toi-même et tu n'envoies aucun message : tu proposes un texte que la personne envoie elle-même. Ne promets pas de date de livraison que les données ne confirment pas.";
+module.exports.prompt = "Tu aides à suivre les livraisons : retards, tournées du jour, messages courts pour prévenir les clients, organisation des livreurs et des zones. Réponds en français simple. Tu ne modifies rien toi-même et tu n'envoies aucun message : tu proposes un texte que la personne envoie elle-même. Ne promets pas de date de livraison que les données ne confirment pas. Parc : tu peux rappeler les échéances d'assurance, de visite technique et de permis et la consommation de carburant, sans inventer de dates ni de chiffres.";
 module.exports.min = 'member';

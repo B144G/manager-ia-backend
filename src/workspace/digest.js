@@ -52,7 +52,7 @@ async function composeMorning(req, date) {
   const lines = [];
   const crm = require('./crm');
   const late = await crm.overdueList(req);
-  if (late.length) lines.push(`- Impayés : ${plural(late.length, 'facture en retard', 'factures en retard')}, ${fmtMoney(late.reduce((a, d) => a + d.total - d.paid, 0), cur)} au total.`);
+  if (late.length) lines.push(`- Impayés : ${plural(late.length, 'facture en retard', 'factures en retard')}, ${fmtMoney(late.reduce((a, d) => a + d.total - d.credited - d.paid, 0), cur)} au total.`);
   const items = await require('./stock').items(req);
   const out0 = items.filter((i) => i.quantity <= 0).length;
   const low = items.filter((i) => i.quantity > 0 && i.min_quantity > 0 && i.quantity <= i.min_quantity).length;
@@ -80,7 +80,7 @@ async function urgentEvents(req, st, date) {
   for (const i of (await require('./stock').items(req)).filter((x) => x.quantity <= 0).slice(0, 30)) out.push({ key: `stock:${i.id}`, text: `Rupture de stock : ${oneLine(i.name, 60)}` });
   for (const d of await require('./crm').overdueList(req)) {
     const days = Math.round((Date.parse(`${date}T00:00:00Z`) - Date.parse(`${d.due}T00:00:00Z`)) / 86400000);
-    if (days > st.invoice_late_days) out.push({ key: `inv:${d.id}`, text: `Facture ${d.number} (${oneLine(d.customer, 40)}) impayée depuis ${days} jours : reste ${fmtMoney(d.total - d.paid, o.currency)}` });
+    if (days > st.invoice_late_days) out.push({ key: `inv:${d.id}`, text: `Facture ${d.number} (${oneLine(d.customer, 40)}) impayée depuis ${days} jours : reste ${fmtMoney(d.total - d.credited - d.paid, o.currency)}` });
   }
   const cut = new Date(Date.now() - st.handoff_hours * 3600000).toISOString();
   for (const c of await db.prepare("SELECT id, updated_at FROM chats WHERE org_id = ? AND status = 'handoff' AND updated_at < ? ORDER BY updated_at LIMIT 30").all(o.id, cut)) {

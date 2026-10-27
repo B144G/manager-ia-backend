@@ -30,15 +30,13 @@ async function stockItem(req, id) {
 
 /**
  * Mouvement de stock (entrée si delta > 0, sortie si delta < 0) : met à jour la quantité ET écrit la ligne de l'historique, comme le module Stock.
+ * Comme lui, il gère les lots (sortie FEFO/FIFO), les séries et le coût moyen (voir stock-lib.js ; opts = { unitCost, lotNo, expiry, serials… }).
  * À appeler dans une transaction. Refuse un stock négatif.
  */
-async function moveStock(req, itemId, delta, reason) {
+async function moveStock(req, itemId, delta, reason, opts = {}) {
   const it = await stockItem(req, itemId);
-  const next = round3(it.quantity + delta);
-  if (next < 0) throw new HttpError(400, `Stock insuffisant pour « ${it.name} » : il reste ${it.quantity} ${it.unit}.`);
-  await db.prepare('UPDATE stock_items SET quantity = ? WHERE id = ?').run(next, it.id);
-  await db.prepare('INSERT INTO stock_moves (org_id, item_id, delta, reason, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(req.org.id, it.id, delta, String(reason).slice(0, 150), req.user.id, nowISO());
-  return { ...it, quantity: next };
+  const r = await require('./stock-lib').adjust(req, it, delta, reason, opts);
+  return { ...it, quantity: r.quantity };
 }
 
 module.exports = { today, addDays, diffDays, oneLine, round3, money, nonneg, pct, stockItem, moveStock };

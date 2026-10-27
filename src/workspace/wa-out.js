@@ -65,9 +65,9 @@ async function silentLeads(org) {
 /** Factures échues avec un numéro de téléphone, sans rappel WhatsApp depuis 7 jours. */
 async function overdueInvoices(org) {
   const since = new Date(Date.now() - 7 * 86400000).toISOString();
-  return afilter(await db.prepare(`SELECT d.id, d.number, d.total, d.paid, d.due, c.name AS customer, c.phone
+  return afilter(await db.prepare(`SELECT d.id, d.number, d.total, d.paid, d.credited, d.due, c.name AS customer, c.phone
     FROM documents d JOIN customers c ON c.id = d.customer_id
-    WHERE d.org_id = ? AND d.kind = 'invoice' AND d.status = 'sent' AND d.due IS NOT NULL AND d.due < ? AND d.paid < d.total AND c.phone != ''
+    WHERE d.org_id = ? AND d.kind = 'invoice' AND d.status = 'sent' AND d.due IS NOT NULL AND d.due < ? AND d.paid < d.total - d.credited AND c.phone != ''
       AND NOT EXISTS (SELECT 1 FROM wa_outbound o WHERE o.org_id = d.org_id AND o.ref_kind = 'invoice' AND o.ref_id = d.id AND o.status = 'sent' AND o.created_at > ?)
     ORDER BY d.due LIMIT 200`).all(org.id, nowISO().slice(0, 10), since), async (r) => !(await isOptedOut(org.id, r.phone)));
 }
@@ -77,7 +77,7 @@ async function sendLead(org, tpl, lead) {
   return await sendTemplate(org, { phone: lead.contact, tpl, params: [firstName(lead.customer), org.name], chat, refKind: 'chat', refId: lead.id });
 }
 async function sendInvoice(org, tpl, inv) {
-  const left = `${(inv.total - inv.paid).toLocaleString('fr-FR')} ${org.currency}`;
+  const left = `${(inv.total - inv.credited - inv.paid).toLocaleString('fr-FR')} ${org.currency}`;
   return await sendTemplate(org, { phone: inv.phone, tpl, params: [firstName(inv.customer), inv.number, left, org.name], refKind: 'invoice', refId: inv.id });
 }
 
@@ -105,7 +105,7 @@ router.get('/', async (req, res) => {
     connected: waOrg.isConnected(o), mode: waOrg.modeOf(o), autoFollowup: Boolean(o.wa_followup), purposes: Object.fromEntries(Object.entries(PURPOSES).map(([k, v]) => [k, { label: v.label, params: v.params, hint: v.hint, example: v.example }])),
     templates: (await db.prepare('SELECT * FROM wa_templates WHERE org_id = ? ORDER BY id').all(o.id)).map(tplView),
     silent: (await silentLeads(o)).map((l) => ({ id: l.id, name: l.customer || '', contact: l.contact, lastAt: l.lastUser })),
-    overdue: (await overdueInvoices(o)).map((i) => ({ id: i.id, number: i.number, customer: i.customer, phone: i.phone, left: i.total - i.paid, due: i.due })),
+    overdue: (await overdueInvoices(o)).map((i) => ({ id: i.id, number: i.number, customer: i.customer, phone: i.phone, left: i.total - i.credited - i.paid, due: i.due })),
     sentToday: await sentToday(o.id), dayCap: DAY_CAP,
     log: await db.prepare('SELECT id, chat_id AS chatId, phone, template, status, error, created_at AS at FROM wa_outbound WHERE org_id = ? ORDER BY id DESC LIMIT 30').all(o.id),
     optouts: (await db.prepare('SELECT COUNT(*) c FROM wa_optout WHERE org_id = ?').get(o.id)).c,

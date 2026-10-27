@@ -93,9 +93,12 @@ async function ctxStock(req) {
     const b = await st.bestPrice(i.id);
     return `- ${oneLine(i.name, 80)} : ${i.quantity} ${i.unit} (seuil ${i.min_quantity})${i.quantity <= 0 ? ' RUPTURE' : i.min_quantity > 0 && i.quantity <= i.min_quantity ? ' SOUS LE SEUIL' : ''}${b ? `, meilleur prix ${money(b.unitPrice, cur)} chez ${oneLine(b.supplier, 50)}` : ''}`;
   });
-  const orders = await db.prepare("SELECT o.status, o.quantity, i.name, s.name AS supplier FROM purchase_orders o JOIN stock_items i ON i.id = o.item_id LEFT JOIN suppliers s ON s.id = o.supplier_id WHERE o.org_id = ? AND o.status IN ('pending','ordered') ORDER BY o.id DESC LIMIT 15").all(req.org.id);
+  const orders = await db.prepare("SELECT o.status, o.quantity, i.name, s.name AS supplier FROM purchase_orders o JOIN stock_items i ON i.id = o.item_id LEFT JOIN suppliers s ON s.id = o.supplier_id WHERE o.org_id = ? AND o.status IN ('pending','ordered','partial') ORDER BY o.id DESC LIMIT 15").all(req.org.id);
   const sup = (await db.prepare('SELECT name FROM suppliers WHERE org_id = ? ORDER BY name LIMIT 20').all(req.org.id)).map((s) => oneLine(s.name, 50));
-  return `STOCK ET ACHATS :\n${lines.join('\n') || '(aucun article)'}\nFournisseurs : ${sup.join(', ') || 'aucun'}.\nCommandes en cours :\n` + (orders.map((o) => `- ${oneLine(o.name, 80)} × ${o.quantity} [${o.status === 'pending' ? 'À VALIDER' : 'commandée'}]${o.supplier ? ` chez ${oneLine(o.supplier, 50)}` : ''}`).join('\n') || '(aucune)');
+  const exp = await st.expiringLots(req, 30);
+  const late = (await db.prepare("SELECT o.status, o.promised_date, i.name FROM purchase_orders o JOIN stock_items i ON i.id = o.item_id WHERE o.org_id = ? AND o.status IN ('ordered','partial') AND o.promised_date < ? LIMIT 10").all(req.org.id, nowISO().slice(0, 10)));
+  const extra = `\nVALORISATION : coût moyen pondéré (CUMP)${A.can(req, 'manager') ? `, valeur du stock ${money(list.reduce((a, i) => a + i.quantity * (i.avg_cost > 0 ? i.avg_cost : i.unit_cost), 0), cur)}` : ''}. Suivi par lot ou série : ${list.filter((i) => i.tracking !== 'none').map((i) => `${oneLine(i.name, 40)} (${i.tracking === 'lot' ? i.pick_rule.toUpperCase() : 'série'})`).slice(0, 15).join(', ') || 'aucun'}.\nSURSTOCK : ${list.filter((i) => i.max_quantity > 0 && i.quantity > i.max_quantity).map((i) => `${oneLine(i.name, 40)} (${i.quantity}/${i.max_quantity})`).slice(0, 10).join(', ') || 'aucun'}.\nLOTS PÉRIMÉS OU PROCHES DE LA PÉREMPTION (30 jours) :\n${exp.slice(0, 10).map((l) => `- ${oneLine(l.item, 50)} lot ${oneLine(l.lotNo, 30)} : ${l.quantity} ${l.unit}, ${l.expired ? 'PÉRIMÉ' : 'périme'} le ${l.expiry}`).join('\n') || '(aucun)'}\nCommandes fournisseurs en retard sur la date promise : ${late.map((x) => oneLine(x.name, 40) + ' (promis ' + x.promised_date + ')').join(', ') || 'aucune'}.\n`;
+  return `STOCK ET ACHATS :\n${lines.join('\n') || '(aucun article)'}${extra}\nFournisseurs : ${sup.join(', ') || 'aucun'}.\nCommandes en cours :\n` + (orders.map((o) => `- ${oneLine(o.name, 80)} × ${o.quantity} [${o.status === 'pending' ? 'À VALIDER' : 'commandée'}]${o.supplier ? ` chez ${oneLine(o.supplier, 50)}` : ''}`).join('\n') || '(aucune)');
 }
 
 async function ctxCrm(req) {
@@ -106,7 +109,9 @@ async function ctxCrm(req) {
   const crm = require('./crm');
   const late = await crm.overdueList(req);
   const open = await db.prepare("SELECT d.number, d.kind, d.status, d.total, d.paid, d.due, c.name FROM documents d JOIN customers c ON c.id = d.customer_id WHERE d.org_id = ? AND ((d.kind = 'invoice' AND d.status = 'sent') OR (d.kind = 'quote' AND d.status = 'sent')) ORDER BY d.id DESC LIMIT 20").all(req.org.id);
-  return `CLIENTS ET VENTES : ${n} client(s).\nFactures en retard :\n` + (late.slice(0, 10).map((d) => `- ${d.number} ${oneLine(d.customer, 60)} : reste ${money(d.total - d.paid, cur)}, échéance ${d.due}`).join('\n') || '(aucune)') +
+  const pend = await db.prepare("SELECT p.method, p.reference, p.amount, d.number FROM doc_payments p JOIN documents d ON d.id = p.doc_id WHERE p.org_id = ? AND p.status = 'pending' ORDER BY p.id DESC LIMIT 10").all(req.org.id);
+  const mentions = `FACTURATION : TVA ${req.org.vat_rate} % par défaut, NIU de l'entreprise ${req.org.niu ? 'renseigné' : 'MANQUANT'}. Les factures et avoirs sont des documents de travail à faire valider par un expert-comptable. Paiements mobile money / virement à vérifier (référence saisie, pas encore confirmée) :\n${pend.map((p) => `- ${p.number} : ${money(p.amount, cur)} (${p.method} réf. ${oneLine(p.reference, 30)})`).join('\n') || '(aucun)'}\n`;
+  return mentions + `CLIENTS ET VENTES : ${n} client(s).\nFactures en retard :\n` + (late.slice(0, 10).map((d) => `- ${d.number} ${oneLine(d.customer, 60)} : reste ${money(d.total - d.credited - d.paid, cur)}, échéance ${d.due}`).join('\n') || '(aucune)') +
     '\nDevis et factures en attente :\n' + (open.map((d) => `- ${d.number} (${d.kind === 'quote' ? 'devis envoyé' : 'facture envoyée'}) ${oneLine(d.name, 60)} : ${money(d.total, cur)}${d.kind === 'invoice' ? `, payé ${money(d.paid, cur)}` : ''}${d.due ? `, échéance ${d.due}` : ''}`).join('\n') || '(aucun)');
 }
 
@@ -279,7 +284,7 @@ async function proposalInput(req, kind, input) {
     case 'payment-reminder': {
       const d = await db.prepare("SELECT d.*, c.name AS customer FROM documents d JOIN customers c ON c.id = d.customer_id WHERE d.id = ? AND d.org_id = ? AND d.kind = 'invoice'").get(A.id(i.documentId), req.org.id);
       if (!d || !A.visible(req, d)) throw new HttpError(404, 'Facture introuvable.');
-      return `Facture ${d.number} de ${oneLine(d.customer, 80)} : total ${money(d.total, req.org.currency)}, reste à payer ${money(d.total - d.paid, req.org.currency)}, échéance ${d.due || 'non fixée'} (aujourd'hui : ${nowISO().slice(0, 10)}).`;
+      return `Facture ${d.number} de ${oneLine(d.customer, 80)} : total ${money(d.total, req.org.currency)}, reste à payer ${money(d.total - d.credited - d.paid, req.org.currency)}, échéance ${d.due || 'non fixée'} (aujourd'hui : ${nowISO().slice(0, 10)}).`;
     }
     default: throw new HttpError(400, 'Type de proposition inconnu.');
   }
