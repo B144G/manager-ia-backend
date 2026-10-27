@@ -90,6 +90,7 @@ async function handoff(org, chat, reason) {
   const now = nowISO();
   const t = (await db.prepare("INSERT INTO tickets (org_id, customer_name, customer_contact, channel, subject, priority, created_at, updated_at) VALUES (?, ?, ?, 'assistant-web', ?, 'high', ?, ?)")
     .run(org.id, cu ? cu.name : 'Visiteur', cu ? (cu.phone || cu.email || '') : '', oneLine(`Conversation à reprendre : ${reason || 'demande d\'un conseiller'}`, 140), now, now)).lastInsertRowid;
+  await require('./support').applySla(org, Number(t), chat.customer_id);
   const add = db.prepare('INSERT INTO ticket_messages (ticket_id, author, content, created_at) VALUES (?, ?, ?, ?)');
   const sum = L.leadSummary(chat.lead);
   if (sum) await add.run(t, 'staff', `Fiche prospect :\n${sum}`, now);

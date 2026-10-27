@@ -32,7 +32,7 @@ const MOBILE = { mtn_momo: 'MTN', orange_money: 'Orange' };
 /** Lignes validées : [{label, quantity, price}] ; les totaux sont TOUJOURS recalculés ici (jamais ceux envoyés par l'écran). */
 function cleanLines(v) {
   if (!Array.isArray(v) || !v.length || v.length > 40) throw new HttpError(400, 'Ajoutez au moins une ligne (40 au plus).');
-  return v.map((l) => ({ label: A.text(l && l.label, 150, { required: true, msg: 'Chaque ligne doit avoir un libellé.' }), quantity: A.qty(l.quantity === undefined || l.quantity === '' ? 1 : l.quantity), price: A.amount(l.price) }));
+  return v.map((l) => ({ label: A.text(l && l.label, 150, { required: true, msg: 'Chaque ligne doit avoir un libellé.' }), quantity: A.qty(l.quantity === undefined || l.quantity === '' ? 1 : l.quantity), price: Number(l.price) < 0 && /^Remise/i.test(String(l.label || '')) ? -A.amount(-Number(l.price)) : A.amount(l.price) })); // seule une ligne « Remise… » (code promo) peut être négative
 }
 const vatRate = (v, def) => {
   if (v === undefined || v === null || v === '') return def;
@@ -52,7 +52,7 @@ const view = (d, extra = {}, org) => {
     id: d.id, kind: d.kind, number: d.number, status: d.status, total: d.total, paid: d.paid, credited: d.credited, balance: d.kind === 'invoice' ? balanceOf(d) : undefined,
     refundDue: d.kind === 'invoice' && d.paid > d.total - d.credited ? d.paid - (d.total - d.credited) : undefined,
     subtotalHt: a.ht, vatRate: a.rate, vatAmount: a.vat, pricesIncl: Number(d.prices_incl) === 1, creditOf: d.credit_of, creditReason: d.credit_reason || undefined,
-    issued: d.issued, due: d.due, note: d.note, customerId: d.customer_id, overdue: isOverdue(d), lines: JSON.parse(d.lines), ...extra,
+    issued: d.issued, due: d.due, note: d.note, customerId: d.customer_id, promoCode: d.promo_code || undefined, discount: Number(d.discount || 0) || undefined, overdue: isOverdue(d), lines: JSON.parse(d.lines), ...extra,
   };
 };
 
@@ -80,6 +80,7 @@ router.post('/customers', async (req, res) => {
   const id = (await db.prepare('INSERT INTO customers (org_id, branch_id, name, phone, email, notes, niu, address, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
     req.org.id, await A.branchOf(req, b.branchId === undefined ? req.member.branch_id : b.branchId), A.text(b.name, 100, { required: true, msg: 'Indiquez le nom du client.' }), A.text(b.phone, 40), A.text(b.email, 120), A.text(b.notes, 800), A.text(b.niu, 40), A.text(b.address, 300), nowISO())).lastInsertRowid;
   await A.logActivity(req.org.id, req.user.id, 'crm', `Client « ${A.text(b.name, 100)} » ajouté`);
+  require('../services/webhooks').emit(req.org.id, 'customer.created', { id: Number(id), name: A.text(b.name, 100) });
   res.status(201).json({ id: Number(id) });
 });
 
@@ -148,6 +149,7 @@ async function createDoc(req, b, kind, extra = {}) {
     const id = (await db.prepare('INSERT INTO documents (org_id, branch_id, customer_id, kind, number, status, lines, total, issued, due, note, created_by, created_at, updated_at, vat_rate, prices_incl, subtotal_ht, vat_amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
       req.org.id, c.branch_id, c.id, kind, await nextNumber(req.org.id, kind), extra.status || 'draft', JSON.stringify(lines), t.total, A.date(b.issued) || today(), A.date(b.due), A.text(b.note, 500), req.user.id, now, now, rate, incl ? 1 : 0, t.ht, t.vat)).lastInsertRowid;
     await A.logActivity(req.org.id, req.user.id, 'crm', `${kind === 'quote' ? 'Devis' : kind === 'credit' ? 'Avoir' : 'Facture'} créé(e) pour ${c.name}`);
+    if (kind === 'invoice') require('../services/webhooks').emit(req.org.id, 'invoice.created', { id: Number(id), customer: c.name, total: t.total });
     return Number(id);
   })();
 }
@@ -251,6 +253,7 @@ async function applyPayment(req, d, amount, row) {
     await db.prepare("INSERT INTO budget_entries (org_id, branch_id, kind, category, label, amount, date, created_by, created_at, source, source_id) VALUES (?, ?, 'income', 'Ventes', ?, ?, ?, ?, ?, 'invoice', ?)").run(req.org.id, d.branch_id, `Paiement ${d.number}`, amount, today(), req.user.id, nowISO(), d.id);
   })();
   require('../services/webhooks').emit(req.org.id, 'payment.received', { invoice_id: d.id, number: d.number, amount, paid, total: d.total, status, method: row.method, reference: row.reference });
+  if (status === 'paid') require('../services/webhooks').emit(req.org.id, 'invoice.paid', { invoice_id: d.id, number: d.number, total: d.total });
   return { paid, status };
 }
 
