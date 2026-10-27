@@ -42,6 +42,13 @@ router.get('/billing', requireUser, async (req, res) => {
   });
 });
 
+// Reçu d'un paiement confirmé (page imprimable du site : le navigateur en fait un PDF).
+router.get('/payments/:reference/receipt', requireUser, async (req, res) => {
+  const p = await db.prepare("SELECT * FROM payments WHERE reference = ? AND user_id = ? AND status = 'paid'").get(String(req.params.reference).slice(0, 60), req.user.id);
+  if (!p) return res.status(404).json({ error: 'Reçu introuvable : seul un paiement confirmé en a un.' });
+  res.json({ receipt: require('../services/payments').receiptOf(p, await getUserFresh(req.user.id)) });
+});
+
 /** En mode "push", relit l'état chez Campay et met à jour la base. Renvoie le statut à jour. */
 async function syncPush(p) {
   if (p.mode !== 'push' || !p.provider_ref || p.status === 'paid') return p.status;

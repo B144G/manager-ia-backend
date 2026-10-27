@@ -221,6 +221,11 @@ router.post('/meeting', limits.assistantMinute, asyncHandler(async (req, res) =>
 
 module.exports = router;
 module.exports.AGENTS = AGENTS;
+module.exports.BY_KEY = BY_KEY;
+module.exports.askAgent = askAgent;
+module.exports.configs = configs;
+module.exports.isOn = isOn;
+module.exports.allowed = allowed;
 module.exports.MAX_AGENTS = MAX_AGENTS;
 
 // Crochets facultatifs lus par ai.js (le module « agents » n'a pas de discussion IA propre : ai:false).

@@ -158,9 +158,12 @@ async function ctxHr(req) {
 // Modules ajoutés par fichier : chacun exporte ctx(req) (données pour l'IA), prompt (consignes) et min (rôle minimal).
 const EXT = ['payroll', 'fiscal', 'marketing', 'logistics', 'production', 'construction', 'maintenance', 'legal', 'memory'];
 const ext = (id) => async (req) => { const m = require('./' + id); return m.ctx ? await m.ctx(req) : ''; };
+const W3 = require('./ai-w3');
 for (const id of EXT) { const m = require('./' + id); if (m.min) MODULE_MIN[id] = m.min; }
 const extPrompt = (id) => (EXT.includes(id) ? require('./' + id).prompt || '' : '');
 const BUILDERS = { ...Object.fromEntries(EXT.map((id) => [id, ext(id)])), sales: ctxSales, stock: ctxStock, crm: ctxCrm, hr: ctxHr, alerts: ctxAlerts, support: ctxSupport, projects: ctxProjects, budget: ctxBudget, structure: ctxStructure, processes: ctxProcesses, team: ctxTeam };
+// Vague 3 : contextes étendus (SLA, base de connaissances, soldes de congés, budget des projets, conformité, consentements…)
+for (const k of Object.keys(W3)) { const base = BUILDERS[k]; if (base) BUILDERS[k] = async (req) => (await base(req)) + await W3[k](req); }
 
 async function buildData(req, module) {
   const parts = [await ctxOrg(req)];

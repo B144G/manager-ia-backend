@@ -58,6 +58,21 @@ router.get('/invoices', async (req, res) => {
   const rows = await db.prepare(`SELECT d.id, d.number, d.status, d.total, d.paid, d.credited, d.issued, d.due, c.name AS customer, c.phone FROM documents d JOIN customers c ON c.id = d.customer_id WHERE d.org_id = ? AND d.kind = 'invoice' AND d.id > ?${st ? ' AND d.status = ?' : ''} ORDER BY d.id LIMIT ?`).all(...[req.org.id, after, ...(st ? [st] : []), limit]);
   res.json({ data: rows.map((r) => ({ ...r, balance: Math.max(r.total - r.credited - r.paid, 0) })), next: rows.length === limit ? rows[rows.length - 1].id : null });
 });
+router.get('/products', async (req, res) => {
+  const { limit, after } = page(req);
+  const rows = await db.prepare('SELECT id, name, description, price, unit, active FROM catalog WHERE org_id = ? AND id > ? ORDER BY id LIMIT ?').all(req.org.id, after, limit);
+  res.json({ data: rows.map((r) => ({ id: r.id, name: r.name, description: r.description, price: r.price, unit: r.unit, active: Boolean(Number(r.active)) })), next: rows.length === limit ? rows[rows.length - 1].id : null });
+});
+router.get('/stock', async (req, res) => {
+  const { limit, after } = page(req);
+  const rows = await db.prepare('SELECT id, name, sku, barcode, unit, quantity, min_quantity FROM stock_items WHERE org_id = ? AND id > ? ORDER BY id LIMIT ?').all(req.org.id, after, limit);
+  res.json({ data: rows.map((r) => ({ id: r.id, name: r.name, sku: r.sku, barcode: r.barcode, unit: r.unit, quantity: r.quantity, min_quantity: r.min_quantity, low: r.min_quantity > 0 && r.quantity <= r.min_quantity })), next: rows.length === limit ? rows[rows.length - 1].id : null });
+});
+router.get('/payments', async (req, res) => {
+  const { limit, after } = page(req);
+  const rows = await db.prepare("SELECT p.id, p.amount, p.date, p.method, p.reference, p.status, d.number AS invoice FROM doc_payments p JOIN documents d ON d.id = p.doc_id WHERE p.org_id = ? AND p.status = 'confirmed' AND p.id > ? ORDER BY p.id LIMIT ?").all(req.org.id, after, limit);
+  res.json({ data: rows.map((r) => ({ id: r.id, invoice: r.invoice, amount: r.amount, date: r.date, method: r.method, reference: r.reference })), next: rows.length === limit ? rows[rows.length - 1].id : null });
+});
 router.use((req, res) => res.status(404).json({ error: 'Route introuvable.' }));
 
 module.exports = router;

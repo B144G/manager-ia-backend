@@ -33,6 +33,13 @@ async function runOnce() {
   await require('./services/signedUrl').purge();
   await db.prepare('DELETE FROM chat_media WHERE created_at < ?').run(addDays(new Date(), -90).toISOString());
   await db.prepare('DELETE FROM notifications WHERE created_at < ?').run(addDays(new Date(), -180).toISOString());
+  await db.prepare('DELETE FROM notices WHERE created_at < ?').run(addDays(new Date(), -120).toISOString());
+  await db.prepare('DELETE FROM webhook_deliveries WHERE created_at < ?').run(addDays(new Date(), -30).toISOString());
+
+  // 4) Vague 3 : tâches récurrentes à créer, rappels des décisions en attente (chacun isolé : un échec n'arrête pas les autres)
+  for (const [name, fn] of [['tâches récurrentes', () => require('./workspace/projects-w3').runRecurring()], ['rappels de décisions', () => require('./workspace/decisions').remindAll()]]) {
+    try { await fn(); } catch (e) { log.warn(`Tâches automatiques (${name}) :`, oneLine(e.message, 160)); }
+  }
 }
 
 async function safeRun() {
@@ -47,7 +54,10 @@ async function safeRun() {
 // Résumé du matin et alertes WhatsApp : vérification chaque minute (sans bloquer ; verrou en base contre les doublons, même avec plusieurs serveurs).
 function startDigest() {
   const every = (process.env.NODE_ENV !== 'production' && Number(process.env.DIGEST_TICK_MS)) || 60 * 1000;
-  const run = () => { require('./workspace/digest').tick().catch((e) => log.warn('Résumé du matin :', oneLine(e.message, 160))); };
+  const run = () => {
+    require('./workspace/digest').tick().catch((e) => log.warn('Résumé du matin :', oneLine(e.message, 160)));
+    require('./workspace/agents-w3').tick().catch((e) => log.warn('Agents planifiés :', oneLine(e.message, 160)));
+  };
   setTimeout(run, 30 * 1000).unref();
   setInterval(run, every).unref();
 }

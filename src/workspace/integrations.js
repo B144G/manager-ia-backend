@@ -56,6 +56,19 @@ router.delete('/webhooks/:id', async (req, res) => {
   await db.prepare('DELETE FROM webhooks_out WHERE id = ? AND org_id = ?').run(A.id(req.params.id), req.org.id);
   res.json({ ok: true });
 });
+router.get('/deliveries', async (req, res) => {
+  const rows = await db.prepare('SELECT id, hook_id, event, ok, status, attempts, created_at, payload FROM webhook_deliveries WHERE org_id = ? ORDER BY id DESC LIMIT 100').all(req.org.id);
+  res.json({ items: rows.map((r) => ({ id: r.id, hookId: r.hook_id, event: r.event, ok: Boolean(Number(r.ok)), status: r.status, attempts: Number(r.attempts), at: r.created_at, payload: r.payload })) });
+});
+router.post('/deliveries/:id/retry', asyncHandler(async (req, res) => {
+  const d = await db.prepare('SELECT * FROM webhook_deliveries WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
+  if (!d) throw new HttpError(404, 'Livraison introuvable.');
+  const h = await db.prepare('SELECT * FROM webhooks_out WHERE id = ? AND org_id = ?').get(d.hook_id, req.org.id);
+  if (!h) throw new HttpError(404, 'Ce webhook a été supprimé.');
+  let data = {}; try { data = JSON.parse(d.payload); } catch { /* charge illisible */ }
+  const r = await wh.deliver(h, d.event, data, Number(d.attempts) + 1);
+  res.json({ ok: r.ok, status: r.status });
+}));
 router.post('/webhooks/:id/test', asyncHandler(async (req, res) => {
   const h = await db.prepare('SELECT * FROM webhooks_out WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
   if (!h) throw new HttpError(404, 'Webhook introuvable.');

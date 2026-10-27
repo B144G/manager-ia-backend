@@ -10,7 +10,7 @@ const net = require('net');
 const { db, nowISO } = require('../db');
 const { log, oneLine } = require('../util');
 
-const EVENTS = { 'prospect.created': 'Nouveau prospect enregistré', 'order.created': 'Nouvelle commande à valider', 'payment.received': 'Paiement reçu sur une facture', 'chat.handoff': 'Conversation à reprendre par un conseiller', test: 'Message de test' };
+const EVENTS = { 'prospect.created': 'Nouveau prospect enregistré', 'order.created': 'Nouvelle commande à valider', 'payment.received': 'Paiement reçu sur une facture', 'chat.handoff': 'Conversation à reprendre par un conseiller', 'invoice.created': 'Facture créée', 'invoice.paid': 'Facture entièrement payée', 'customer.created': 'Client créé', 'ticket.created': 'Nouvelle demande client', 'ticket.resolved': 'Demande client résolue', 'leave.requested': 'Demande de congé', 'decision.created': 'Demande de validation créée', 'decision.decided': 'Décision prise', test: 'Message de test' };
 // Les essais automatiques d'un développeur peuvent viser sa machine ; interdit en production.
 const allowPrivate = () => process.env.NODE_ENV !== 'production' && process.env.WEBHOOK_ALLOW_PRIVATE === '1';
 
@@ -66,9 +66,10 @@ function post(hook, body) {
   });
 }
 
-async function deliver(hook, event, data) {
+async function deliver(hook, event, data, attempts = 1) {
   const body = JSON.stringify({ id: crypto.randomUUID(), event, created_at: nowISO(), data });
   const r = await post({ ...hook }, body);
+  try { await db.prepare('INSERT INTO webhook_deliveries (org_id, hook_id, event, ok, status, payload, attempts, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(hook.org_id, hook.id, event, r.ok ? 1 : 0, r.status, JSON.stringify(data).slice(0, 4000), attempts, nowISO()); } catch (e) { log.warn('Historique webhook :', oneLine(e.message, 100)); }
   if (r.ok) await db.prepare('UPDATE webhooks_out SET fails = 0, last_status = ?, last_at = ? WHERE id = ?').run(r.status, nowISO(), hook.id);
   else {
     await db.prepare('UPDATE webhooks_out SET fails = fails + 1, last_status = ?, last_at = ?, active = CASE WHEN fails + 1 >= 10 THEN 0 ELSE active END WHERE id = ?').run(`échec : ${r.status}`, nowISO(), hook.id);

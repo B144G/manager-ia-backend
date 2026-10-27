@@ -3,8 +3,20 @@
 const config = require('../config');
 const { db, nowISO } = require('../db');
 const { addDays, isEmail } = require('../util');
-const { notify, mailUser } = require('./notify');
+const { notify, sendMail } = require('./notify');
+const { log, oneLine } = require('../util');
 
+const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+/** Reçu d'un paiement d'abonnement (données de la page imprimable). Document de travail : il ne remplace pas une facture comptable. */
+function receiptOf(p, user) {
+  const when = p.paid_at || nowISO();
+  return { number: `R-${when.slice(0, 4)}-${String(p.id).padStart(5, '0')}`, reference: p.reference, plan: (config.plans[p.plan] || {}).name || p.plan, amountXAF: Number(p.amount_xaf), operator: p.operator || '', mode: p.mode, paidAt: when,
+    customer: { name: user.name, contact: user.contact }, durationDays: config.durationDays, issuer: config.payment.holder || 'MANAGER-IA', note: "Reçu de paiement d'abonnement MANAGER-IA. Document de travail : il ne tient pas lieu de facture fiscale." };
+}
+function receiptHtml(r) {
+  return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Reçu ${esc(r.number)}</title><style>body{font-family:Arial,sans-serif;max-width:640px;margin:32px auto;color:#111}h1{font-size:22px}table{width:100%;border-collapse:collapse}td{padding:8px 0;border-bottom:1px solid #ddd}td:last-child{text-align:right}.n{color:#555;font-size:12px;margin-top:24px}</style></head><body>
+<h1>Reçu de paiement ${esc(r.number)}</h1><p>${esc(r.issuer)}</p><table><tr><td>Client</td><td>${esc(r.customer.name)} (${esc(r.customer.contact)})</td></tr><tr><td>Offre</td><td>${esc(r.plan)} (${r.durationDays} jours)</td></tr><tr><td>Référence</td><td>${esc(r.reference)}</td></tr><tr><td>Date de paiement</td><td>${esc(r.paidAt.slice(0, 10))}</td></tr><tr><td>Montant</td><td><b>${r.amountXAF.toLocaleString('fr-FR')} FCFA</b></td></tr></table><p class="n">${esc(r.note)}</p></body></html>`;
+}
 const fmtDate = (iso) => new Date(iso).toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' });
 
 /**
@@ -44,14 +56,16 @@ const activate = db.transaction(async (paymentId) => {
 async function markPaid(paymentId) {
   const r = await activate(paymentId);
   if (!r) return null;
-  mailUser(
-    r.user.contact,
-    `Votre offre ${r.planName} est active - MANAGER-IA`,
-    `Bonjour ${r.user.name},\n\nVotre paiement ${r.payment.reference} (${r.payment.amount_xaf} FCFA) est confirmé.\n` +
-      `Votre offre ${r.planName} est active jusqu'au ${fmtDate(r.expires)}.\n\nMerci pour votre confiance.\nL'équipe MANAGER-IA`
-  );
+  const receipt = receiptOf({ ...r.payment, paid_at: nowISO() }, r.user);
+  if (isEmail(r.user.contact)) setImmediate(async () => {
+    try {
+      await sendMail({ to: r.user.contact, subject: `Votre offre ${r.planName} est active - MANAGER-IA`, text: `Bonjour ${r.user.name},\n\nVotre paiement ${r.payment.reference} (${r.payment.amount_xaf} FCFA) est confirmé.\n` +
+      `Votre offre ${r.planName} est active jusqu'au ${fmtDate(r.expires)}.\n\nMerci pour votre confiance.\nL'équipe MANAGER-IA\n\nVotre reçu ${receipt.number} est joint à ce message (vous pouvez aussi le retrouver dans « Abonnement »).`,
+        attachments: [{ filename: `recu-${receipt.number}.html`, content: Buffer.from(receiptHtml(receipt), 'utf8'), contentType: 'text/html' }] });
+    } catch (e) { log.warn('Reçu non envoyé :', oneLine(e.message, 160)); }
+  });
   notify('paiement_confirme', `Paiement confirmé : ${r.user.name} (${r.user.contact}) - offre ${r.planName} - ${r.payment.amount_xaf} FCFA - ${r.payment.reference}`);
   return r;
 }
 
-module.exports = { markPaid, fmtDate, isEmail, planConflict };
+module.exports = { markPaid, fmtDate, isEmail, planConflict, receiptOf, receiptHtml };

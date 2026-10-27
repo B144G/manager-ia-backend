@@ -3,6 +3,7 @@
 // l'IA s'en sert ensuite pour expliquer et conseiller.
 const { db, nowISO } = require('../db');
 const A = require('./access');
+const W = require('./w3');
 
 const plural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
 const LEVEL_RANK = { high: 0, medium: 1, info: 2 };
@@ -12,6 +13,7 @@ async function alerts(req) {
   const sc = A.scope(req);
   const today = nowISO().slice(0, 10);
   const out = [];
+  const cfg = await W.settings(o);
   const add = (level, module, title, text, at) => out.push({ level, module, title, text, at: at || null });
   const count = async (sql, ...args) => (await db.prepare(sql).get(o, ...args, ...sc.args)).c;
 
@@ -19,8 +21,8 @@ async function alerts(req) {
   const urgent = await count(`SELECT COUNT(*) c FROM tickets WHERE org_id = ? AND status != 'resolved' AND priority = 'high'${sc.sql}`);
   const lastUrgent = (await db.prepare(`SELECT MAX(updated_at) m FROM tickets WHERE org_id = ? AND status != 'resolved' AND priority = 'high'${sc.sql}`).get(o, ...sc.args)).m;
   if (urgent) add('high', 'support', 'Service client', `${plural(urgent, 'demande urgente en attente', 'demandes urgentes en attente')}`, lastUrgent);
-  const stale = await count(`SELECT COUNT(*) c FROM tickets WHERE org_id = ? AND status = 'open' AND updated_at < ?${sc.sql}`, new Date(Date.now() - 48 * 3600000).toISOString());
-  if (stale) add('medium', 'support', 'Service client', `${plural(stale, 'demande sans réponse', 'demandes sans réponse')} depuis plus de 48 h`);
+  const stale = await count(`SELECT COUNT(*) c FROM tickets WHERE org_id = ? AND status = 'open' AND updated_at < ?${sc.sql}`, new Date(Date.now() - cfg.alert_ticket_hours * 3600000).toISOString());
+  if (stale) add('medium', 'support', 'Service client', `${plural(stale, 'demande sans réponse', 'demandes sans réponse')} depuis plus de ${cfg.alert_ticket_hours} h`);
 
   // Tâches et projets
   const overdue = await count(`SELECT COUNT(*) c FROM tasks WHERE org_id = ? AND status != 'done' AND due IS NOT NULL AND due < ?${sc.sql}`, today);
@@ -61,7 +63,7 @@ async function alerts(req) {
       const sum = late.reduce((a, d) => a + d.total - d.credited - d.paid, 0);
       const oldest = late[0];
       const age = Math.round((Date.now() - Date.parse(oldest.due)) / 86400000);
-      add(age > 30 ? 'high' : 'medium', 'crm', 'Clients et ventes', `${plural(late.length, 'facture impayée en retard', 'factures impayées en retard')} (${Number(sum).toLocaleString('fr-FR')} ${req.org.currency}), la plus ancienne depuis ${age} jours`, oldest.due + 'T00:00:00.000Z');
+      add(age > cfg.alert_overdue_days ? 'high' : 'medium', 'crm', 'Clients et ventes', `${plural(late.length, 'facture impayée en retard', 'factures impayées en retard')} (${Number(sum).toLocaleString('fr-FR')} ${req.org.currency}), la plus ancienne depuis ${age} jours`, oldest.due + 'T00:00:00.000Z');
     }
     // Commandes de prospects et conversations en attente (assistant commercial public)
     const po = await db.prepare("SELECT COUNT(*) c, MIN(created_at) m FROM documents WHERE org_id = ? AND kind = 'order' AND status = 'pending'").get(o);
@@ -73,6 +75,30 @@ async function alerts(req) {
     // Ressources humaines
     const pl = await db.prepare("SELECT COUNT(*) c, MIN(created_at) m FROM leaves WHERE org_id = ? AND status = 'pending'").get(o);
     if (pl.c) add('info', 'hr', 'Ressources humaines', `${plural(pl.c, 'demande de congé attend', 'demandes de congé attendent')} une réponse`, pl.m);
+  }
+
+  // Service client : délais (SLA) dépassés
+  const breached = await db.prepare(`SELECT COUNT(*) c, MIN(first_due_at) m FROM tickets WHERE org_id = ? AND status != 'resolved' AND ((first_response_at IS NULL AND first_due_at IS NOT NULL AND first_due_at < ?) OR (due_at IS NOT NULL AND due_at < ?))${sc.sql}`).get(o, nowISO(), nowISO(), ...sc.args);
+  if (Number(breached.c)) add('high', 'support', 'Service client', `${plural(Number(breached.c), 'demande a dépassé son délai (SLA)', 'demandes ont dépassé leur délai (SLA)')}`, breached.m);
+
+  // Ressources humaines et paie : contrats, essais, visites médicales, habilitations, paie du mois (responsables et plus)
+  if (A.can(req, 'manager')) {
+    const WHAT = { contract_end: 'fin de contrat', trial_end: "fin de période d'essai", medical: 'visite médicale', certification: 'habilitation' };
+    for (const d of (await require('./hr-w3').dueItems(req, cfg.alert_contract_days)).slice(0, 6)) add(d.expired ? 'high' : 'medium', 'hr', 'Ressources humaines', d.expired ? `${WHAT[d.kind]} de ${d.who} dépassée depuis le ${d.date}` : `${WHAT[d.kind]} de ${d.who} avant le ${d.date}`, d.date + 'T00:00:00.000Z');
+    if (A.can(req, 'admin') && today.slice(8, 10) >= '25') {
+      const act = (await db.prepare("SELECT COUNT(*) c FROM employees WHERE org_id = ? AND status = 'active' AND salary IS NOT NULL").get(o)).c;
+      const slips = (await db.prepare('SELECT COUNT(*) c FROM payroll_slips WHERE org_id = ? AND month = ?').get(o, today.slice(0, 7))).c;
+      if (Number(act) > 0 && Number(slips) === 0) add('medium', 'payroll', 'Paie', "La paie du mois n'est pas encore préparée");
+    }
+    for (const c of (await require('./legal-w3').alertItems(req)).slice(0, 5)) add(c.late ? 'high' : 'medium', 'legal', c.title, c.late ? `Échéance dépassée (${c.due})${c.verify ? ' · à vérifier' : ''}` : `À faire avant le ${c.due}${c.verify ? ' · à vérifier' : ''}`, c.due + 'T00:00:00.000Z');
+    const rev = (await db.prepare("SELECT COUNT(*) c, MIN(next_review) m FROM processes WHERE org_id = ? AND next_review IS NOT NULL AND next_review <= ?").get(o, today));
+    if (Number(rev.c)) add('info', 'processes', 'Fonctionnement', `${plural(Number(rev.c), 'procédure est à réviser', 'procédures sont à réviser')}`, rev.m + 'T00:00:00.000Z');
+    // Seuils réglables : créances et trésorerie
+    if (cfg.alert_receivable_max > 0 || cfg.alert_cash_min > 0) {
+      const k = await require('./dashboard-w3').kpis(req);
+      if (cfg.alert_receivable_max > 0 && k.receivables.total > cfg.alert_receivable_max) add('medium', 'crm', 'Clients et ventes', `Les créances clients (${Number(k.receivables.total).toLocaleString('fr-FR')} ${req.org.currency}) dépassent votre seuil`);
+      if (cfg.alert_cash_min > 0 && k.cash.balance < cfg.alert_cash_min) add('high', 'budget', 'Budget', `La trésorerie (${Number(k.cash.balance).toLocaleString('fr-FR')} ${req.org.currency}) est sous votre seuil`);
+    }
   }
 
   // Juridique : rappels d'échéances à 30 et 7 jours, une alerte par élément (responsables et plus)
