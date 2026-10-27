@@ -40,7 +40,7 @@ async function seed() {
 }
 
 // ---- Site : mêmes consignes que la route /api/assistant ----
-const siteSystem = () => { const extra = knowledge.load('site'); return claude.SITE_PROMPT + (extra ? `\n\nConnaissances supplémentaires fournies par MANAGER-IA :\n${extra}` : ''); };
+const siteSystem = () => { const extra = knowledge.load('site'); return claude.SITE_PROMPT + (extra ? `\n\nConnaissances supplémentaires fournies par Brij-IA :\n${extra}` : ''); };
 
 function check(text, s) {
   const fails = [];
@@ -76,7 +76,7 @@ async function run(kind, s) {
   const dir = path.join(config.ROOT, 'eval-results');
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `essai-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.md`);
-  let md = `# Essai des IA MANAGER-IA — ${new Date().toLocaleString('fr-FR')}\n\nModèle : ${config.ai.model}\n\n**Résultat : ${results.length - bad.length} réponses conformes sur ${results.length}. ${bad.length} à revoir.**\n\nLes vérifications automatiques sont simples (mots attendus ou interdits, longueur) : lisez aussi les réponses pour juger le ton et la justesse.\n`;
+  let md = `# Essai des IA Brij-IA — ${new Date().toLocaleString('fr-FR')}\n\nModèle : ${config.ai.model}\n\n**Résultat : ${results.length - bad.length} réponses conformes sur ${results.length}. ${bad.length} à revoir.**\n\nLes vérifications automatiques sont simples (mots attendus ou interdits, longueur) : lisez aussi les réponses pour juger le ton et la justesse.\n`;
   if (bad.length) md += '\n## À revoir\n' + bad.map((r) => `- [${r.module}] « ${r.q} » : ${r.fails.join(' ; ')}`).join('\n') + '\n';
   md += '\n## Toutes les réponses\n';
   for (const r of results) md += `\n### ${r.fails.length ? '⚠️' : '✅'} [${r.module}] ${r.q}\n\n${r.text || '(aucune réponse)'}\n\n${r.fails.length ? '*Vérifications : ' + r.fails.join(' ; ') + '*\n' : ''}`;

@@ -1,5 +1,5 @@
 'use strict';
-// Centre de sécurité : un seul point d'entrée pour tout ce qui protège MANAGER-IA.
+// Centre de sécurité : un seul point d'entrée pour tout ce qui protège Brij-IA.
 //   audit      journal d'audit chaîné (preuve d'intégrité)          sessions   connexions révocables (appareils)
 //   abuse      points d'abus, blocage automatique d'adresses IP     totp       double authentification (TOTP + codes de secours)
 //   sensitive  table des actions sensibles surveillées              configcheck contrôle de la configuration

@@ -11,7 +11,7 @@ const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&':
 function receiptOf(p, user) {
   const when = p.paid_at || nowISO();
   return { number: `R-${when.slice(0, 4)}-${String(p.id).padStart(5, '0')}`, reference: p.reference, plan: (config.plans[p.plan] || {}).name || p.plan, amountXAF: Number(p.amount_xaf), operator: p.operator || '', mode: p.mode, paidAt: when,
-    customer: { name: user.name, contact: user.contact }, durationDays: config.durationDays, issuer: config.payment.holder || 'MANAGER-IA', note: "Reçu de paiement d'abonnement MANAGER-IA. Document de travail : il ne tient pas lieu de facture fiscale." };
+    customer: { name: user.name, contact: user.contact }, durationDays: config.durationDays, issuer: config.payment.holder || 'Brij-IA', note: "Reçu de paiement d'abonnement Brij-IA. Document de travail : il ne tient pas lieu de facture fiscale." };
 }
 function receiptHtml(r) {
   return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Reçu ${esc(r.number)}</title><style>body{font-family:Arial,sans-serif;max-width:640px;margin:32px auto;color:#111}h1{font-size:22px}table{width:100%;border-collapse:collapse}td{padding:8px 0;border-bottom:1px solid #ddd}td:last-child{text-align:right}.n{color:#555;font-size:12px;margin-top:24px}</style></head><body>
@@ -59,8 +59,8 @@ async function markPaid(paymentId) {
   const receipt = receiptOf({ ...r.payment, paid_at: nowISO() }, r.user);
   if (isEmail(r.user.contact)) setImmediate(async () => {
     try {
-      await sendMail({ to: r.user.contact, subject: `Votre offre ${r.planName} est active - MANAGER-IA`, text: `Bonjour ${r.user.name},\n\nVotre paiement ${r.payment.reference} (${r.payment.amount_xaf} FCFA) est confirmé.\n` +
-      `Votre offre ${r.planName} est active jusqu'au ${fmtDate(r.expires)}.\n\nMerci pour votre confiance.\nL'équipe MANAGER-IA\n\nVotre reçu ${receipt.number} est joint à ce message (vous pouvez aussi le retrouver dans « Abonnement »).`,
+      await sendMail({ to: r.user.contact, subject: `Votre offre ${r.planName} est active - Brij-IA`, text: `Bonjour ${r.user.name},\n\nVotre paiement ${r.payment.reference} (${r.payment.amount_xaf} FCFA) est confirmé.\n` +
+      `Votre offre ${r.planName} est active jusqu'au ${fmtDate(r.expires)}.\n\nMerci pour votre confiance.\nL'équipe Brij-IA\n\nVotre reçu ${receipt.number} est joint à ce message (vous pouvez aussi le retrouver dans « Abonnement »).`,
         attachments: [{ filename: `recu-${receipt.number}.html`, content: Buffer.from(receiptHtml(receipt), 'utf8'), contentType: 'text/html' }] });
     } catch (e) { log.warn('Reçu non envoyé :', oneLine(e.message, 160)); }
   });

@@ -11,7 +11,7 @@ const SIG = require('./syscohada-sig');
 const router = express.Router({ mergeParams: true });
 router.use(A.need('admin'));
 
-const NOTICE = "Document de travail préparé par MANAGER-IA, à faire valider par un expert-comptable avant tout dépôt officiel.";
+const NOTICE = "Document de travail préparé par Brij-IA, à faire valider par un expert-comptable avant tout dépôt officiel.";
 const KINDS = { tva: 'TVA', acompte: 'Acompte', is: 'Impôt sur les sociétés ou sur le revenu', patente: 'Patente', social: 'Déclaration sociale', etats: 'Dépôt des états financiers', other: 'Autre' };
 const STATUSES = { todo: 'À faire', filed: 'Déposée', paid: 'Payée' };
 const RECUR = { none: 'Une seule fois', monthly: 'Chaque mois', quarterly: 'Chaque trimestre', yearly: 'Chaque année' };
@@ -253,7 +253,7 @@ async function liasse(req, year) {
   if (sig.resultatNet !== st.resultat.resultat) add('error', 'result-gap', 'Le résultat net des soldes de gestion ne correspond pas au résultat du compte de résultat.');
   if (tot.n && !cum.some((r) => r.account.startsWith('101'))) add('info', 'capital', "Aucune écriture sur le capital social (compte 101) depuis l'ouverture : vérifiez que le capital a bien été enregistré.");
   if (tot.n && !before) add('info', 'carry', "Aucune écriture avant cet exercice : si l'entreprise existait déjà, enregistrez dans la Comptabilité les écritures d'ouverture (soldes de départ) pour que le bilan soit complet.");
-  if (prior !== 0) add('info', 'carry-result', `Le bilan cumule les écritures depuis l'ouverture et affiche ${prior.toLocaleString('fr-FR')} de résultat des exercices précédents non affecté. MANAGER-IA ne passe pas l'écriture d'affectation du résultat (réserves, report à nouveau, dividendes) : elle se décide en assemblée et se saisit en écriture diverse dans la Comptabilité.`);
+  if (prior !== 0) add('info', 'carry-result', `Le bilan cumule les écritures depuis l'ouverture et affiche ${prior.toLocaleString('fr-FR')} de résultat des exercices précédents non affecté. Brij-IA ne passe pas l'écriture d'affectation du résultat (réserves, report à nouveau, dividendes) : elle se décide en assemblée et se saisit en écriture diverse dans la Comptabilité.`);
   const todo = issues.filter((i) => i.level !== 'info');
   return { year, notice: NOTICE, entryCount: Number(tot.n), resultat: st.resultat, bilan: st.bilan, sig, carry: { priorResult: prior, hasPriorEntries: before > 0, cumulative: true }, exercise: { closed: Boolean(acc.locked_until && acc.locked_until >= to), lockedUntil: acc.locked_until || '' }, issues, toFix: todo.filter((i) => i.level === 'error').length, ready: !todo.some((i) => i.level === 'error') };
 }
@@ -270,7 +270,7 @@ const EXERCISE_NOTES = [
   "Clôturer un exercice verrouille toutes les écritures jusqu'au 31 décembre de cette année : plus personne ne peut en ajouter, ni dans ces dates ni avant.",
   "La clôture ne génère PAS d'écriture d'affectation du résultat ni de report à nouveau : le bilan de l'exercice suivant reprend les soldes cumulés depuis l'ouverture et affiche le résultat précédent non affecté.",
   "Seul le dernier exercice clôturé peut être rouvert, avec un motif obligatoire. La réouverture est journalisée (journal d'activité et journal d'audit).",
-  'Cette clôture est un verrou interne de MANAGER-IA : elle ne remplace ni la clôture légale ni la validation par votre expert-comptable.',
+  'Cette clôture est un verrou interne de Brij-IA : elle ne remplace ni la clôture légale ni la validation par votre expert-comptable.',
 ];
 const lockStart = (req) => accounting().ensure(req.org);
 

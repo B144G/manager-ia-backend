@@ -1,5 +1,5 @@
 'use strict';
-// Webhooks sortants : MANAGER-IA prévient un outil externe (Zapier, Make, n8n, votre propre serveur) quand quelque chose arrive.
+// Webhooks sortants : Brij-IA prévient un outil externe (Zapier, Make, n8n, votre propre serveur) quand quelque chose arrive.
 // Sécurité : seulement des adresses publiques en HTTPS (contrôlées AU MOMENT de la connexion, donc aucune attaque par redirection DNS vers
 // le réseau interne), aucune redirection suivie, corps signé HMAC-SHA256 (en-tête X-MIA-Signature), délai de 8 s, arrêt après 10 échecs de suite.
 const crypto = require('crypto');

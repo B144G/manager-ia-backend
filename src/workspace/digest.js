@@ -71,7 +71,7 @@ async function composeMorning(req, date) {
   const first = String(req.user.name || '').trim().split(/\s+/)[0] || '';
   const head = `Bonjour${first ? ' ' + first : ''}, voici le point du matin de ${o.name} (${frDate(date)}).`;
   const body = lines.length ? lines.join('\n') : "Rien d'urgent ce matin : tout est à jour.";
-  return { text: `${head}\n${body}\nOuvrez MANAGER-IA pour le détail. Pour ne plus recevoir ce message : Alertes > Résumé du matin.`.slice(0, 1500), empty: !lines.length };
+  return { text: `${head}\n${body}\nOuvrez Brij-IA pour le détail. Pour ne plus recevoir ce message : Alertes > Résumé du matin.`.slice(0, 1500), empty: !lines.length };
 }
 
 /** Événements urgents du moment : rupture de stock, facture très en retard, conversation en attente trop longtemps. */
@@ -89,7 +89,7 @@ async function urgentEvents(req, st, date) {
   }
   return out;
 }
-const composeUrgent = (org, events) => `Alerte urgente — ${org.name}\n${events.slice(0, MAX_EVENTS).map((e) => `- ${e.text}`).join('\n')}${events.length > MAX_EVENTS ? `\n- … et ${events.length - MAX_EVENTS} autre(s)` : ''}\nOuvrez MANAGER-IA pour agir.`.slice(0, 1500);
+const composeUrgent = (org, events) => `Alerte urgente — ${org.name}\n${events.slice(0, MAX_EVENTS).map((e) => `- ${e.text}`).join('\n')}${events.length > MAX_EVENTS ? `\n- … et ${events.length - MAX_EVENTS} autre(s)` : ''}\nOuvrez Brij-IA pour agir.`.slice(0, 1500);
 
 // ---------- Envoi : WhatsApp, puis e-mail si WhatsApp ne livre pas ----------
 const isWindowError = (e) => e && (e.metaCode === 131047 || /re-?engagement|24[ -]?hour|outside the allowed window/i.test(String(e.message)));

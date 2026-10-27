@@ -365,7 +365,7 @@ async function main() {
 
     r = await mgr('POST', `${J}/privacy`, { dataKind: '' });
     check('ligne du registre : donnée obligatoire -> 400', r.status === 400, r.json);
-    r = await mgr('POST', `${J}/privacy`, { dataKind: 'Nom et téléphone des clients', storedWhere: 'MANAGER-IA, carnet papier', purpose: 'Livrer et facturer', retention: '3 ans après le dernier achat' });
+    r = await mgr('POST', `${J}/privacy`, { dataKind: 'Nom et téléphone des clients', storedWhere: 'Brij-IA, carnet papier', purpose: 'Livrer et facturer', retention: '3 ans après le dernier achat' });
     const pv = r.json.id;
     check('ligne du registre créée', r.status === 201, r.json);
     r = await mgr('GET', `${J}/privacy`);

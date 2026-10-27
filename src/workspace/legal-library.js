@@ -1,5 +1,5 @@
 'use strict';
-// Bibliothèque fournie par MANAGER-IA pour le module Juridique : modèles de documents, exemples d'obligations et de lignes du registre des données.
+// Bibliothèque fournie par Brij-IA pour le module Juridique : modèles de documents, exemples d'obligations et de lignes du registre des données.
 // Ce sont des textes informatifs : aucun ne prétend être conforme à la loi d'un pays précis. Chaque modèle de document se termine par la mention de relecture.
 const MENTION = 'Modèle informatif à faire relire par un professionnel du droit.';
 

@@ -49,7 +49,7 @@ async function assign(org, chat, userId, byUserId) {
     const sum = leadSummary(chat.lead);
     await A.logActivity(org.id, byUserId || null, 'sales', `Conversation attribuée à ${who.name}`);
     mailUser(who.contact, `Conversation à traiter : ${cu ? cu.name : 'nouveau prospect'}`,
-      `Bonjour ${who.name},\n\nUne conversation client vous a été attribuée dans MANAGER-IA (${org.name}).\nClient : ${cu ? `${cu.name} ${cu.phone || ''}` : `visiteur ${chat.contact ? '+' + chat.contact : ''}`}\n${chat.campaign ? `Campagne : ${chat.campaign}\n` : ''}${sum ? `\nFiche prospect :\n${sum}\n` : ''}\nOuvrez MANAGER-IA > Assistant commercial pour lire la conversation et répondre.\n`);
+      `Bonjour ${who.name},\n\nUne conversation client vous a été attribuée dans Brij-IA (${org.name}).\nClient : ${cu ? `${cu.name} ${cu.phone || ''}` : `visiteur ${chat.contact ? '+' + chat.contact : ''}`}\n${chat.campaign ? `Campagne : ${chat.campaign}\n` : ''}${sum ? `\nFiche prospect :\n${sum}\n` : ''}\nOuvrez Brij-IA > Assistant commercial pour lire la conversation et répondre.\n`);
   }
   return true;
 }

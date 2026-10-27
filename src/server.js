@@ -133,7 +133,7 @@ async function start() {
   process.on('unhandledRejection', (e) => log.error('Promesse non gérée :', e && e.message ? e.message : e));
   await db.ready; // schéma PostgreSQL à jour avant d'accepter des requêtes
   const server = app.listen(config.port, () => {
-    log.info(`MANAGER-IA démarré sur le port ${config.port} (${config.isProd ? 'production' : 'développement'})`);
+    log.info(`Brij-IA démarré sur le port ${config.port} (${config.isProd ? 'production' : 'développement'})`);
     log.info(`Base de données : PostgreSQL (${db.driver === 'pglite' ? 'PGlite embarqué, tests' : 'pg'})`);
     const on = (v) => (v ? 'activé' : 'non configuré');
     log.info(`Assistant IA : ${on(config.ai.key)} | Paiement automatique Campay : ${on(config.campay.enabled)} | WhatsApp admin : ${on(config.whatsapp.phoneId && config.whatsapp.token)} | E-mail : ${on(config.smtp.host || config.mailApi.key)} | Admin : ${on(config.admin.username && config.admin.password)} | Webhooks Meta : ${on(config.meta.appSecret)}`);

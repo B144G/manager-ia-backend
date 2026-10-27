@@ -1,6 +1,6 @@
-# MANAGER-IA : serveur (backend)
+# Brij-IA : serveur (backend)
 
-## GUIDE COMPLET : mettre MANAGER-IA en ligne (base de données, serveur, site)
+## GUIDE COMPLET : mettre Brij-IA en ligne (base de données, serveur, site)
 
 Trois services, tous créés par **vous** avec **vos** comptes (ne donnez jamais vos mots de passe ni vos clés à personne, ni dans un chat) :
 
@@ -76,7 +76,7 @@ Durée : environ 45 minutes la première fois. **Suivez l'ordre : Neon → Rende
 
 **Méthode manuelle (si vous ne voulez pas du Blueprint) :** **New +** → **Web Service** → dépôt `manager-ia-backend`. Runtime **Node**, *Build Command* `npm ci --omit=dev --omit=optional`, *Start Command* `node src/server.js`, *Health Check Path* `/api/health`. Ajoutez ensuite les variables du tableau ci-dessus et celles de l'étape 4 dans l'onglet **Environment**.
 
-4. Attendez que l'état passe à **Live** (3 à 5 minutes la première fois). Le journal (*Logs*) doit afficher « MANAGER-IA démarré… » puis « Base de données : PostgreSQL ».
+4. Attendez que l'état passe à **Live** (3 à 5 minutes la première fois). Le journal (*Logs*) doit afficher « Brij-IA démarré… » puis « Base de données : PostgreSQL ».
 5. **Notez l'adresse de votre serveur**, en haut de la page du service, par exemple `https://manager-ia-backend.onrender.com`.
 6. **Testez** en ouvrant dans le navigateur `https://VOTRE-SERVEUR.onrender.com/api/health` : la réponse doit être `{"ok":true,"db":true}`. (Si le serveur dormait, la première réponse peut prendre 30 à 60 secondes.)
 
@@ -208,11 +208,11 @@ npm run dev                   # http://localhost:5173
 
 Vite renvoie les appels `/api` vers le serveur local : le navigateur ne voit qu'un seul site, la connexion fonctionne sans réglage. Les tests automatiques (`npm test` dans le backend) démarrent leur propre base PostgreSQL jetable : rien à installer.
 
-## GUIDE WHATSAPP : obtenir les identifiants (Phone number ID, jeton, secret) et brancher MANAGER-IA
+## GUIDE WHATSAPP : obtenir les identifiants (Phone number ID, jeton, secret) et brancher Brij-IA
 
 > **Les écrans de Meta changent souvent** : les noms des menus ci-dessous sont ceux de la dernière version connue, vos écrans peuvent différer légèrement. Tout se fait avec **votre** compte Meta. Ne collez jamais un jeton ou un secret dans un chat, un e-mail ou GitHub : seulement dans les champs prévus (Render, ou l'écran *Canaux* de l'application).
 
-### Deux usages de WhatsApp dans MANAGER-IA (ne les confondez pas)
+### Deux usages de WhatsApp dans Brij-IA (ne les confondez pas)
 
 | | **A. Notifications pour vous (administrateur)** | **B. Assistant commercial d'une entreprise** |
 |---|---|---|
@@ -234,7 +234,7 @@ Vous pouvez faire A seul, B seul, ou les deux. Pour **A**, il faut en plus crée
 ### Étape 2 : créer l'application Meta avec WhatsApp (10 min)
 
 1. <https://developers.facebook.com/apps> → **Créer une application**.
-2. Cas d'utilisation : choisissez **« Se connecter avec les clients sur WhatsApp »** (ou, selon l'écran, type **Entreprise** puis **Ajouter le produit WhatsApp**). Nommez-la (ex. `MANAGER-IA Boutique Awa`) et **rattachez-la à votre portefeuille d'entreprise**.
+2. Cas d'utilisation : choisissez **« Se connecter avec les clients sur WhatsApp »** (ou, selon l'écran, type **Entreprise** puis **Ajouter le produit WhatsApp**). Nommez-la (ex. `Brij-IA Boutique Awa`) et **rattachez-la à votre portefeuille d'entreprise**.
 3. Dans le menu de gauche : **WhatsApp → Configuration de l'API** (*API Setup*). Cette page est votre tableau de bord de départ. Meta vous y donne **gratuitement** :
    - un **numéro de test** ;
    - le **Phone number ID** (identifiant du numéro) ;
@@ -244,14 +244,14 @@ Vous pouvez faire A seul, B seul, ou les deux. Pour **A**, il faut en plus crée
 
 ### Étape 3 : où trouver chaque valeur
 
-| Valeur demandée par MANAGER-IA | Où la trouver chez Meta | Où la mettre dans MANAGER-IA |
+| Valeur demandée par Brij-IA | Où la trouver chez Meta | Où la mettre dans Brij-IA |
 |---|---|---|
 | **Phone number ID** (chiffres, ex. `106540352242922`) | WhatsApp → Configuration de l'API, sous le numéro d'envoi (ne confondez pas avec le *numéro de téléphone* ni avec le *WhatsApp Business Account ID*) | A : `WHATSAPP_PHONE_ID` · B : champ « Identifiant du numéro » |
 | **Numéro WhatsApp** | le numéro lui-même, avec l'indicatif, sans `+` ni espaces : `237677112233` | B : champ « Numéro » |
 | **Jeton d'accès permanent** | voir l'étape 4 ci-dessous | A : `WHATSAPP_TOKEN` · B : champ « Jeton d'accès » |
 | **Secret de l'application** | Paramètres de l'application → **Paramètres → Général** → *Clé secrète de l'application* → **Afficher** (Meta peut redemander votre mot de passe) | A : `META_APP_SECRET` · B : champ « Secret de l'application » |
 | **Jeton de vérification du webhook** | **vous l'inventez** (phrase longue, lettres et chiffres) pour A ; pour B, il est **généré et affiché** par l'écran *Canaux* | A : `META_VERIFY_TOKEN` (et le même chez Meta) · B : à copier chez Meta |
-| **Adresse de rappel (webhook)** | c'est MANAGER-IA qui la fournit (voir l'étape 6) | à coller chez Meta |
+| **Adresse de rappel (webhook)** | c'est Brij-IA qui la fournit (voir l'étape 6) | à coller chez Meta |
 
 ### Étape 4 : le jeton d'accès PERMANENT (10 min)
 
@@ -271,7 +271,7 @@ Pour répondre à de **vrais clients** (et non plus seulement à 5 numéros de t
 1. **WhatsApp → Configuration de l'API → Ajouter un numéro de téléphone** (ou *WhatsApp Manager → Numéros de téléphone*). Le numéro **ne doit pas être inscrit dans l'application WhatsApp classique** (ni WhatsApp Business sur téléphone) : sinon, supprimez d'abord ce compte WhatsApp.
 2. Choisissez le **nom d'affichage** (le nom de votre entreprise, qui doit correspondre à votre site/marque) : Meta l'approuve.
 3. **Vérifiez le numéro** par SMS ou appel (code à 6 chiffres), puis créez un **code PIN à 6 chiffres** (validation en deux étapes) : notez-le.
-4. Mettez à jour dans MANAGER-IA le **Phone number ID** et le **numéro** (ceux du numéro réel, pas ceux du numéro de test).
+4. Mettez à jour dans Brij-IA le **Phone number ID** et le **numéro** (ceux du numéro réel, pas ceux du numéro de test).
 5. **Passez l'application en mode « Live »** (interrupteur en haut du tableau de bord de l'application) et **vérifiez votre entreprise** : *Business Settings → Centre de sécurité → Vérification de l'entreprise* (documents d'immatriculation). Sans cette vérification, le nombre de clients contactés par jour reste limité.
 6. **Moyen de paiement** : *WhatsApp Manager → Paramètres de paiement* : Meta facture ses « conversations ». Vérifiez les tarifs de votre pays sur le site de Meta avant toute campagne.
 
@@ -284,7 +284,7 @@ C'est ce qui permet à Meta d'envoyer chaque message de client à votre serveur.
 2. Chez Meta : **WhatsApp → Configuration** → section **Webhook** → **Modifier** → collez l'**adresse de rappel** et le **jeton de vérification** → **Vérifier et enregistrer**.
    - Si Meta refuse : adresse non https, serveur endormi (réveillez-le en ouvrant `/api/health`), ou jeton différent.
 3. Sous **Champs du webhook**, cliquez **Gérer** et **abonnez le champ `messages`** (c'est lui qui apporte les messages des clients).
-4. Dans MANAGER-IA, cliquez **Tester la connexion** : le nom affiché du numéro doit apparaître.
+4. Dans Brij-IA, cliquez **Tester la connexion** : le nom affiché du numéro doit apparaître.
 
 ### Étape 7 : premier essai (5 min)
 
@@ -295,9 +295,9 @@ C'est ce qui permet à Meta d'envoyer chaque message de client à votre serveur.
 
 ### Étape 8 : les modèles de message (obligatoires pour les relances)
 
-WhatsApp interdit d'écrire à un client **plus de 24 heures après son dernier message**, sauf avec un **modèle approuvé par Meta**. MANAGER-IA en utilise trois (créez-les dans *WhatsApp Manager → Modèles de message → Créer un modèle*, langue **Français**, un nom en minuscules sans espace) :
+WhatsApp interdit d'écrire à un client **plus de 24 heures après son dernier message**, sauf avec un **modèle approuvé par Meta**. Brij-IA en utilise trois (créez-les dans *WhatsApp Manager → Modèles de message → Créer un modèle*, langue **Français**, un nom en minuscules sans espace) :
 
-| Usage dans MANAGER-IA | Catégorie Meta | Texte du modèle (variables `{{1}}`…) |
+| Usage dans Brij-IA | Catégorie Meta | Texte du modèle (variables `{{1}}`…) |
 |---|---|---|
 | **Relance d'un prospect** (2 variables) | Utilitaire ou Marketing | `Bonjour {{1}}, c'est {{2}}. Vous nous avez écrit récemment : souhaitez-vous que nous reprenions votre demande ?` |
 | **Rappel de facture impayée** (4 variables) | Utilitaire | `Bonjour {{1}}, la facture {{2}} de {{4}} présente un reste à payer de {{3}}. Merci de régulariser dès que possible.` |
@@ -305,7 +305,7 @@ WhatsApp interdit d'écrire à un client **plus de 24 heures après son dernier 
 
 1. Meta demande un **exemple** de chaque variable (ex. `Awa`, `F-2026-0007`, `15 000 FCFA`, `Boutique Awa`).
 2. Attendez le statut **Approuvé** (minutes à quelques heures).
-3. Dans MANAGER-IA : **Assistant commercial → Relances → Ajouter un modèle** : saisissez **le nom exact**, la langue, l'usage et le texte (aperçu). Le nombre de variables est contrôlé.
+3. Dans Brij-IA : **Assistant commercial → Relances → Ajouter un modèle** : saisissez **le nom exact**, la langue, l'usage et le texte (aperçu). Le nombre de variables est contrôlé.
 4. Le client qui écrit **STOP** n'est plus jamais relancé.
 
 ### Étape 9 : suivre la qualité et les limites
@@ -362,7 +362,7 @@ WhatsApp interdit d'écrire à un client **plus de 24 heures après son dernier 
 
 ## Connexion WhatsApp en un clic (Embedded Signup de Meta)
 
-**Ce que c'est.** Un bouton « Connecter WhatsApp » dans l'onglet Canaux : une fenêtre de Meta s'ouvre, l'entreprise cliente choisit son compte et son numéro, et MANAGER-IA reçoit un code qu'il échange côté serveur contre un jeton, enregistre le numéro, abonne l'application au compte WhatsApp Business et range les identifiants chiffrés. Le client ne copie plus aucun identifiant. L'outil est gratuit chez Meta (les conversations restent facturées selon les tarifs de Meta). La saisie manuelle reste disponible, repliée sous « Avancé : saisir les identifiants à la main ».
+**Ce que c'est.** Un bouton « Connecter WhatsApp » dans l'onglet Canaux : une fenêtre de Meta s'ouvre, l'entreprise cliente choisit son compte et son numéro, et Brij-IA reçoit un code qu'il échange côté serveur contre un jeton, enregistre le numéro, abonne l'application au compte WhatsApp Business et range les identifiants chiffrés. Le client ne copie plus aucun identifiant. L'outil est gratuit chez Meta (les conversations restent facturées selon les tarifs de Meta). La saisie manuelle reste disponible, repliée sous « Avancé : saisir les identifiants à la main ».
 
 **La fonction est désactivée tant que les variables ne sont pas renseignées** (le bouton n'apparaît pas).
 
@@ -564,14 +564,14 @@ docker run -d --name manager-ia -p 3000:3000 --env-file .env -v manager-ia-data:
 
 Gmail refuse votre mot de passe normal pour ce genre d'usage. Il faut un « mot de passe d'application » :
 1. Activez la **validation en deux étapes** sur votre compte Google (<https://myaccount.google.com/security>).
-2. Allez sur <https://myaccount.google.com/apppasswords>, donnez un nom (ex : « MANAGER-IA ») et créez le mot de passe : Google affiche 16 lettres.
+2. Allez sur <https://myaccount.google.com/apppasswords>, donnez un nom (ex : « Brij-IA ») et créez le mot de passe : Google affiche 16 lettres.
 3. Dans les variables :
    ```
    SMTP_HOST=smtp.gmail.com
    SMTP_PORT=587
    SMTP_USER=votre.adresse@gmail.com
    SMTP_PASS=les16lettres (sans espaces)
-   SMTP_FROM=MANAGER-IA <votre.adresse@gmail.com>
+   SMTP_FROM=Brij-IA <votre.adresse@gmail.com>
    ```
 Gmail limite le nombre d'e-mails par jour (environ 500) : c'est largement suffisant pour démarrer.
 
@@ -587,7 +587,7 @@ WhatsApp n'autorise l'envoi d'un message « à froid » (hors des 24 h après la
    - **Langue** : Français (`fr`)
    - **Corps** (exactement une variable `{{1}}`) :
      ```
-     Notification MANAGER-IA : {{1}} Consultez votre espace administrateur pour la suite.
+     Notification Brij-IA : {{1}} Consultez votre espace administrateur pour la suite.
      ```
    - **Exemple de valeur pour {{1}}** (Meta le demande) : `Nouvelle inscription : Awa (237670000000)`
    - Pas d'en-tête, pas de boutons.

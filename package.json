@@ -1,7 +1,7 @@
 {
   "name": "manager-ia-backend",
   "version": "1.0.0",
-  "description": "Serveur (API) de MANAGER-IA : comptes, abonnements et paiements, espace de travail (stock, clients, RH, comptabilité), assistant IA, WhatsApp / Messenger / Instagram, administration. PostgreSQL (Neon) — hébergeable sur Render.",
+  "description": "Serveur (API) de Brij-IA : comptes, abonnements et paiements, espace de travail (stock, clients, RH, comptabilité), assistant IA, WhatsApp / Messenger / Instagram, administration. PostgreSQL (Neon) — hébergeable sur Render.",
   "main": "src/server.js",
   "private": true,
   "engines": {

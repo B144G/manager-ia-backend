@@ -30,7 +30,7 @@ const addrOf = (v) => String(v || '').replace(/^.*<|>.*$/g, '').trim();
 async function sendViaApi({ to, subject, text, replyTo, fromName, attachments }) {
   const sender = addrOf(config.smtp.from || config.smtp.user);
   if (!isEmail(sender)) throw new Error("Adresse d'expéditeur absente : renseignez SMTP_FROM (adresse validée chez Brevo).");
-  const name = String(fromName || (/^\s*"?([^"<]+?)"?\s*</.exec(config.smtp.from || '') || [])[1] || 'MANAGER-IA').replace(/["<>\r\n]/g, '').slice(0, 80);
+  const name = String(fromName || (/^\s*"?([^"<]+?)"?\s*</.exec(config.smtp.from || '') || [])[1] || 'Brij-IA').replace(/["<>\r\n]/g, '').slice(0, 80);
   const body = { sender: { name, email: sender }, to: [{ email: addrOf(to) }], subject: String(subject || '').slice(0, 300), textContent: String(text || '') };
   if (replyTo && isEmail(addrOf(replyTo))) body.replyTo = { email: addrOf(replyTo) };
   if (attachments && attachments.length) body.attachment = attachments.filter((a) => a && a.content != null).map((a) => ({ name: String(a.filename || 'piece-jointe').slice(0, 120), content: Buffer.from(a.content).toString('base64') }));
@@ -68,7 +68,7 @@ function mailUser(contact, subject, text) {
 
 async function run(type, text) {
   const channels = [];
-  const subject = `[MANAGER-IA] ${text}`.slice(0, 150);
+  const subject = `[Brij-IA] ${text}`.slice(0, 150);
 
   try {
     if (await sendMail({ to: config.admin.email, subject, text })) channels.push('email');

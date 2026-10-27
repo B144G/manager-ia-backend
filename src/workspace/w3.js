@@ -53,7 +53,7 @@ async function push(orgId, userId, kind, text, ref = '') {
     if (!userId) return;
     await db.prepare('INSERT INTO notices (org_id, user_id, kind, text, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(orgId, userId, kind, oneLine(text, 300), String(ref).slice(0, 60), nowISO());
     const u = await db.prepare('SELECT contact FROM users WHERE id = ?').get(userId);
-    if (u) require('../services/notify').mailUser(u.contact, 'MANAGER-IA : ' + oneLine(text, 80), text);
+    if (u) require('../services/notify').mailUser(u.contact, 'Brij-IA : ' + oneLine(text, 80), text);
   } catch (e) { log.warn('Notification interne :', oneLine(e.message, 120)); }
 }
 /** Prévient tous les membres dont le rôle est au moins `min`. */

@@ -21,8 +21,8 @@ async function runOnce() {
     await db.prepare('UPDATE users SET reminded_for = ? WHERE id = ?').run(u.plan_expires, u.id);
     mailUser(
       u.contact,
-      'Votre offre MANAGER-IA expire bientôt',
-      `Bonjour ${u.name},\n\nVotre offre ${u.plan} expire le ${fmtDate(u.plan_expires)}. Pour continuer sans interruption, pensez à la renouveler depuis votre compte.\n\nL'équipe MANAGER-IA`
+      'Votre offre Brij-IA expire bientôt',
+      `Bonjour ${u.name},\n\nVotre offre ${u.plan} expire le ${fmtDate(u.plan_expires)}. Pour continuer sans interruption, pensez à la renouveler depuis votre compte.\n\nL'équipe Brij-IA`
     );
     notify('rappel', `Offre ${u.plan} de ${u.name} (${u.contact}) expire le ${fmtDate(u.plan_expires)}.`);
   }

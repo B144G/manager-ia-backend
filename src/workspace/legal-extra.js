@@ -160,7 +160,7 @@ router.post('/templates/:id/duplicate', async (req, res) => {
   res.status(201).json({ id: String(nid) });
 });
 const ownTemplate = async (req) => {
-  if (String(req.params.id).startsWith('b:')) throw new HttpError(403, 'Ce modèle est fourni par MANAGER-IA : dupliquez-le pour en faire votre propre version.');
+  if (String(req.params.id).startsWith('b:')) throw new HttpError(403, 'Ce modèle est fourni par Brij-IA : dupliquez-le pour en faire votre propre version.');
   const r = await db.prepare('SELECT * FROM legal_templates WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
   if (!r) throw new HttpError(404, 'Modèle introuvable.');
   return r;

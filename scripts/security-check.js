@@ -9,7 +9,7 @@ const central = require('../src/security');
   await db.ready;
   const r = await central.configcheck.run();
   const mark = { ok: '  OK    ', warn: '  AMÉLIORER', bad: '  DANGER ' };
-  console.log('\nContrôle de sécurité MANAGER-IA\n');
+  console.log('\nContrôle de sécurité Brij-IA\n');
   for (const x of r.items) console.log(`${mark[x.level]} ${x.title}\n          ${x.text}`);
   const v = await central.audit.verify();
   console.log(`\n  ${v.ok ? 'OK    ' : 'DANGER '} Journal d'audit : ${v.ok ? `${v.checked} ligne(s), chaîne intacte` : `chaîne rompue à la ligne ${v.brokenAt}`}`);

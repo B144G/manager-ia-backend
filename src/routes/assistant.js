@@ -14,7 +14,7 @@ router.post('/assistant', limits.assistantMinute, daily, asyncHandler(async (req
   if (!claude.isConfigured()) throw new HttpError(503, 'Assistant indisponible');
   const b = req.body || {};
   const extra = knowledge.load('site');
-  let system = claude.SITE_PROMPT + (extra ? `\n\nConnaissances supplémentaires fournies par MANAGER-IA :\n${extra}` : '');
+  let system = claude.SITE_PROMPT + (extra ? `\n\nConnaissances supplémentaires fournies par Brij-IA :\n${extra}` : '');
   let messages;
 
   if (b.mode === 'app') {

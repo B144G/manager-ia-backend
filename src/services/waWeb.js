@@ -138,7 +138,7 @@ function createManager(opts = {}) {
     }
     const gen = ++s.gen;
     const cfg = { auth: state, logger: SILENT, markOnlineOnConnect: false, syncFullHistory: false, generateHighQualityLinkPreview: false, getMessage: async () => undefined,
-      browser: l.Browsers && l.Browsers.ubuntu ? l.Browsers.ubuntu('Chrome') : ['MANAGER-IA', 'Chrome', '1.0'] };
+      browser: l.Browsers && l.Browsers.ubuntu ? l.Browsers.ubuntu('Chrome') : ['Brij-IA', 'Chrome', '1.0'] };
     if (version) cfg.version = version;
     const sock = makeSock(l)(cfg);
     s.sock = sock;

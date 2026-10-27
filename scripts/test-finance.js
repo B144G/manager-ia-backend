@@ -225,7 +225,7 @@ async function main() {
     check('9 écritures de test enregistrées', sts.every((s) => s === 201), sts);
     r = await owner('GET', `${F}/liasse?year=2026`);
     const L = r.json;
-    check('mention honnête présente sur la liasse', /Document de travail préparé par MANAGER-IA, à faire valider par un expert-comptable avant tout dépôt officiel/.test(L.notice), L.notice);
+    check('mention honnête présente sur la liasse', /Document de travail préparé par Brij-IA, à faire valider par un expert-comptable avant tout dépôt officiel/.test(L.notice), L.notice);
     const sig = Object.fromEntries(L.sig.lines.map((x) => [x.key, x.amount]));
     check('marge commerciale 600 000, valeur ajoutée 590 000', sig.margeCommerciale === 600000 && sig.valeurAjoutee === 590000, sig);
     check("excédent brut d'exploitation 420 000, résultat d'exploitation 390 000", sig.excedentBrutExploitation === 420000 && sig.resultatExploitation === 390000, sig);

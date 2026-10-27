@@ -1,5 +1,5 @@
 'use strict';
-// Sous-application « Intégrations » (administrateurs) : clés d'API et webhooks sortants pour relier MANAGER-IA à Zapier, Make, n8n, un site web, etc.
+// Sous-application « Intégrations » (administrateurs) : clés d'API et webhooks sortants pour relier Brij-IA à Zapier, Make, n8n, un site web, etc.
 const crypto = require('crypto');
 const express = require('express');
 const { db, nowISO } = require('../db');
@@ -44,7 +44,7 @@ router.post('/webhooks', async (req, res) => {
   const secret = crypto.randomBytes(24).toString('hex');
   const id = (await db.prepare('INSERT INTO webhooks_out (org_id, url, events, secret, created_at) VALUES (?, ?, ?, ?, ?)').run(req.org.id, String(b.url).trim(), JSON.stringify(events), secret, nowISO())).lastInsertRowid;
   await A.logActivity(req.org.id, req.user.id, 'integrations', 'Webhook ajouté');
-  res.status(201).json({ id: Number(id), secret, note: "Conservez ce secret : il sert à vérifier que les messages viennent bien de MANAGER-IA (en-tête X-MIA-Signature). Il ne sera plus affiché." });
+  res.status(201).json({ id: Number(id), secret, note: "Conservez ce secret : il sert à vérifier que les messages viennent bien de Brij-IA (en-tête X-MIA-Signature). Il ne sera plus affiché." });
 });
 router.put('/webhooks/:id', async (req, res) => {
   const h = await db.prepare('SELECT * FROM webhooks_out WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
@@ -72,7 +72,7 @@ router.post('/deliveries/:id/retry', asyncHandler(async (req, res) => {
 router.post('/webhooks/:id/test', asyncHandler(async (req, res) => {
   const h = await db.prepare('SELECT * FROM webhooks_out WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
   if (!h) throw new HttpError(404, 'Webhook introuvable.');
-  const r = await wh.deliver(h, 'test', { message: 'Test depuis MANAGER-IA', organisation: req.org.name });
+  const r = await wh.deliver(h, 'test', { message: 'Test depuis Brij-IA', organisation: req.org.name });
   res.json({ ok: r.ok, status: r.status });
 }));
 

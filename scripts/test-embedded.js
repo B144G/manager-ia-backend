@@ -50,7 +50,7 @@ function fakeGraph() {
         if (mode.registerAlready) { res.statusCode = 400; return res.end(JSON.stringify({ error: { message: 'Phone number is already registered', code: 100 } })); }
         return res.end(JSON.stringify({ success: true }));
       }
-      if ((m = /^\/(\d+)\/subscribed_apps$/.exec(p))) { seen.subs.push({ method: req.method, waba: m[1], auth }); return res.end(req.method === 'POST' ? JSON.stringify({ success: true }) : JSON.stringify({ data: [{ whatsapp_business_api_data: { name: 'Manager-ia' } }] })); }
+      if ((m = /^\/(\d+)\/subscribed_apps$/.exec(p))) { seen.subs.push({ method: req.method, waba: m[1], auth }); return res.end(req.method === 'POST' ? JSON.stringify({ success: true }) : JSON.stringify({ data: [{ whatsapp_business_api_data: { name: 'Brij-IA' } }] })); }
       if ((m = /^\/(\d+)\/messages$/.exec(p)) && req.method === 'POST') { const j = JSON.parse(b || '{}'); seen.sent.push({ phone: m[1], to: j.to, body: (j.text || {}).body }); return res.end(JSON.stringify({ messages: [{ id: 'wamid.out' }] })); }
       if ((m = /^\/(\d+)$/.exec(p))) return res.end(JSON.stringify({ display_phone_number: '+237 6' + m[1].slice(-8), verified_name: 'Test' }));
       res.statusCode = 404; return res.end('{}');

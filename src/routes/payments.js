@@ -94,7 +94,7 @@ router.post('/payments/initiate', requireUser, limits.paymentsInit, asyncHandler
     try {
       const c = await campay.collect({
         amount, from: phone, externalReference: reference,
-        description: `MANAGER-IA offre ${plan.name} (${reference})`,
+        description: `Brij-IA offre ${plan.name} (${reference})`,
       });
       providerRef = c.reference;
     } catch (e) {

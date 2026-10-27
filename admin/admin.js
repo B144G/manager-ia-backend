@@ -1,5 +1,5 @@
 'use strict';
-// Administration MANAGER-IA : aucune dépendance externe. Tout texte inséré passe par textContent (jamais de HTML injecté) ;
+// Administration Brij-IA : aucune dépendance externe. Tout texte inséré passe par textContent (jamais de HTML injecté) ;
 // aucune balise <style> ni attribut style (CSP stricte) : les tailles dynamiques passent par le CSSOM.
 (function () {
   const $ = (id) => document.getElementById(id);
@@ -104,7 +104,7 @@
     const btn = (k, l) => h('button', { type: 'button', class: S.view === k ? 'on' : '', 'aria-current': S.view === k ? 'page' : null, onclick: () => go(k) }, icon(k), h('span', { class: 'nl' }, l), badges[k] ? h('span', { class: 'nb' }, String(badges[k])) : null);
     $('side').replaceChildren(
       h('div', { class: 'brand' }, h('a', { class: 'logo', href: '/admin' }, 'MANAGER', h('b', {}, '-IA')), h('span', { class: 'tag' }, 'ADMIN')),
-      h('div', { class: 'org' }, icon('shield'), h('div', {}, h('b', {}, 'Administration'), h('small', {}, 'Plateforme MANAGER-IA'))),
+      h('div', { class: 'org' }, icon('shield'), h('div', {}, h('b', {}, 'Administration'), h('small', {}, 'Plateforme Brij-IA'))),
       h('div', { class: 'lab' }, 'GESTION'),
       h('nav', { class: 'nav', 'aria-label': 'Administration' }, NAV.map(([k, l]) => btn(k, l)), h('hr'), btn('settings', 'Paramètres')),
       h('div', { class: 'me' }, h('span', { class: 'av gold' }, initials(S.admin)), h('div', { class: 't' }, h('b', {}, S.admin), h('small', {}, 'Administrateur')),
@@ -258,7 +258,7 @@
 
   function contactLinks(contact, text) {
     const c = String(contact || '');
-    if (c.includes('@')) return h('a', { class: 'bt out sm', href: 'mailto:' + c + '?subject=' + encodeURIComponent('MANAGER-IA') + '&body=' + encodeURIComponent(text) }, 'E-mail');
+    if (c.includes('@')) return h('a', { class: 'bt out sm', href: 'mailto:' + c + '?subject=' + encodeURIComponent('Brij-IA') + '&body=' + encodeURIComponent(text) }, 'E-mail');
     if (digits(c).length >= 8) return h('a', { class: 'bt out sm', target: '_blank', rel: 'noopener', href: 'https://wa.me/' + digits(c) + '?text=' + encodeURIComponent(text) }, 'WhatsApp');
     return null;
   }

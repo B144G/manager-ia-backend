@@ -108,7 +108,7 @@ function icsEvent(org, a) {
   const st = a.status === 'confirmed' || a.status === 'done' ? 'CONFIRMED' : a.status === 'cancelled' ? 'CANCELLED' : 'TENTATIVE';
   const lines = ['BEGIN:VEVENT', `UID:appt-${a.id}-${org.id}@manager-ia`, `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')}`, `LAST-MODIFIED:${utcStamp(a.updated_at.slice(0, 10), a.updated_at.slice(11, 16), 60)}`,
     `DTSTART:${utcStamp(a.date, a.time)}`, `DTEND:${utcStamp(a.date, a.time, a.duration)}`, `SUMMARY:${icsEsc(`Rendez-vous : ${a.customer || 'client'}${a.purpose ? ' - ' + a.purpose : ''}`)}`,
-    `DESCRIPTION:${icsEsc([a.customer && `Client : ${a.customer}`, a.phone && `Téléphone : ${a.phone}`, a.channel && `Canal : ${a.channel}`, a.note, 'Géré avec MANAGER-IA'].filter(Boolean).join('\n'))}`, `STATUS:${st}`, 'TRANSP:OPAQUE'];
+    `DESCRIPTION:${icsEsc([a.customer && `Client : ${a.customer}`, a.phone && `Téléphone : ${a.phone}`, a.channel && `Canal : ${a.channel}`, a.note, 'Géré avec Brij-IA'].filter(Boolean).join('\n'))}`, `STATUS:${st}`, 'TRANSP:OPAQUE'];
   if (a.place) lines.push(`LOCATION:${icsEsc(a.place)}`);
   lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:Rendez-vous dans 1 heure', 'TRIGGER:-PT1H', 'END:VALARM', 'END:VEVENT');
   return lines.map(fold).join('\r\n');
@@ -117,7 +117,7 @@ function icsEvent(org, a) {
 async function icsFeed(org) {
   const from = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10); const to = new Date(Date.now() + 180 * 86400000).toISOString().slice(0, 10);
   const rows = await db.prepare(`SELECT a.*, c.name AS customer, c.phone, ch.channel FROM appointments a LEFT JOIN customers c ON c.id = a.customer_id LEFT JOIN chats ch ON ch.id = a.chat_id WHERE a.org_id = ? AND a.date >= ? AND a.date <= ? ORDER BY a.date, a.time`).all(org.id, from, to);
-  return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//MANAGER-IA//Rendez-vous//FR', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', `X-WR-CALNAME:${icsEsc(`Rendez-vous - ${org.name}`)}`, 'X-WR-TIMEZONE:Africa/Douala', 'REFRESH-INTERVAL;VALUE=DURATION:PT1H', 'X-PUBLISHED-TTL:PT1H', ...rows.map((a) => icsEvent(org, a)), 'END:VCALENDAR'].map((l) => (l.includes('\r\n') ? l : fold(l))).join('\r\n') + '\r\n';
+  return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Brij-IA//Rendez-vous//FR', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', `X-WR-CALNAME:${icsEsc(`Rendez-vous - ${org.name}`)}`, 'X-WR-TIMEZONE:Africa/Douala', 'REFRESH-INTERVAL;VALUE=DURATION:PT1H', 'X-PUBLISHED-TTL:PT1H', ...rows.map((a) => icsEvent(org, a)), 'END:VCALENDAR'].map((l) => (l.includes('\r\n') ? l : fold(l))).join('\r\n') + '\r\n';
 }
 
 router.get('/calendar', A.need('admin'), (req, res) => {
@@ -134,7 +134,7 @@ router.get('/appointments/:id/ics', async (req, res) => {
   const a = await db.prepare('SELECT a.*, c.name AS customer, c.phone, ch.channel FROM appointments a LEFT JOIN customers c ON c.id = a.customer_id LEFT JOIN chats ch ON ch.id = a.chat_id WHERE a.id = ? AND a.org_id = ?').get(A.id(req.params.id), req.org.id);
   if (!a) throw new HttpError(404, 'Rendez-vous introuvable.');
   res.set({ 'Content-Type': 'text/calendar; charset=utf-8', 'Content-Disposition': `attachment; filename="rendez-vous-${a.date}.ics"`, 'Cache-Control': 'no-store' });
-  res.send(['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//MANAGER-IA//Rendez-vous//FR', icsEvent(req.org, a), 'END:VCALENDAR'].join('\r\n') + '\r\n');
+  res.send(['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Brij-IA//Rendez-vous//FR', icsEvent(req.org, a), 'END:VCALENDAR'].join('\r\n') + '\r\n');
 });
 
 // ---------- Rappels automatiques la veille ----------

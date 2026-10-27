@@ -30,7 +30,7 @@ Règles d'action :
 
 const stable = () => {
   const k = knowledge.load('public');
-  return k ? `${RULES}\n\nÉducation (fournie par MANAGER-IA) :\n${k}` : RULES;
+  return k ? `${RULES}\n\nÉducation (fournie par Brij-IA) :\n${k}` : RULES;
 };
 
 function dataBlock({ org, catalog, chat, customer, today, busy, weekday }) {

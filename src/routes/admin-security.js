@@ -39,7 +39,7 @@ router.post('/2fa/setup', guard, async (req, res) => {
   if (Number(t.enabled)) throw new HttpError(400, 'La double authentification est déjà active.');
   const secret = central.totp.newSecret();
   await db.prepare('UPDATE admin_2fa SET totp_secret = ?, totp_step = 0 WHERE id = 1').run(central.totp.seal(secret));
-  res.json({ secret, uri: central.totp.uri(config.admin.username || 'admin', secret, 'MANAGER-IA Admin') });
+  res.json({ secret, uri: central.totp.uri(config.admin.username || 'admin', secret, 'Brij-IA Admin') });
 });
 router.post('/2fa/enable', guard, async (req, res) => {
   const t = await db.prepare('SELECT * FROM admin_2fa WHERE id = 1').get();

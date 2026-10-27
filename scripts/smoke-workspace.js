@@ -62,7 +62,7 @@ function fakeClaude(port) {
         if (/^\/graph\/IMG/.test(req.url)) return res.end(JSON.stringify({ url: `http://127.0.0.1:${port}/media/img` }));
         if (/^\/graph\/PDF/.test(req.url)) return res.end(JSON.stringify({ url: `http://127.0.0.1:${port}/media/pdf` }));
         if (/^\/graph\/MEDIA/.test(req.url)) return res.end(JSON.stringify({ url: `http://127.0.0.1:${port}/media/1` }));
-        if (/\/subscribed_apps$/.test(req.url)) { (seen.subs = seen.subs || []).push({ method: req.method, url: req.url, auth }); return res.end(req.method === 'POST' ? JSON.stringify({ success: true }) : JSON.stringify({ data: [{ whatsapp_business_api_data: { name: 'Manager-ia' } }] })); }
+        if (/\/subscribed_apps$/.test(req.url)) { (seen.subs = seen.subs || []).push({ method: req.method, url: req.url, auth }); return res.end(req.method === 'POST' ? JSON.stringify({ success: true }) : JSON.stringify({ data: [{ whatsapp_business_api_data: { name: 'Brij-IA' } }] })); }
         return res.end(JSON.stringify({ display_phone_number: '+237 677 11 22 33', verified_name: 'Boutique Awa' }));
       }
       if (req.url.includes('/audio/speech')) { const jj = JSON.parse(b || '{}'); (seen.tts = seen.tts || []).push({ format: jj.response_format, input: jj.input, voice: jj.voice, auth: req.headers.authorization }); res.setHeader('content-type', 'audio/ogg'); return res.end(jj.response_format === 'aac' ? Buffer.concat([Buffer.from([0xff, 0xf1]), Buffer.alloc(80, 3)]) : Buffer.concat([Buffer.from('OggS'), Buffer.alloc(80, 2)])); }
@@ -625,7 +625,7 @@ async function main() {
     check('e-mail envoyé au client avec une pièce jointe', r.status === 200 && r.json.sentToday === 1 && r.json.limitPerDay === 5, r.json);
     await sleep(400);
     const got = mailbox.find((m) => /marie@exemple\.com/.test(m) && /Votre devis/.test(m));
-    check('e-mail reçu : destinataire, objet sans injection d\'en-tête, signature, pièce jointe PNG', got && /^To: .*marie@exemple\.com/m.test(got) && !/^Bcc:/mi.test(got) && /avec MANAGER-IA/.test(got) && /Boutique Awa/.test(got) && /Content-Type: image\/png/i.test(got) && /Reply-To:/i.test(got), got && got.slice(0, 600));
+    check('e-mail reçu : destinataire, objet sans injection d\'en-tête, signature, pièce jointe PNG', got && /^To: .*marie@exemple\.com/m.test(got) && !/^Bcc:/mi.test(got) && /avec Brij-IA/.test(got) && /Boutique Awa/.test(got) && /Content-Type: image\/png/i.test(got) && /Reply-To:/i.test(got), got && got.slice(0, 600));
     r = await staff('GET', M);
     check('journal des envois et fichiers', r.json.enabled === true && r.json.outbox.length === 1 && r.json.outbox[0].status === 'sent' && r.json.files.length === 1 && r.json.sentToday === 1, r.json);
     const raw0 = await pgt.open();
@@ -760,7 +760,7 @@ async function main() {
     r = await owner('PUT', `${SL}/whatsapp`, { wabaId: '1432309911579140' });
     check('WhatsApp : identifiant du compte enregistré', r.status === 200 && r.json.wabaId === '1432309911579140' && r.json.connected, r.json);
     r = await owner('POST', `${SL}/whatsapp/subscribe`);
-    check('WhatsApp : abonnement de l\'application au compte (jeton envoyé, liste renvoyée)', r.status === 200 && r.json.subscribed === true && r.json.apps.includes('Manager-ia') && fake.seen.subs && fake.seen.subs[0].method === 'POST' && /1432309911579140\/subscribed_apps/.test(fake.seen.subs[0].url) && /^Bearer /.test(fake.seen.subs[0].auth), [r.json, fake.seen.subs]);
+    check('WhatsApp : abonnement de l\'application au compte (jeton envoyé, liste renvoyée)', r.status === 200 && r.json.subscribed === true && r.json.apps.includes('Brij-IA') && fake.seen.subs && fake.seen.subs[0].method === 'POST' && /1432309911579140\/subscribed_apps/.test(fake.seen.subs[0].url) && /^Bearer /.test(fake.seen.subs[0].auth), [r.json, fake.seen.subs]);
     let w = await fetch(`${base}${WA}?hub.mode=subscribe&hub.verify_token=${verifyTok}&hub.challenge=CH123`);
     check('webhook : vérification par Meta (jeton correct) -> renvoie le défi', w.status === 200 && (await w.text()) === 'CH123');
     w = await fetch(`${base}${WA}?hub.mode=subscribe&hub.verify_token=mauvais&hub.challenge=CH123`);
@@ -816,7 +816,7 @@ async function main() {
     check('réponse humaine réservée aux responsables -> 403', r.status === 403, r.json);
     r = await owner('POST', `${SL}/chats/${hc.id}/reply`, { text: 'Bonjour, ici le responsable. Nous étudions votre demande.' });
     await waitFor(() => sent() >= 7);
-    check('un responsable écrit au client sur WhatsApp depuis MANAGER-IA', r.status === 200 && fake.seen.wa[6].to === '237611223344' && /responsable/.test(fake.seen.wa[6].body), [r.json, fake.seen.wa[6]]);
+    check('un responsable écrit au client sur WhatsApp depuis Brij-IA', r.status === 200 && fake.seen.wa[6].to === '237611223344' && /responsable/.test(fake.seen.wa[6].body), [r.json, fake.seen.wa[6]]);
     r = await owner('GET', `${SL}/chats/${hc.id}`);
     check('la réponse humaine est conservée dans la conversation', r.json.messages.some((m) => m.role === 'staff' && /responsable/.test(m.content)), r.json.messages.map((m) => m.role));
     const rawDb2 = await pgt.open();
@@ -1145,7 +1145,7 @@ async function main() {
     const igChat = r.json.chats.find((c) => c.channel === 'instagram' && c.contact === '6661001');
     check('conversations Messenger et Instagram listées avec leur canal et la campagne', msChat && igChat && msChat.campaign === 'insta-oct', r.json.chats.map((c) => [c.channel, c.contact]));
 
-    // L'IA se tait après passage à un humain, et un responsable répond depuis MANAGER-IA
+    // L'IA se tait après passage à un humain, et un responsable répond depuis Brij-IA
     mw = await mpost(mmsg('page', PAGE, '5551001', 'm.8', { text: 'HUMAIN je veux une remise' }));
     await waitFor(() => msent() >= 4);
     const mcalls2 = fake.seen.publicCalls;
@@ -1154,7 +1154,7 @@ async function main() {
     check('Messenger : après passage à un conseiller, l\'IA se tait', msent() === 4 && fake.seen.publicCalls === mcalls2, [msent(), fake.seen.publicCalls, mcalls2]);
     r = await owner('POST', `${SL}/chats/${msChat.id}/reply`, { text: 'Bonjour, ici le responsable.' });
     await waitFor(() => msent() >= 5);
-    check('un responsable répond sur Messenger depuis MANAGER-IA', r.status === 200 && fake.seen.ms[4].to === '5551001' && /responsable/.test(fake.seen.ms[4].text), [r.json, fake.seen.ms[4]]);
+    check('un responsable répond sur Messenger depuis Brij-IA', r.status === 200 && fake.seen.ms[4].to === '5551001' && /responsable/.test(fake.seen.ms[4].text), [r.json, fake.seen.ms[4]]);
     r = await owner('POST', `${WO}/chats/${msChat.id}/template`, { templateId: 1, params: [] });
     check('les modèles WhatsApp ne s\'appliquent pas à Messenger -> 404', r.status === 404, r.json);
 
@@ -1241,7 +1241,7 @@ async function main() {
     const vx_m6 = msent();
     r = await owner('POST', `${SL}/chats/${vx_igC.id}/send-media`, { itemId: robeId, kind: 'image' });
     await waitFor(() => msent() >= vx_m6 + 1);
-    check('un responsable envoie une photo sur Instagram depuis MANAGER-IA', r.status === 200 && fake.seen.ms.slice(vx_m6).some((x) => x.attachment && x.attachment.type === 'image'), r.json);
+    check('un responsable envoie une photo sur Instagram depuis Brij-IA', r.status === 200 && fake.seen.ms.slice(vx_m6).some((x) => x.attachment && x.attachment.type === 'image'), r.json);
 
     // Délai de réponse choisi par l'organisation
     r = await owner('PUT', vx_SS, { replyDelay: 200 });

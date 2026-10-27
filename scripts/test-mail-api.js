@@ -20,7 +20,7 @@ const check = (name, cond, extra) => { if (cond) { passed++; console.log('  OK  
     });
   });
   await new Promise((ok) => srv.listen(port, '127.0.0.1', ok));
-  Object.assign(process.env, { BREVO_API_KEY: 'cle-de-test', MAIL_API_URL: `http://127.0.0.1:${port}/v3`, SMTP_FROM: 'MANAGER-IA <contact@exemple.com>', SMTP_HOST: '', DATABASE_URL: 'pglite://memory', JWT_SECRET: 'secret-de-test-secret-de-test-secret-de-test-1234', NODE_ENV: 'test' });
+  Object.assign(process.env, { BREVO_API_KEY: 'cle-de-test', MAIL_API_URL: `http://127.0.0.1:${port}/v3`, SMTP_FROM: 'Brij-IA <contact@exemple.com>', SMTP_HOST: '', DATABASE_URL: 'pglite://memory', JWT_SECRET: 'secret-de-test-secret-de-test-secret-de-test-1234', NODE_ENV: 'test' });
   const notify = require('../src/services/notify');
 
   console.log('E-mail par API web');
@@ -29,7 +29,7 @@ const check = (name, cond, extra) => { if (cond) { passed++; console.log('  OK  
   const r = seen[0];
   check('adresse du service', r && r.url === '/v3/smtp/email', r && r.url);
   check('clé envoyée dans l\'en-tête api-key', r && r.key === 'cle-de-test');
-  check('expéditeur repris de SMTP_FROM', r && r.body.sender.email === 'contact@exemple.com' && r.body.sender.name === 'MANAGER-IA', r && r.body.sender);
+  check('expéditeur repris de SMTP_FROM', r && r.body.sender.email === 'contact@exemple.com' && r.body.sender.name === 'Brij-IA', r && r.body.sender);
   check('destinataire, sujet et texte', r && r.body.to[0].email === 'client@exemple.com' && r.body.subject === 'Votre code' && r.body.textContent === 'Code : 123456');
   await notify.sendMail({ to: 'x@exemple.com', subject: 'PJ', text: 't', replyTo: 'a@exemple.com', fromName: 'Boutique Awa', attachments: [{ filename: 'facture.pdf', content: Buffer.from('%PDF-1.4') }] });
   const r2 = seen[1];

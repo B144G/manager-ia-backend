@@ -215,9 +215,9 @@ async function main() {
     const types = (r.json.notifications || []).map((n) => n.type);
     check('notifications enregistrées', ['inscription', 'contact', 'paiement_a_valider', 'paiement_confirme'].every((t) => types.includes(t)), types);
     r = await anon('GET', '/admin');
-    check('page /admin servie', r.status === 200 && r.text.includes('Administration MANAGER-IA') && /content-security-policy/i.test([...r.headers.keys()].join(',')));
+    check('page /admin servie', r.status === 200 && r.text.includes('Administration Brij-IA') && /content-security-policy/i.test([...r.headers.keys()].join(',')));
     r = await anon('GET', '/admin/admin.js');
-    check('/admin/admin.js servi', r.status === 200 && r.text.includes('MANAGER-IA'));
+    check('/admin/admin.js servi', r.status === 200 && r.text.includes('Brij-IA'));
 
     console.log('Sécurité');
     r = await anon('POST', '/api/contact', { name: 'X Y', message: 'test' }, { Origin: 'https://site-pirate.example' });

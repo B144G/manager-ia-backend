@@ -463,7 +463,7 @@ async function main() {
   ]) await post('/legal/obligations', { kind, title, dueDate, recurrenceMonths, notes, responsibleId: U.awa }, 'obligations');
   await post('/legal/disputes', { kind: 'claim', title: 'Réclamation sur une commande de robes', counterparty: 'Cliente Aïcha Traoré', amount: 54000, description: 'La taille livrée ne correspond pas à la commande.', nextStep: 'Proposer un échange sous 48 h', nextDate: plus(9), assigneeId: U.brice }, 'dossiers juridiques');
   await post('/legal/disputes', { kind: 'dispute', title: 'Retard de livraison de dentelle', counterparty: 'Dentelles du Wouri', amount: 140000, description: 'Livraison attendue depuis 3 semaines.', status: 'in_progress', nextStep: 'Mise en demeure amiable par écrit', nextDate: plus(14) }, 'dossiers juridiques');
-  await post('/legal/privacy', { dataKind: 'Nom et téléphone des clientes', people: 'Clientes et prospects', storedWhere: 'Fichier clients de MANAGER-IA', purpose: 'Suivi des commandes et relances', retention: '3 ans après le dernier achat', sharedWith: 'Livreurs (adresse et téléphone)' }, 'registre de données');
+  await post('/legal/privacy', { dataKind: 'Nom et téléphone des clientes', people: 'Clientes et prospects', storedWhere: 'Fichier clients de Brij-IA', purpose: 'Suivi des commandes et relances', retention: '3 ans après le dernier achat', sharedWith: 'Livreurs (adresse et téléphone)' }, 'registre de données');
   await post('/legal/privacy', { dataKind: 'Mensurations pour les tenues sur mesure', people: 'Clientes', storedWhere: 'Carnet de l\'atelier', purpose: 'Confection', retention: '2 ans', sharedWith: 'Aucun' }, 'registre de données');
 
   // ---------- Mémoire de l'entreprise ----------
@@ -485,7 +485,7 @@ async function main() {
   pos.atel = (await post('/structure/positions', { title: 'Responsable de l\'atelier', description: 'Planning de confection et qualité.', parentId: pos.dir }, 'postes')).id;
   await post('/structure/positions', { title: 'Couturière / couturier', description: 'Coupe, couture et broderie.', parentId: pos.atel }, 'postes');
   await post('/structure/positions', { title: 'Livreur', description: 'Livraisons à Douala.', parentId: pos.ger }, 'postes');
-  await post('/structure/processes', { title: 'Prise de commande sur mesure', category: 'Ventes', steps: ['Accueillir la cliente et écouter son besoin', 'Prendre les mesures et les noter sur la fiche', 'Choisir le tissu et le modèle', 'Annoncer le prix et le délai, encaisser 50 % d\'acompte', 'Créer le devis dans MANAGER-IA', 'Lancer la confection'] }, 'procédures');
+  await post('/structure/processes', { title: 'Prise de commande sur mesure', category: 'Ventes', steps: ['Accueillir la cliente et écouter son besoin', 'Prendre les mesures et les noter sur la fiche', 'Choisir le tissu et le modèle', 'Annoncer le prix et le délai, encaisser 50 % d\'acompte', 'Créer le devis dans Brij-IA', 'Lancer la confection'] }, 'procédures');
   await post('/structure/processes', { title: 'Clôture de caisse du soir', category: 'Finances', steps: ['Compter les espèces', 'Comparer avec le total des ventes du jour', 'Noter l\'écart éventuel', 'Mettre les espèces dans le coffre', 'Saisir le total dans le budget'] }, 'procédures');
   await post('/structure/processes', { title: 'Réception d\'une livraison de tissus', category: 'Stock', steps: ['Vérifier le bon de livraison', 'Compter les coupons et contrôler les motifs', 'Enregistrer l\'entrée dans le stock', 'Ranger par famille d\'article'] }, 'procédures');
 

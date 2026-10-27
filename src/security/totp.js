@@ -33,7 +33,7 @@ function verify(secret, token, lastStep = 0, t = Date.now()) {
   }
   return 0;
 }
-const uri = (label, secret, issuer = 'MANAGER-IA') => `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(label)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=${PERIOD}`;
+const uri = (label, secret, issuer = 'Brij-IA') => `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(label)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=${PERIOD}`;
 
 const seal = (secret) => vault.encrypt(secret);
 const unseal = (blob) => vault.decrypt(blob);

@@ -371,7 +371,7 @@ router.post('/documents/:id/email', A.need('manager'), limits.make(60 * 1000, 8,
   const replyTo = [req.user.contact, owner && owner.contact].find((c) => isEmail(c));
   const fname = `${label.toLowerCase()}-${d.number}.html`;
   let status = 'sent'; let error = '';
-  try { await sendMail({ to: cu.email, subject, text: `${body}\n\n—\n${req.org.name}\nMessage envoyé avec MANAGER-IA`, replyTo, fromName: req.org.name, attachments: [{ filename: fname, content: Buffer.from(D.html(p), 'utf8'), contentType: 'text/html; charset=utf-8' }] }); } catch (e) { status = 'failed'; error = oneLine(e.message, 200); log.warn('E-mail de facture non envoyé :', error); }
+  try { await sendMail({ to: cu.email, subject, text: `${body}\n\n—\n${req.org.name}\nMessage envoyé avec Brij-IA`, replyTo, fromName: req.org.name, attachments: [{ filename: fname, content: Buffer.from(D.html(p), 'utf8'), contentType: 'text/html; charset=utf-8' }] }); } catch (e) { status = 'failed'; error = oneLine(e.message, 200); log.warn('E-mail de facture non envoyé :', error); }
   await db.prepare('INSERT INTO outbox (org_id, user_id, customer_id, to_email, subject, body, attachments, status, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, req.user.id, cu.id, cu.email, subject, body, JSON.stringify([fname]), status, error, nowISO());
   if (status === 'failed') throw new HttpError(502, "Le message n'a pas pu partir. Vérifiez l'adresse e-mail du client puis réessayez.");
   await A.logActivity(req.org.id, req.user.id, 'crm', `${label} ${d.number} envoyé(e) par e-mail à ${cu.name}`);

@@ -1,4 +1,4 @@
-# Image Docker de MANAGER-IA (Node 20). Les données sont dans PostgreSQL (Neon) : le conteneur ne garde rien, il peut être remplacé à tout moment.
+# Image Docker de Brij-IA (Node 20). Les données sont dans PostgreSQL (Neon) : le conteneur ne garde rien, il peut être remplacé à tout moment.
 FROM node:20-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
