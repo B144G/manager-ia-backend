@@ -3,6 +3,7 @@
 const express = require('express');
 const { db, nowISO } = require('../db');
 const A = require('./access');
+const W = require('./w3');
 const { HttpError } = require('../util');
 
 const router = express.Router({ mergeParams: true });
@@ -11,7 +12,7 @@ const TSTATUS = ['todo', 'doing', 'done'];
 const PRIORITY = ['low', 'normal', 'high'];
 
 const projectRow = (p) => ({ id: p.id, name: p.name, description: p.description, status: p.status, due: p.due, branchId: p.branch_id, tasks: p.tasks, done: p.done, overdue: p.overdue });
-const taskRow = (t) => ({ id: t.id, projectId: t.project_id, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeId: t.assignee_id, assignee: t.assignee || null, due: t.due, branchId: t.branch_id, project: t.project || null });
+const taskRow = (t) => ({ id: t.id, projectId: t.project_id, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeId: t.assignee_id, assignee: t.assignee || null, due: t.due, branchId: t.branch_id, project: t.project || null, estimateHours: t.estimate_hours, dependsOn: t.depends_on, recurrence: t.recurrence, recurNext: t.recur_next });
 
 async function getProject(req, id) {
   const p = await db.prepare('SELECT * FROM projects WHERE id = ? AND org_id = ?').get(A.id(id), req.org.id);
@@ -108,6 +109,7 @@ router.delete('/tasks/:id', async (req, res) => {
   const t = await db.prepare('SELECT * FROM tasks WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
   if (!t || !A.visible(req, t)) throw new HttpError(404, 'Tâche introuvable.');
   if (!A.can(req, 'manager') && t.created_by !== req.user.id) throw new HttpError(403, 'Vous pouvez supprimer seulement les tâches que vous avez créées.');
+  await db.prepare('UPDATE tasks SET depends_on = NULL WHERE depends_on = ?').run(t.id);
   await db.prepare('DELETE FROM tasks WHERE id = ?').run(t.id);
   res.json({ ok: true });
 });
@@ -134,6 +136,8 @@ router.put('/:id', A.need('manager'), async (req, res) => {
 
 router.delete('/:id', A.need('manager'), async (req, res) => {
   const p = await getProject(req, req.params.id);
+  await require('./files-w3').dropFor(req.org.id, 'project', p.id);
+  await W.audit(req, 'project', p.id, 'delete', { name: p.name, status: p.status, budget: p.budget }, null);
   await db.prepare('DELETE FROM projects WHERE id = ?').run(p.id);
   await A.logActivity(req.org.id, req.user.id, 'projects', `Projet « ${p.name} » supprimé`);
   res.json({ ok: true });

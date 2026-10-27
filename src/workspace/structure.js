@@ -3,6 +3,7 @@
 const express = require('express');
 const { db, nowISO } = require('../db');
 const A = require('./access');
+const W = require('./w3');
 const { HttpError, parseJSON } = require('../util');
 
 const router = express.Router({ mergeParams: true });
@@ -77,7 +78,10 @@ async function createPositions(req, list) {
 }
 
 // ---------- Procédures ----------
-const procRow = (p) => ({ id: p.id, title: p.title, category: p.category, steps: parseJSON(p.steps, []), updatedAt: p.updated_at });
+const procRow = (p) => ({ id: p.id, title: p.title, category: p.category, steps: parseJSON(p.steps, []), updatedAt: p.updated_at, version: Number(p.version || 1), ownerId: p.owner_id, owner: p.owner || null,
+  reviewMonths: Number(p.review_months || 0), nextReview: p.next_review, reviewDue: Boolean(p.next_review) && p.next_review < nowISO().slice(0, 10), readByMe: Boolean(Number(p.read_me || 0)), readers: Number(p.readers || 0) });
+const reviewMonths = (v) => { const n = Math.round(Number(v || 0)); if (!Number.isFinite(n) || n < 0 || n > 60) throw new HttpError(400, 'Révision : 0 à 60 mois.'); return n; };
+const addMonths = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCMonth(x.getUTCMonth() + n); return x.toISOString().slice(0, 10); };
 function cleanSteps(v) {
   if (!Array.isArray(v) || v.length > 40) throw new HttpError(400, 'Étapes invalides (40 maximum).');
   const out = v.map((s) => A.text(typeof s === 'string' ? s : s && s.text, 300)).filter(Boolean);
@@ -86,15 +90,19 @@ function cleanSteps(v) {
 }
 
 router.get('/processes', async (req, res) => {
-  res.json({ processes: (await db.prepare('SELECT * FROM processes WHERE org_id = ? ORDER BY category, title').all(req.org.id)).map(procRow) });
+  res.json({ processes: (await db.prepare(`SELECT p.*, u.name AS owner,
+    (SELECT COUNT(*) FROM process_reads r WHERE r.process_id = p.id AND r.user_id = ? AND r.version = p.version) AS read_me,
+    (SELECT COUNT(*) FROM process_reads r WHERE r.process_id = p.id AND r.version = p.version) AS readers
+    FROM processes p LEFT JOIN users u ON u.id = p.owner_id WHERE p.org_id = ? ORDER BY p.category, p.title`).all(req.user.id, req.org.id)).map(procRow) });
 });
 
 async function createProcess(req, b) {
   const count = (await db.prepare('SELECT COUNT(*) c FROM processes WHERE org_id = ?').get(req.org.id)).c;
   if (count >= 200) throw new HttpError(403, 'Limite de 200 procédures atteinte.');
   const now = nowISO();
-  const id = (await db.prepare('INSERT INTO processes (org_id, title, category, steps, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
-    req.org.id, A.text(b.title, 120, { required: true, msg: 'Indiquez le titre de la procédure.' }), A.text(b.category, 60), JSON.stringify(cleanSteps(b.steps)), req.user.id, now, now)).lastInsertRowid;
+  const id = (await db.prepare('INSERT INTO processes (org_id, title, category, steps, created_by, created_at, updated_at, owner_id, review_months, next_review) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+    req.org.id, A.text(b.title, 120, { required: true, msg: 'Indiquez le titre de la procédure.' }), A.text(b.category, 60), JSON.stringify(cleanSteps(b.steps)), req.user.id, now, now,
+    await A.memberOf(req, b.ownerId), reviewMonths(b.reviewMonths), reviewMonths(b.reviewMonths) ? addMonths(now.slice(0, 10), reviewMonths(b.reviewMonths)) : null)).lastInsertRowid;
   await A.logActivity(req.org.id, req.user.id, 'processes', `Procédure « ${A.text(b.title, 120)} » ajoutée`);
   return Number(id);
 }
@@ -104,11 +112,22 @@ router.put('/processes/:id', A.need('admin'), async (req, res) => {
   const p = await db.prepare('SELECT * FROM processes WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
   if (!p) throw new HttpError(404, 'Procédure introuvable.');
   const b = req.body || {};
-  await db.prepare('UPDATE processes SET title = ?, category = ?, steps = ?, updated_at = ? WHERE id = ?').run(
-    b.title === undefined ? p.title : A.text(b.title, 120, { required: true, msg: 'Le titre ne peut pas être vide.' }),
-    b.category === undefined ? p.category : A.text(b.category, 60),
-    b.steps === undefined ? p.steps : JSON.stringify(cleanSteps(b.steps)), nowISO(), p.id);
-  res.json({ ok: true });
+  const title = b.title === undefined ? p.title : A.text(b.title, 120, { required: true, msg: 'Le titre ne peut pas être vide.' });
+  const category = b.category === undefined ? p.category : A.text(b.category, 60);
+  const steps = b.steps === undefined ? p.steps : JSON.stringify(cleanSteps(b.steps));
+  const content = title !== p.title || category !== p.category || steps !== p.steps;
+  const months = b.reviewMonths === undefined ? Number(p.review_months || 0) : reviewMonths(b.reviewMonths);
+  const owner = b.ownerId === undefined ? p.owner_id : await A.memberOf(req, b.ownerId);
+  await db.transaction(async () => {
+    if (content) await db.prepare('INSERT INTO process_versions (org_id, process_id, version, title, category, steps, edited_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, p.id, p.version, p.title, p.category, p.steps, req.user.id, nowISO());
+    await db.prepare('UPDATE processes SET title = ?, category = ?, steps = ?, updated_at = ?, version = ?, owner_id = ?, review_months = ?, next_review = ? WHERE id = ?').run(title, category, steps, nowISO(), content ? Number(p.version) + 1 : p.version, owner, months,
+      content || b.reviewMonths !== undefined ? (months ? addMonths(nowISO().slice(0, 10), months) : null) : p.next_review, p.id);
+  })();
+  if (content) {
+    await W.audit(req, 'process', p.id, 'update', { title: p.title, version: p.version }, { title, version: Number(p.version) + 1 });
+    for (const m of await db.prepare('SELECT user_id FROM org_members WHERE org_id = ? LIMIT 200').all(req.org.id)) if (m.user_id !== req.user.id) await W.push(req.org.id, m.user_id, 'process', `Procédure mise à jour, à relire : ${title}`, 'process:' + p.id);
+  }
+  res.json({ ok: true, version: content ? Number(p.version) + 1 : Number(p.version) });
 });
 
 router.delete('/processes/:id', A.need('admin'), async (req, res) => {
@@ -116,6 +135,8 @@ router.delete('/processes/:id', A.need('admin'), async (req, res) => {
   if (!r.changes) throw new HttpError(404, 'Procédure introuvable.');
   res.json({ ok: true });
 });
+
+router.use(require('./structure-w3'));
 
 module.exports = router;
 module.exports.createPositions = createPositions;
