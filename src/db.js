@@ -1643,6 +1643,38 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_log_delivery_items ON logistics_delivery_items(delivery_id);
   `,
+  /* VAGUE 2 · paie Cameroun : modèle versionné + surcharges de l'organisation, absences non payées, solde de tout compte, coordonnées de paiement des employés */ `
+  ALTER TABLE employees ADD COLUMN cnps_no TEXT NOT NULL DEFAULT '';
+  ALTER TABLE employees ADD COLUMN niu TEXT NOT NULL DEFAULT '';
+  ALTER TABLE employees ADD COLUMN pay_channel TEXT NOT NULL DEFAULT '';
+  ALTER TABLE employees ADD COLUMN pay_account TEXT NOT NULL DEFAULT '';
+  ALTER TABLE payroll_slips ADD COLUMN engine TEXT NOT NULL DEFAULT '';
+  ALTER TABLE payroll_slips ADD COLUMN model_version TEXT NOT NULL DEFAULT '';
+  ALTER TABLE payroll_slips ADD COLUMN absence_days DOUBLE PRECISION NOT NULL DEFAULT 0;
+  ALTER TABLE payroll_slips ADD COLUMN absence_deduction BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE payroll_slips ADD COLUMN calc_detail TEXT NOT NULL DEFAULT '';
+  CREATE TABLE payroll_cm_overrides (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    value DOUBLE PRECISION NOT NULL,
+    updated_by BIGINT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, key)
+  );
+  CREATE TABLE payroll_settlements (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    employee_id BIGINT NOT NULL,
+    employee_name TEXT NOT NULL,
+    exit_date TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    data TEXT NOT NULL DEFAULT '{}',
+    total BIGINT NOT NULL DEFAULT 0,
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_payroll_settlements ON payroll_settlements(org_id, exit_date);
+  `,
 ];
 
 

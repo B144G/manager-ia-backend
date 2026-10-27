@@ -8,9 +8,12 @@ const { db, nowISO } = require('../db');
 const A = require('./access');
 const { HttpError } = require('../util');
 const TPL = require('./payroll-templates');
+const CM = require('./payroll-cm');
+const CMM = require('./payroll-cm-model');
 
 const router = express.Router({ mergeParams: true });
 router.use(A.need('admin'));
+router.use('/cm', CM); // Paie Cameroun : modèle versionné, absences, solde de tout compte, états CSV (VAGUE 2)
 
 const DISCLAIMER = "Exemple à vérifier : barèmes à confirmer auprès de votre administration. Les taux ci-dessous ne sont pas officiels ; modifiez-les selon la réglementation de votre pays.";
 const METHODS = { cash: 'Espèces', bank: 'Virement bancaire', mobile: 'Mobile money', cheque: 'Chèque' };
@@ -33,7 +36,7 @@ const DEFAULT_RULES = [
   { kind: 'employer', target: 'social', label: 'Cotisation sociale patronale (exemple)', rate: 11.2, ceiling: 750000 },
   { kind: 'employer', target: 'tax', label: 'Taxe sur les salaires (exemple)', rate: 1, ceiling: 0 },
 ];
-const DEFAULT_OPTIONS = { autoAccount: false, monthlyHours: 173.33, tiers: TPL.DEFAULT_TIERS, ratesAsOf: '', templateId: '' };
+const DEFAULT_OPTIONS = { autoAccount: false, monthlyHours: 173.33, tiers: TPL.DEFAULT_TIERS, ratesAsOf: '', templateId: '', engine: '', absenceAuto: false, cmValidation: null };
 
 const money = (v, msg) => {
   const n = v === undefined || v === null || v === '' || Number(v) === 0 ? 0 : A.amount(v);
@@ -77,6 +80,9 @@ function cleanOptions(b, cur) {
     });
   }
   if (b.ratesAsOf !== undefined) o.ratesAsOf = A.date(b.ratesAsOf) || '';
+  if (b.engine !== undefined) o.engine = b.engine ? A.oneOf(b.engine, ['cm'], undefined, 'Moteur de paie inconnu.') : '';
+  if (b.absenceAuto !== undefined) o.absenceAuto = Boolean(b.absenceAuto);
+  if (b.cmValidation !== undefined) o.cmValidation = b.cmValidation ? { by: A.text(b.cmValidation.by, 100), at: A.date(b.cmValidation.at) || '', note: A.text(b.cmValidation.note, 200) } : null;
   if (b.templateId !== undefined) o.templateId = b.templateId ? A.oneOf(b.templateId, TPL.TEMPLATES.map((t) => t.id), undefined, 'Modèle de pays inconnu.') : '';
   return o;
 }
@@ -88,7 +94,20 @@ async function loadRules(orgId) {
   try { rules = cleanRules(JSON.parse(row.rules)); } catch { rules = []; }
   let options = { ...DEFAULT_OPTIONS };
   try { options = cleanOptions(JSON.parse(row.options || '{}'), null); } catch { /* options abîmées : valeurs par défaut */ }
-  return { rules, options, isDefault: false, updatedAt: row.updated_at };
+  const st = { rules, options, isDefault: false, updatedAt: row.updated_at };
+  if (options.engine === 'cm') st.cm = await CM.loadModel(orgId, today().slice(0, 7));
+  return st;
+}
+
+/** Enregistre des options de paie (fusionnées avec les options actuelles) en gardant les lignes de retenues. */
+async function saveOptions(req, patch) {
+  const cur = await loadRules(req.org.id);
+  const options = cleanOptions(patch, cur.options);
+  await db.transaction(async () => {
+    await db.prepare('DELETE FROM payroll_settings WHERE org_id = ?').run(req.org.id);
+    await db.prepare('INSERT INTO payroll_settings (org_id, rules, options, updated_at) VALUES (?, ?, ?, ?)').run(req.org.id, JSON.stringify(cur.rules), JSON.stringify(options), nowISO());
+  })();
+  return options;
 }
 
 /** Éléments à compléter avant de se fier aux calculs : rubriques sans taux, barème de modèle sans date de vérification. */
@@ -97,6 +116,11 @@ const incompleteOf = (st) => {
   const n = st.rules.filter((r) => r.todo).length;
   if (n) out.push(`${n} rubrique(s) sans taux (« à compléter »).`);
   if (st.options.templateId && !st.options.ratesAsOf) out.push('Indiquez la date « à jour au » après avoir vérifié le barème de votre pays.');
+  if (st.options.engine === 'cm') {
+    if (!st.options.ratesAsOf) out.push("Barème Cameroun non validé : faites-le vérifier par un expert-comptable ou le CNPS/DGI, puis indiquez la date « à jour au ».");
+    const miss = st.cm ? CM.missingOf(st.cm) : [];
+    if (miss.length) out.push(`Barème Cameroun : ${miss.length} taux à renseigner (par exemple le taux accidents du travail).`);
+  }
   return out;
 };
 
@@ -116,10 +140,11 @@ function cleanHours(list) {
 const overtimeAmount = (rows, hourly) => rows.map((r) => ({ ...r, hourly, amount: Math.round(r.hours * hourly * (1 + r.rate / 100)) }));
 
 /** Calcul d'un bulletin (entiers). Base de calcul des retenues = brut (base + primes + heures supplémentaires + 13e mois/prime annuelle), limitée au plafond s'il y en a un. */
-function computeSlip(rules, f) {
+function computeSlip(rules, f, cm) {
+  if (cm) return CMM.compute(cm, f); // modèle Cameroun (VAGUE 2) : même forme de résultat
   const base = f.base || 0; const bonuses = f.bonuses || 0; const overtime = f.overtime || 0; const annual = f.annualBonus || 0;
   const advances = f.advances || 0; const other = f.otherDeductions || 0;
-  const gross = base + bonuses + overtime + annual;
+  const gross = Math.max(base + bonuses + overtime + annual - (f.absenceDeduction || 0), 0);
   const lines = rules.map((r) => {
     const basis = r.ceiling > 0 ? Math.min(gross, r.ceiling) : gross;
     return { kind: r.kind, target: r.target || guessTarget(r.label), label: r.label, rate: r.rate, ceiling: r.ceiling, basis, amount: Math.round(basis * r.rate / 100) };
@@ -140,6 +165,8 @@ const view = (s) => ({
   lines: (() => { try { return JSON.parse(s.lines); } catch { return []; } })(), note: s.note,
   validatedAt: s.validated_at, paidDate: s.paid_date, payMethod: s.pay_method, payMethodLabel: METHODS[s.pay_method] || '', budgetEntryId: s.budget_entry_id,
   overtimeHours: (() => { try { return JSON.parse(s.overtime_hours); } catch { return []; } })(), hourlyRate: s.hourly_rate || 0, annualBonus: s.annual_bonus || 0, annualBonusLabel: s.annual_bonus_label || '',
+  engine: s.engine || '', modelVersion: s.model_version || '', absenceDays: s.absence_days || 0, absenceDeduction: s.absence_deduction || 0,
+  calcDetail: (() => { try { return s.calc_detail ? JSON.parse(s.calc_detail) : null; } catch { return null; } })(),
   accEntryId: s.acc_entry_id || null, accPayEntryId: s.acc_pay_entry_id || null, reopenedCount: s.reopened_count || 0, reopenReason: s.reopen_reason || '', reopenedAt: s.reopened_at || null,
 });
 
@@ -170,22 +197,34 @@ const figures = (b, cur, opts) => {
   if (b.thirteenth === false && b.annualBonus === undefined) { annualBonus = 0; annualLabel = ''; }
   if (annualBonus > 0 && !annualLabel) annualLabel = 'Prime annuelle';
   if (!(annualBonus > 0)) annualLabel = '';
-  return { base, bonuses: pick('bonuses', 'bonuses'), overtime, overtimeHours: hours, hourlyRate, annualBonus, annualBonusLabel: annualLabel, advances: pick('advances', 'advances'), otherDeductions: pick('otherDeductions', 'other_deductions') };
+  const absenceDeduction = b.absenceDeduction === undefined || b.absenceDeduction === '' ? (c.absence_deduction || 0) : Math.min(money(b.absenceDeduction), base);
+  const absenceDays = b.absenceDays === undefined || b.absenceDays === '' ? (c.absence_days || 0) : Math.min(Math.max(Number(b.absenceDays) || 0, 0), 366);
+  return { absenceDeduction, absenceDays, base, bonuses: pick('bonuses', 'bonuses'), overtime, overtimeHours: hours, hourlyRate, annualBonus, annualBonusLabel: annualLabel, advances: pick('advances', 'advances'), otherDeductions: pick('otherDeductions', 'other_deductions') };
 };
 
-function checked(rules, f) {
+/** Contexte de calcul : modèle Cameroun du mois (si activé) et retenue automatique des absences non payées (sauf montant saisi). */
+async function context(req, st, empId, month, b, f) {
+  const cm = st.options.engine === 'cm' || st.options.absenceAuto ? await CM.loadModel(req.org.id, month) : null;
+  if (st.options.absenceAuto && (b.absenceDeduction === undefined || b.absenceDeduction === '')) {
+    const a = await CM.absenceFor(req.org.id, empId, month, f.base, cm ? cm.values['absence.divisor'] : 30);
+    f.absenceDays = a.days; f.absenceDeduction = a.deduction;
+  }
+  return st.options.engine === 'cm' ? cm : null;
+}
+
+function checked(rules, f, cm) {
   if (!(f.base > 0)) throw new HttpError(400, 'Le salaire de base doit être supérieur à zéro.');
-  const c = computeSlip(rules, f);
+  const c = computeSlip(rules, f, cm);
   if (c.net < 0) throw new HttpError(400, 'Le net à payer serait négatif : vérifiez les avances et les retenues.');
   return c;
 }
 
-async function insertSlip(req, emp, month, f, rules, note) {
-  const c = checked(rules, f);
-  const id = (await db.prepare(`INSERT INTO payroll_slips (org_id, employee_id, employee_name, job, month, base, bonuses, overtime, advances, other_deductions, gross, employee_deductions, employer_charges, net, employer_cost, lines, note, status, created_by, created_at, overtime_hours, hourly_rate, annual_bonus, annual_bonus_label)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?)`).run(
+async function insertSlip(req, emp, month, f, rules, note, cm) {
+  const c = checked(rules, f, cm);
+  const id = (await db.prepare(`INSERT INTO payroll_slips (org_id, employee_id, employee_name, job, month, base, bonuses, overtime, advances, other_deductions, gross, employee_deductions, employer_charges, net, employer_cost, lines, note, status, created_by, created_at, overtime_hours, hourly_rate, annual_bonus, annual_bonus_label, engine, model_version, absence_days, absence_deduction, calc_detail)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     req.org.id, emp.id, emp.name, emp.job || '', month, f.base, f.bonuses, f.overtime, f.advances, f.otherDeductions, c.gross, c.employeeDeductions, c.employerCharges, c.net, c.employerCost, JSON.stringify(c.lines), note, req.user.id, nowISO(),
-    JSON.stringify(f.overtimeHours || []), f.hourlyRate || 0, f.annualBonus || 0, f.annualBonusLabel || '')).lastInsertRowid;
+    JSON.stringify(f.overtimeHours || []), f.hourlyRate || 0, f.annualBonus || 0, f.annualBonusLabel || '', cm ? 'cm' : '', cm ? cm.version : '', f.absenceDays || 0, f.absenceDeduction || 0, c.detail ? JSON.stringify(c.detail) : '')).lastInsertRowid;
   return Number(id);
 }
 
@@ -277,14 +316,17 @@ router.get('/slips/:id', async (req, res) => res.json({ slip: view(await slipOf(
 // Lancement de la paie du mois : un brouillon par employé actif qui a un salaire et pas encore de bulletin ce mois-ci.
 router.post('/run', async (req, res) => {
   const month = A.monthRange((req.body || {}).month).month;
-  const { rules } = await loadRules(req.org.id);
+  const st = await loadRules(req.org.id);
+  const { rules } = st;
   const emps = await db.prepare("SELECT * FROM employees WHERE org_id = ? AND status = 'active' ORDER BY name").all(req.org.id);
   const out = { month, created: 0, existing: 0, noSalary: [] };
   await db.transaction(async () => {
     for (const e of emps) {
       if (await db.prepare('SELECT 1 FROM payroll_slips WHERE org_id = ? AND employee_id = ? AND month = ?').get(req.org.id, e.id, month)) { out.existing++; continue; }
       if (!(e.salary > 0)) { out.noSalary.push(e.name); continue; }
-      await insertSlip(req, e, month, { base: Math.min(e.salary, MAX), bonuses: 0, overtime: 0, overtimeHours: [], hourlyRate: 0, annualBonus: 0, annualBonusLabel: '', advances: 0, otherDeductions: 0 }, rules, '');
+      const f0 = { base: Math.min(e.salary, MAX), bonuses: 0, overtime: 0, overtimeHours: [], hourlyRate: 0, annualBonus: 0, annualBonusLabel: '', advances: 0, otherDeductions: 0, absenceDeduction: 0, absenceDays: 0 };
+      const cm = await context(req, st, e.id, month, {}, f0);
+      await insertSlip(req, e, month, f0, rules, '', cm);
       out.created++;
     }
   })();
@@ -300,7 +342,8 @@ router.post('/slips', async (req, res) => {
   if (await db.prepare('SELECT 1 FROM payroll_slips WHERE org_id = ? AND employee_id = ? AND month = ?').get(req.org.id, emp.id, month)) throw new HttpError(409, 'Cet employé a déjà un bulletin pour ce mois.');
   const st = await loadRules(req.org.id);
   const f = figures({ ...b, base: b.base === undefined || b.base === '' ? emp.salary : b.base }, null, st.options);
-  const id = await insertSlip(req, emp, month, f, st.rules, A.text(b.note, 200));
+  const cm = await context(req, st, emp.id, month, b, f);
+  const id = await insertSlip(req, emp, month, f, st.rules, A.text(b.note, 200), cm);
   res.status(201).json({ id });
 });
 
@@ -310,11 +353,12 @@ router.put('/slips/:id', async (req, res) => {
   const b = req.body || {};
   const st = await loadRules(req.org.id);
   const f = figures(b, s, st.options);
-  const c = checked(st.rules, f);
+  const cm = await context(req, st, s.employee_id, s.month, b, f);
+  const c = checked(st.rules, f, cm);
   await db.prepare(`UPDATE payroll_slips SET base = ?, bonuses = ?, overtime = ?, advances = ?, other_deductions = ?, gross = ?, employee_deductions = ?, employer_charges = ?, net = ?, employer_cost = ?, lines = ?, note = ?,
-    overtime_hours = ?, hourly_rate = ?, annual_bonus = ?, annual_bonus_label = ? WHERE id = ? AND status = 'draft'`).run(
+    overtime_hours = ?, hourly_rate = ?, annual_bonus = ?, annual_bonus_label = ?, engine = ?, model_version = ?, absence_days = ?, absence_deduction = ?, calc_detail = ? WHERE id = ? AND status = 'draft'`).run(
     f.base, f.bonuses, f.overtime, f.advances, f.otherDeductions, c.gross, c.employeeDeductions, c.employerCharges, c.net, c.employerCost, JSON.stringify(c.lines), b.note === undefined ? s.note : A.text(b.note, 200),
-    JSON.stringify(f.overtimeHours || []), f.hourlyRate || 0, f.annualBonus || 0, f.annualBonusLabel || '', s.id);
+    JSON.stringify(f.overtimeHours || []), f.hourlyRate || 0, f.annualBonus || 0, f.annualBonusLabel || '', cm ? 'cm' : '', cm ? cm.version : '', f.absenceDays || 0, f.absenceDeduction || 0, c.detail ? JSON.stringify(c.detail) : '', s.id);
   res.json({ ok: true });
 });
 
@@ -423,6 +467,8 @@ router.post('/slips/:id/budget', async (req, res) => {
 
 module.exports = router;
 module.exports.computeSlip = computeSlip;
+module.exports.loadRules = loadRules;
+module.exports.saveOptions = saveOptions;
 module.exports.DEFAULT_RULES = DEFAULT_RULES;
 module.exports.validationLines = validationLines;
 
@@ -439,9 +485,10 @@ module.exports.ctx = async (req) => {
     `Employés actifs sans bulletin ce mois : ${o.missing.length}${o.missing.length ? ' (' + o.missing.slice(0, 10).map((e) => String(e.name).slice(0, 40)).join(', ') + ')' : ''}.`,
     st.options.autoAccount ? 'Comptabilisation automatique de la paie : activée.' : 'Comptabilisation automatique de la paie : désactivée (écritures à la demande).',
     ...incompleteOf(st).map((x) => 'À COMPLÉTER : ' + x),
+    st.options.engine === 'cm' ? `MODÈLE CAMEROUN actif (version ${st.cm.version}, barème du ${st.cm.asOf}) : ${st.options.ratesAsOf ? `vérifié par ${(st.options.cmValidation || {}).by || 'une tierce personne'} (à jour au ${st.options.ratesAsOf})` : 'NON VALIDÉ par un expert-comptable ou le CNPS/DGI'}. Absences non payées déduites automatiquement : ${st.options.absenceAuto ? 'oui' : 'non'}.` : '',
     st.isDefault ? 'ATTENTION : les taux de retenues sont encore ceux de l\'exemple par défaut (non vérifiés).' : `Paramètres de paie enregistrés : ${st.rules.map((r) => `${String(r.label).slice(0, 50)} ${r.rate} %`).join(' ; ').slice(0, 500)}.`,
     waiting.length ? 'Bulletins en attente :\n' + waiting.join('\n') : 'Aucun bulletin en attente.'].join('\n').slice(0, 2900);
 };
 module.exports.min = 'admin';
 module.exports.prompt = `Tu aides l'administrateur à PRÉPARER et CONTRÔLER la paie : bulletins du mois, cohérence des montants (brut, retenues, net, coût employeur), employés oubliés, avances à déduire, bulletins à valider ou à payer.
-Règles : les taux de retenues et de charges sont des paramètres modifiés par l'organisation ; s'ils sont encore « d'exemple », dis clairement qu'ils ne sont pas officiels. Tu ne donnes JAMAIS de conseil juridique, fiscal ou social définitif : pour un barème, un droit ou une obligation légale, renvoie vers l'administration du pays ou un expert. Les barèmes par pays sont des points de départ à compléter (aucun taux n'est fourni) : rappelle de vérifier chaque taux et la date « à jour au ». La comptabilisation automatique de la paie est une option : sans elle, les écritures se créent à la demande. Un bulletin validé peut être rouvert avec un motif tant qu'il n'est pas payé. Ne divulgue des montants de paie qu'à cet administrateur. Tu ne modifies rien toi-même : explique ce qu'il faut faire dans le module.`;
+Règles : les taux de retenues et de charges sont des paramètres modifiés par l'organisation ; s'ils sont encore « d'exemple », dis clairement qu'ils ne sont pas officiels. Tu ne donnes JAMAIS de conseil juridique, fiscal ou social définitif : pour un barème, un droit ou une obligation légale, renvoie vers l'administration du pays ou un expert. Les barèmes par pays sont des points de départ à compléter (aucun taux n'est fourni) : rappelle de vérifier chaque taux et la date « à jour au ». La comptabilisation automatique de la paie est une option : sans elle, les écritures se créent à la demande. Un bulletin validé peut être rouvert avec un motif tant qu'il n'est pas payé. Le modèle de paie Cameroun (CNPS, IRPP progressif, CAC, CFC, FNE) est chiffré mais n'est JAMAIS officiel : cite toujours son niveau de confiance et la mention « à faire valider par un expert-comptable ou le CNPS/DGI » ; le solde de tout compte, le récapitulatif CNPS, l'état IRPP et le fichier de virement sont des documents de travail. Une absence « sans solde » approuvée dans les RH se déduit automatiquement du bulletin. Ne divulgue des montants de paie qu'à cet administrateur. Tu ne modifies rien toi-même : explique ce qu'il faut faire dans le module.`;

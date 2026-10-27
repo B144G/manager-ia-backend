@@ -10,7 +10,7 @@ const router = express.Router({ mergeParams: true });
 router.use(A.need('manager'));
 
 const today = () => nowISO().slice(0, 10);
-const LEAVE_KINDS = ['annual', 'sick', 'other'];
+const LEAVE_KINDS = ['annual', 'sick', 'unpaid', 'other']; // « unpaid » : absence non payée, retenue automatique sur le bulletin (Paie)
 
 const empOf = async (req, id) => {
   const e = await db.prepare('SELECT * FROM employees WHERE id = ? AND org_id = ?').get(A.id(id), req.org.id);
@@ -20,7 +20,8 @@ const empOf = async (req, id) => {
 const time = (v) => { if (typeof v !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(v)) throw new HttpError(400, 'Heure invalide (format HH:MM).'); return v; };
 const days = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000) + 1;
 
-const empView = (req, e) => ({ id: e.id, name: e.name, job: e.job, phone: e.phone, hiredAt: e.hired_at, status: e.status, branchId: e.branch_id, salary: A.can(req, 'admin') ? e.salary : undefined });
+const empView = (req, e) => ({ id: e.id, name: e.name, job: e.job, phone: e.phone, hiredAt: e.hired_at, status: e.status, branchId: e.branch_id, salary: A.can(req, 'admin') ? e.salary : undefined,
+  cnpsNo: A.can(req, 'admin') ? e.cnps_no : undefined, niu: A.can(req, 'admin') ? e.niu : undefined, payChannel: A.can(req, 'admin') ? e.pay_channel : undefined, payAccount: A.can(req, 'admin') ? e.pay_account : undefined });
 
 async function employees(req) {
   const sc = A.scope(req);
@@ -44,11 +45,23 @@ router.get('/', async (req, res) => {
   });
 });
 
+/** Références sociales et coordonnées de paiement (administrateurs seulement) : matricule CNPS, NIU, canal et compte de virement. */
+async function payInfo(req, id, b, cur) {
+  const has = ['cnpsNo', 'niu', 'payChannel', 'payAccount'].some((k) => b[k] !== undefined);
+  if (!has) return;
+  const ch = b.payChannel === undefined ? cur.pay_channel || '' : A.oneOf(b.payChannel, ['', 'bank', 'mobile'], undefined, 'Canal de paiement : banque ou mobile money.');
+  const acc = b.payAccount === undefined ? cur.pay_account || '' : A.text(b.payAccount, 60);
+  if (acc && !/^[A-Za-z0-9 +().\-/]{4,60}$/.test(acc)) throw new HttpError(400, 'Compte bancaire ou numéro de mobile money invalide.');
+  await db.prepare('UPDATE employees SET cnps_no = ?, niu = ?, pay_channel = ?, pay_account = ? WHERE id = ? AND org_id = ?').run(
+    b.cnpsNo === undefined ? cur.cnps_no || '' : A.text(b.cnpsNo, 30), b.niu === undefined ? cur.niu || '' : A.text(b.niu, 30), ch, acc, id, req.org.id);
+}
+
 router.post('/employees', async (req, res) => {
   const b = req.body || {};
   const id = (await db.prepare('INSERT INTO employees (org_id, branch_id, name, job, phone, hired_at, salary, user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
     req.org.id, await A.branchOf(req, b.branchId), A.text(b.name, 100, { required: true, msg: "Indiquez le nom de l'employé." }), A.text(b.job, 100), A.text(b.phone, 40), A.date(b.hiredAt),
     A.can(req, 'admin') && b.salary !== undefined && b.salary !== '' ? A.amount(b.salary) : null, await A.memberOf(req, b.userId), nowISO())).lastInsertRowid;
+  if (A.can(req, 'admin')) await payInfo(req, Number(id), b, {});
   await A.logActivity(req.org.id, req.user.id, 'hr', `Employé « ${A.text(b.name, 100)} » ajouté`);
   res.status(201).json({ id: Number(id) });
 });
@@ -60,6 +73,7 @@ router.put('/employees/:id', async (req, res) => {
   await db.prepare('UPDATE employees SET name = ?, job = ?, phone = ?, hired_at = ?, salary = ?, status = ? WHERE id = ?').run(
     b.name === undefined ? e.name : A.text(b.name, 100, { required: true, msg: "Indiquez le nom de l'employé." }), b.job === undefined ? e.job : A.text(b.job, 100), b.phone === undefined ? e.phone : A.text(b.phone, 40),
     b.hiredAt === undefined ? e.hired_at : A.date(b.hiredAt), salary, b.status === undefined ? e.status : A.oneOf(b.status, ['active', 'left'], undefined, 'Statut inconnu.'), e.id);
+  if (A.can(req, 'admin')) await payInfo(req, e.id, b, e);
   res.json({ ok: true });
 });
 
