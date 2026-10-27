@@ -2211,6 +2211,12 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_webhook_deliveries ON webhook_deliveries(org_id, id);
   `,
+  /* Résumé du matin et alertes : canal de réception par abonné (e-mail par défaut, WhatsApp facultatif) + adresse e-mail dédiée.
+     Les abonnements existants passent sur « e-mail » (le défaut de la colonne s'applique à toutes les lignes) sans perdre numéro, horaires ni consentement. */ `
+  ALTER TABLE digest_subs ADD COLUMN channel TEXT NOT NULL DEFAULT 'email';
+  ALTER TABLE digest_subs ADD COLUMN email TEXT NOT NULL DEFAULT '';
+  UPDATE digest_subs SET channel = 'email';
+  `,
 ];
 
 
@@ -2246,4 +2252,4 @@ async function getUserFresh(id) {
   return row;
 }
 
-module.exports = { db, nowISO, publicUser, getUserFresh };
+module.exports = { db, nowISO, publicUser, getUserFresh, MIGRATIONS };

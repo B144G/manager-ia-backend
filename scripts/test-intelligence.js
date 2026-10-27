@@ -1,5 +1,5 @@
 'use strict';
-// Test du groupe « intelligence » : Mémoire de l'entreprise, Agents spécialisés, Résumé du matin et alertes WhatsApp.
+// Test du groupe « intelligence » : Mémoire de l'entreprise, Agents spécialisés, Résumé du matin et alertes (canal WhatsApp ; le canal e-mail est dans test-digest-email.js).
 // Lancez-le avec : node scripts/test-intelligence.js   (base temporaire, FAUX serveur d'IA, FAUX serveur Meta/Graph, FAUX SMTP : aucun appel externe)
 const { spawn } = require('child_process');
 const http = require('http');
@@ -359,18 +359,18 @@ async function main() {
     const hm = (m) => `${String(Math.floor(((m % 1440) + 1440) % 1440 / 60)).padStart(2, '0')}:${String(((m % 1440) + 1440) % 1440 % 60).padStart(2, '0')}`;
     const future = () => hm(nowLocal() + 180); // jamais déclenché pendant les essais manuels
 
-    r = await owner('PUT', `${D}/me`, { phone: '677 11 22 33', morning: true, urgent: false, hour: future() });
+    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '677 11 22 33', morning: true, urgent: false, hour: future() });
     check('abonnement sans consentement -> 400 (jamais d\'envoi sans consentement)', r.status === 400 && /consentement/.test(r.json.error), r.json);
-    r = await owner('PUT', `${D}/me`, { phone: 'abc', morning: true, consent: true, hour: future() });
+    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: 'abc', morning: true, consent: true, hour: future() });
     check('numéro invalide -> 400', r.status === 400, r.json);
-    r = await owner('PUT', `${D}/me`, { phone: '655 44 33 22', morning: true, consent: true, hour: '25:99' });
+    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '655 44 33 22', morning: true, consent: true, hour: '25:99' });
     check('heure invalide -> 400', r.status === 400, r.json);
-    r = await owner('PUT', `${D}/me`, { phone: '655 44 33 22', morning: true, consent: true, hour: future(), templateName: 'Mauvais Nom' });
+    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '655 44 33 22', morning: true, consent: true, hour: future(), templateName: 'Mauvais Nom' });
     check('nom de modèle invalide -> 400', r.status === 400, r.json);
     const w0 = fake.seen.wa.length;
     r = await owner('POST', `${D}/test`);
     check('« Envoyer un test » sans abonnement ni consentement -> 400, rien d\'envoyé', r.status === 400 && fake.seen.wa.length === w0, r.json);
-    r = await owner('PUT', `${D}/me`, { phone: '655 44 33 22', morning: true, urgent: false, consent: true, hour: future() });
+    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '655 44 33 22', morning: true, urgent: false, consent: true, hour: future() });
     check('abonnement avec consentement', r.status === 200);
     r = await owner('GET', D);
     check('consentement enregistré avec sa date ; aucun secret renvoyé', r.json.me.consented && /^\d{4}-\d{2}-\d{2}T/.test(r.json.me.consentAt) && r.json.connected && !JSON.stringify(r.json).includes('EAAG') && !JSON.stringify(r.json).includes(APPSECRET) && !JSON.stringify(r.json).includes('v1:'), r.json.me);
@@ -383,29 +383,29 @@ async function main() {
     r = await owner('GET', D);
     check('statut du dernier envoi : livré', r.json.last && r.json.last.status === 'delivered' && r.json.last.kind === 'test' && r.json.statusText.delivered, r.json.last);
     // Fenêtre de 24 h fermée -> e-mail de secours
-    r = await owner('PUT', `${D}/me`, { phone: '655 00 00 00', morning: true, hour: future() });
+    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '655 00 00 00', morning: true, hour: future() });
     check('changer de numéro redemande le consentement -> 400', r.status === 400 && /consentement/.test(r.json.error), r.json);
-    r = await owner('PUT', `${D}/me`, { phone: '237 655 00 00 00', morning: true, urgent: false, consent: true, hour: future() });
+    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '237 655 00 00 00', morning: true, urgent: false, consent: true, hour: future() });
     const mail0 = mailbox.length;
     r = await owner('POST', `${D}/test`);
     check('WhatsApp refuse (fenêtre 24 h, code 131047) : bascule sur l\'e-mail, statut clair', r.status === 200 && r.json.status === 'emailed' && r.json.channel === 'email' && /24 h/.test(r.json.waError) && mailbox.length === mail0 + 1 && /point du matin/.test(mailbox[mailbox.length - 1]), r.json);
     r = await owner('GET', D);
     check('journal : dernier envoi « WhatsApp non livré → e-mail », avec l\'explication', r.json.last.status === 'emailed' && /24 h/.test(r.json.last.waError) && r.json.log.length >= 2, r.json.last);
     // Modèle approuvé
-    r = await owner('PUT', `${D}/me`, { phone: '237 655 00 00 00', morning: true, hour: future(), templateName: 'resume_matin' });
+    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '237 655 00 00 00', morning: true, hour: future(), templateName: 'resume_matin' });
     check('nom du modèle approuvé enregistré (le numéro n\'a pas changé : pas de nouveau consentement)', r.status === 200, r.json);
     r = await owner('POST', `${D}/test`);
     const mt = fake.seen.wa[fake.seen.wa.length - 1];
     check('avec un modèle renseigné : envoi du modèle à la place du texte libre', mt.type === 'template' && mt.tpl.name === 'resume_matin' && mt.tpl.components[0].parameters[0].text.includes('point du matin') && !/\n/.test(mt.tpl.components[0].parameters[0].text), mt);
     // Sans e-mail (Marc s'est inscrit avec un numéro de téléphone) : « non livré (fenêtre fermée) »
-    r = await marc('PUT', `${D}/me`, { phone: '237 655 00 00 00', morning: true, consent: true, hour: future() });
+    r = await marc('PUT', `${D}/me`, { channel: 'whatsapp', phone: '237 655 00 00 00', morning: true, consent: true, hour: future() });
     check('un responsable s\'abonne aussi', r.status === 200, r.json);
     const mail1 = mailbox.length;
     r = await marc('POST', `${D}/test`);
     check('sans e-mail : statut « non livré (fenêtre WhatsApp fermée) »', r.status === 200 && r.json.status === 'window_closed' && /fenêtre WhatsApp fermée/.test(r.json.statusText) && mailbox.length === mail1, r.json);
     r = await marc('GET', D);
     check('responsable non administrateur : réglages de l\'organisation en lecture seule', r.json.settings.canEdit === false && r.json.hasEmail === false && r.json.last.status === 'window_closed');
-    r = await marc('PUT', `${D}/me`, { phone: '237 655 99 99', morning: true, consent: true, hour: future() });
+    r = await marc('PUT', `${D}/me`, { channel: 'whatsapp', phone: '237 655 99 99', morning: true, consent: true, hour: future() });
     r = await marc('POST', `${D}/test`);
     check('autre refus de Meta : statut « non livré » avec le motif', r.json.status === 'failed' && /Numéro non valide/.test(r.json.waError), r.json);
     r = await marc('PUT', `${D}/settings`, { urgentMaxPerDay: 3 });
@@ -422,7 +422,7 @@ async function main() {
 
     // Planificateur : envoi du résumé à l'heure choisie, une seule fois
     const wSched = fake.seen.wa.length;
-    r = await owner('PUT', `${D}/me`, { phone: '237 655 44 33 22', morning: true, urgent: false, consent: true, hour: hm(nowLocal() - 1) });
+    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '237 655 44 33 22', morning: true, urgent: false, consent: true, hour: hm(nowLocal() - 1) });
     check('abonnement à une heure déjà passée (rattrapage)', r.status === 200);
     const gotMorning = await until(async () => (await owner('GET', D)).json.log.some((l) => l.kind === 'morning'));
     check('planificateur : le résumé du matin part tout seul (statut livré)', gotMorning && (await owner('GET', D)).json.log.find((l) => l.kind === 'morning').status === 'delivered');
@@ -437,7 +437,7 @@ async function main() {
 
     // Alertes urgentes
     const wU = fake.seen.wa.length;
-    r = await owner('PUT', `${D}/me`, { phone: '237 655 44 33 22', morning: true, urgent: true, hour: hm(nowLocal() - 1) });
+    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '237 655 44 33 22', morning: true, urgent: true, hour: hm(nowLocal() - 1) });
     const gotUrgent = await until(async () => fake.seen.wa.slice(wU).some((x) => /Alerte urgente/.test(x.body || '')));
     const al = fake.seen.wa.slice(wU).find((x) => /Alerte urgente/.test(x.body || ''));
     check('alerte urgente : rupture de stock, facture très en retard, conversation en attente', gotUrgent && /Rupture de stock : Savon noir/.test(al.body) && /FA-9001 .* impayée depuis 50 jours/.test(al.body) && /conversation client attend un conseiller depuis 9 h/.test(al.body), al && al.body);

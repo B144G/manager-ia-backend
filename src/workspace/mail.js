@@ -11,7 +11,7 @@ const { amap, afilter, HttpError, asyncHandler, isEmail, oneLine, log } = requir
 
 const router = express.Router({ mergeParams: true });
 router.use(A.need('manager'));
-// Résumé du matin et alertes urgentes par WhatsApp (réglages des responsables) : voir digest.js
+// Résumé du matin et alertes urgentes par e-mail (défaut) ou WhatsApp (réglages des responsables) : voir digest.js
 router.use('/digest', require('./digest').router);
 
 const MAX_FILE = 2 * 1024 * 1024;   // 2 Mo par fichier

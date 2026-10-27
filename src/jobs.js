@@ -51,7 +51,7 @@ async function safeRun() {
   }
 }
 
-// Résumé du matin et alertes WhatsApp : vérification chaque minute (sans bloquer ; verrou en base contre les doublons, même avec plusieurs serveurs).
+// Résumé du matin et alertes (e-mail ou WhatsApp) : vérification chaque minute (sans bloquer ; verrou en base contre les doublons, même avec plusieurs serveurs).
 function startDigest() {
   const every = (process.env.NODE_ENV !== 'production' && Number(process.env.DIGEST_TICK_MS)) || 60 * 1000;
   const run = () => {
