@@ -65,6 +65,11 @@ const SHOTS = [
   { n: '07-alertes', mod: 'alerts', css: 'p.ai-out:empty{display:none!important}.alrow.cut{display:none!important}', hide: 'Résumé du matin', keep: ['.alrow', 7] },
   { n: '08-mobile-conversation', mod: 'sales', steps: ['Conversations'], chat: true, mobile: true },
   // Sources de la vidéo du site (sous-dossier video/) : sécurité, site public, écrans mobiles
+  // Captures de la publicité (prep = données d'exemple ajoutées par l'API avant la prise de vue ; rowBtn = [texte de la ligne, texte du bouton])
+  { n: '15-facture-tva', prep: 'facture', view: { width: 940, height: 1020 }, css: '.ip .bar,.ip .warn{display:none!important}.ip{padding-top:30px}' },
+  { n: '16-stock-lots', mod: 'stock', prep: 'stock', rowBtn: ['Huile de palme', 'Lots'] },
+  { n: '17-stock-vin', mod: 'stock', prep: 'stock', rowBtn: ['Moto utilitaire', 'Num'] },
+  { n: '18-factures-paiements', mod: 'crm', steps: ['Factures'] },
   { n: 'video/09-securite', mod: 'dashboard', click: 'button[aria-label="Sécurité du compte"]', view: { width: 1440, height: 900 } },
   { n: 'video/10-site-ordinateur', url: '/', view: { width: 1440, height: 900 } },
   { n: 'video/11-site-mobile', url: '/', mobile: true },
@@ -83,6 +88,32 @@ async function waitLoaded(c) {
   }
 }
 const clickText = (c, txt, root) => c.evaluate(`(()=>{const t=${JSON.stringify(txt.toLowerCase())};const b=[...document.querySelectorAll(${JSON.stringify(root || '.ws-main')}+' button,'+${JSON.stringify(root || '.ws-main')}+' [role=tab],'+${JSON.stringify(root || '.ws-main')}+' a')].find(e=>(e.innerText||'').trim().toLowerCase().startsWith(t));if(!b)return false;b.click();return true})()`);
+
+// Données d'exemple pour la publicité (idempotent) : mentions de facture, paiement Mobile Money, articles suivis par lot et par numéro de série.
+async function prep(c, kind, orgId) {
+  const call = (m, u, b) => c.evaluate(`fetch('/api/ws/orgs/${orgId}'+${JSON.stringify(u)},{method:${JSON.stringify(m)},credentials:'include',headers:{'content-type':'application/json'},body:${b === undefined ? 'undefined' : JSON.stringify(JSON.stringify(b))}}).then(async r=>({s:r.status,j:await r.json().catch(()=>({}))}))`);
+  if (kind === 'facture' || kind === 'paiement') {
+    await call('PUT', '/crm/invoice-settings', { niu: 'M000000000000A', rccm: '', address: 'Avenue exemple, Douala (adresse d\'exemple)', vatRate: '19.25', payInfo: 'MTN MoMo : 670 00 00 00 (exemple)\nOrange Money : 690 00 00 00 (exemple)', footer: 'Données d\'exemple.' });
+    const docs = (await call('GET', '/crm/documents')).j.documents;
+    const d = docs.find((x) => x.kind === 'invoice' && /Nad/.test(x.customer || ''));
+    if (!d) throw new Error('facture d\'exemple introuvable');
+    const pays = (await call('GET', '/crm/documents/' + d.id + '/payments')).j.payments || [];
+    if (!pays.length) { const r = await call('POST', '/crm/documents/' + d.id + '/payments', { amount: 40000, method: 'mtn_momo', reference: 'MP260000123', status: 'confirmed' }); if (r.s >= 300) throw new Error('paiement : ' + JSON.stringify(r.j)); }
+    return `/imprimer/${orgId}/${d.id}`;
+  }
+  if (kind === 'stock') {
+    const items = (await call('GET', '/stock')).j.items || [];
+    if (!items.find((i) => /Huile de palme/.test(i.name))) {
+      const e = new Date(Date.now() + 200 * 864e5).toISOString().slice(0, 10), e2 = new Date(Date.now() + 25 * 864e5).toISOString().slice(0, 10);
+      const a = await call('POST', '/stock/items', { name: 'Huile de palme raffinée (bidon 5 L)', unit: 'bidon', quantity: 0, minQuantity: 10, unitCost: 6500, tracking: 'lot', pickRule: 'fefo' });
+      await call('POST', '/stock/items/' + a.j.id + '/move', { kind: 'in', quantity: 24, lotNo: 'LOT-2026-A', expiry: e, reason: 'Réception' });
+      await call('POST', '/stock/items/' + a.j.id + '/move', { kind: 'in', quantity: 8, lotNo: 'LOT-2026-B', expiry: e2, reason: 'Réception' });
+      const b = await call('POST', '/stock/items', { name: 'Moto utilitaire 125 cc', unit: 'unité', quantity: 0, minQuantity: 1, unitCost: 650000, tracking: 'serial' });
+      await call('POST', '/stock/items/' + b.j.id + '/move', { kind: 'in', serials: 'EXEMPLE0000000001\nEXEMPLE0000000002\nEXEMPLE0000000003\nEXEMPLE0000000004', reason: 'Réception' });
+    }
+  }
+  return null;
+}
 
 async function main() {
   const wanted = process.argv.slice(2);
@@ -114,9 +145,15 @@ async function main() {
         await c.send('Emulation.setUserAgentOverride', { userAgent: '' });
         await c.send('Emulation.setDeviceMetricsOverride', { width: (s.view || VIEW).width, height: (s.view || VIEW).height, deviceScaleFactor: 2, mobile: false });
       }
-      await nav(s.url ? SITE + s.url : `${SITE}/app/${orgId}/${s.mod}`);
+      const pu = s.prep ? await prep(c, s.prep, orgId) : null;
+      await nav(pu ? SITE + pu : s.url ? SITE + s.url : `${SITE}/app/${orgId}/${s.mod}`);
       await waitLoaded(c);
       if (s.click) { await c.evaluate(`document.querySelector(${JSON.stringify(s.click)}).click()`); await sleep(1200); }
+      if (s.rowBtn) {
+        const ok = await c.evaluate(`(()=>{const r=[...document.querySelectorAll('.ws-main .line,.ws-main tr,.ws-main li,.ws-main .card')].filter(e=>(e.innerText||'').includes(${JSON.stringify(s.rowBtn[0])})).pop();if(!r)return false;const b=[...r.querySelectorAll('button,a')].find(x=>(x.innerText||'').trim().startsWith(${JSON.stringify(s.rowBtn[1])}));if(!b)return false;b.click();return true})()`);
+        if (!ok) console.log('  ! ligne/bouton introuvable : ' + s.rowBtn.join(' / '));
+        await sleep(1500);
+      }
       for (const step of s.steps || []) {
         if (!await clickText(c, step)) console.log('  ! introuvable : ' + step);
         await sleep(1200); await waitLoaded(c);
