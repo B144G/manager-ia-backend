@@ -83,7 +83,7 @@ router.post('/files', upLimit, express.raw({ type: () => true, limit: MAX_FILE +
 });
 router.get('/files/:id/file', async (req, res) => {
   const x = await db.prepare('SELECT * FROM legal_files WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
-  if (!x) throw new HttpError(404, 'Fichier introuvable.');
+  if (!x || !PARENTS[x.parent_type]) throw new HttpError(404, 'Fichier introuvable.'); // les pièces du personnel et des projets ont leurs propres routes
   const data = unseal(x.data);
   if (!data) throw new HttpError(500, 'Ce fichier ne peut pas être relu (clé de chiffrement modifiée).');
   await A.logActivity(req.org.id, req.user.id, 'legal', `Pièce jointe « ${x.name} » téléchargée`);
@@ -92,7 +92,7 @@ router.get('/files/:id/file', async (req, res) => {
 });
 router.delete('/files/:id', async (req, res) => {
   const x = await db.prepare('SELECT * FROM legal_files WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
-  if (!x) throw new HttpError(404, 'Fichier introuvable.');
+  if (!x || !PARENTS[x.parent_type]) throw new HttpError(404, 'Fichier introuvable.');
   if (!A.can(req, 'admin') && Number(x.created_by) !== Number(req.user.id)) throw new HttpError(403, 'Seul son auteur ou un administrateur peut supprimer ce fichier.');
   await db.prepare('DELETE FROM legal_files WHERE id = ?').run(x.id);
   res.json({ ok: true });
@@ -177,4 +177,4 @@ router.delete('/templates/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
-module.exports = { router, dropFiles, countFiles };
+module.exports = { router, dropFiles, countFiles, seal, unseal, sniff, fileView };

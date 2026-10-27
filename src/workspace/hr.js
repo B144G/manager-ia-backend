@@ -4,6 +4,8 @@
 const express = require('express');
 const { db, nowISO } = require('../db');
 const A = require('./access');
+const W = require('./w3');
+const wh = require('../services/webhooks');
 const { HttpError } = require('../util');
 
 const router = express.Router({ mergeParams: true });
@@ -74,11 +76,15 @@ router.put('/employees/:id', async (req, res) => {
     b.name === undefined ? e.name : A.text(b.name, 100, { required: true, msg: "Indiquez le nom de l'employé." }), b.job === undefined ? e.job : A.text(b.job, 100), b.phone === undefined ? e.phone : A.text(b.phone, 40),
     b.hiredAt === undefined ? e.hired_at : A.date(b.hiredAt), salary, b.status === undefined ? e.status : A.oneOf(b.status, ['active', 'left'], undefined, 'Statut inconnu.'), e.id);
   if (A.can(req, 'admin')) await payInfo(req, e.id, b, e);
+  const nu = { name: b.name === undefined ? e.name : b.name, job: b.job === undefined ? e.job : b.job, phone: b.phone === undefined ? e.phone : b.phone, status: b.status === undefined ? e.status : b.status, salary: salary };
+  await W.audit(req, 'employee', e.id, 'update', { name: e.name, job: e.job, phone: e.phone, status: e.status, salary: e.salary }, nu);
   res.json({ ok: true });
 });
 
 router.delete('/employees/:id', A.need('admin'), async (req, res) => {
   const e = await empOf(req, req.params.id);
+  await require('./files-w3').dropFor(req.org.id, 'employee', e.id);
+  await W.audit(req, 'employee', e.id, 'delete', { name: e.name, job: e.job, status: e.status }, null);
   await db.prepare('DELETE FROM employees WHERE id = ?').run(e.id);
   res.json({ ok: true });
 });
@@ -99,6 +105,8 @@ router.post('/leaves', async (req, res) => {
   if (days(start, end) > 120) throw new HttpError(400, 'Un congé ne peut pas dépasser 120 jours.');
   if (await db.prepare("SELECT 1 FROM leaves WHERE employee_id = ? AND status != 'refused' AND start <= ? AND end >= ?").get(e.id, end, start)) throw new HttpError(400, 'Cet employé a déjà un congé sur ces dates.');
   const id = (await db.prepare('INSERT INTO leaves (org_id, employee_id, kind, start, end, note, requested_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, e.id, A.oneOf(b.kind, LEAVE_KINDS, 'annual', 'Type de congé inconnu.'), start, end, A.text(b.note, 300), req.user.id, nowISO())).lastInsertRowid;
+  await W.pushRole(req.org.id, 'manager', 'leave', `Nouvelle demande de congé : ${e.name} du ${start} au ${end}`, 'leave:' + id);
+  wh.emit(req.org.id, 'leave.requested', { id: Number(id), employee: e.name, start, end });
   res.status(201).json({ id: Number(id) });
 });
 
@@ -111,6 +119,8 @@ router.put('/leaves/:id/decision', async (req, res) => {
   const status = A.oneOf((req.body || {}).decision, ['approved', 'refused'], undefined, 'Décision inconnue.');
   await db.prepare('UPDATE leaves SET status = ?, decided_by = ? WHERE id = ?').run(status, req.user.id, l.id);
   await A.logActivity(req.org.id, req.user.id, 'hr', `Congé de ${e.name} : ${status === 'approved' ? 'accepté' : 'refusé'}`);
+  await W.audit(req, 'leave', l.id, 'decision', { status: l.status }, { status, employee: e.name });
+  if (e.user_id) await W.push(req.org.id, e.user_id, 'leave', `Votre demande de congé du ${l.start} au ${l.end} est ${status === 'approved' ? 'acceptée' : 'refusée'}.`, 'leave:' + l.id);
   res.json({ ok: true });
 });
 

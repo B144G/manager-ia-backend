@@ -7,6 +7,7 @@ const config = require('../config');
 const { requireUser } = require('../middleware/auth');
 const limits = require('../middleware/limits');
 const A = require('./access');
+const W = require('./w3');
 const { modules } = require('./modules');
 const { HttpError, asyncHandler } = require('../util');
 
@@ -16,17 +17,17 @@ const pub = express.Router();
 // ---------- Entrée publique : formulaire de contact d'une organisation (crée un ticket) ----------
 const intakeLimit = limits.make(10 * 60 * 1000, 8, 'Trop de messages envoyés. Réessayez dans quelques minutes.');
 pub.post('/intake/:token', intakeLimit, async (req, res) => {
-  const org = await db.prepare('SELECT id FROM orgs WHERE intake_token = ?').get(String(req.params.token).slice(0, 80));
+  const org = await db.prepare('SELECT * FROM orgs WHERE intake_token = ?').get(String(req.params.token).slice(0, 80));
   if (!org) throw new HttpError(404, 'Formulaire introuvable.');
   const b = req.body || {};
   const name = A.text(b.name, 100, { required: true, msg: 'Indiquez votre nom.' });
   const message = A.text(b.message, 2000, { required: true, msg: 'Écrivez votre message.' });
-  const now = nowISO();
-  const t = (await db.prepare("INSERT INTO tickets (org_id, customer_name, customer_contact, channel, subject, created_at, updated_at) VALUES (?, ?, ?, 'formulaire', ?, ?, ?)")
-    .run(org.id, name, A.text(b.contact, 120), A.text(b.subject, 150) || message.slice(0, 80), now, now)).lastInsertRowid;
-  await db.prepare("INSERT INTO ticket_messages (ticket_id, author, content, created_at) VALUES (?, 'customer', ?, ?)").run(t, message, now);
+  const email = A.text(b.email, 120); const phone = A.text(b.phone, 40);
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) throw new HttpError(400, 'Adresse e-mail invalide.');
+  const id = await require('./support').createTicket(org, { name, contact: A.text(b.contact, 120) || email || phone, email, phone, channel: 'formulaire', subject: A.text(b.subject, 150) || message.slice(0, 80), message });
   await A.logActivity(org.id, null, 'support', `Nouveau message client de ${name}`);
-  res.status(201).json({ ok: true });
+  const t = await db.prepare('SELECT ref FROM tickets WHERE id = ?').get(id);
+  res.status(201).json({ ok: true, ref: t.ref });
 });
 
 // Assistant commercial public (page chat.html) : sans connexion, avec limites de débit.
@@ -46,6 +47,8 @@ pub.get('/calendar/:token.ics', limits.make(60 * 1000, 60, 'Trop de requêtes.')
   res.set({ 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'private, max-age=300', 'X-Content-Type-Options': 'nosniff', 'Content-Disposition': 'inline; filename="rendez-vous.ics"' });
   return res.send(await require('./sales-appt').icsFeed(org));
 });
+pub.use('/', require('./support-w3').pub);
+pub.use('/', require('./marketing-w3').pub);
 pub.use('/whatsapp', require('./whatsapp'));
 pub.use('/meta', require('./meta-channels'));
 
@@ -175,6 +178,7 @@ orgRouter.put('/members/:userId', A.need('admin'), async (req, res) => {
   if (target.role === 'admin' && !A.can(req, 'owner')) throw new HttpError(403, 'Seul le propriétaire peut modifier un administrateur.');
   const branch = b.branchId === undefined ? target.branch_id : await A.branchOf(req, b.branchId);
   await db.prepare('UPDATE org_members SET role = ?, title = ?, branch_id = ? WHERE id = ?').run(role, b.title === undefined ? target.title : A.text(b.title, 80), branch, target.id);
+  await W.audit(req, 'member', uid, 'update', { role: target.role, title: target.title, branchId: target.branch_id }, { role, title: b.title === undefined ? target.title : A.text(b.title, 80), branchId: branch });
   res.json({ ok: true });
 });
 
@@ -193,6 +197,7 @@ orgRouter.delete('/members/:userId', async (req, res) => {
     await db.prepare('UPDATE positions SET holder_id = NULL WHERE org_id = ? AND holder_id = ?').run(req.org.id, uid);
     await db.prepare('DELETE FROM org_members WHERE id = ?').run(target.id);
   })();
+  await W.audit(req, 'member', uid, 'remove', { role: target.role }, null);
   await A.logActivity(req.org.id, req.user.id, 'team', uid === req.user.id ? `${req.user.name} a quitté l'équipe` : 'Une personne a été retirée de l\'équipe');
   res.json({ ok: true });
 });
@@ -225,6 +230,8 @@ orgRouter.get('/activity', async (req, res) => {
 });
 
 // ---------- Sous-applications ----------
+// Vague 3 : routes plus précises déclarées AVANT celles des sous-applications existantes (qui gardent leur comportement).
+for (const [p, f] of [['', 'team-w3'], ['/hr', 'hr-w3'], ['/projects', 'projects-w3'], ['/legal', 'legal-w3'], ['/support', 'support-w3'], ['/marketing', 'marketing-w3'], ['/dashboard', 'dashboard-w3'], ['/data', 'data-w3'], ['/agents', 'agents-w3']]) orgRouter.use(p || '/', require('./' + f));
 orgRouter.use('/dashboard', require('./dashboard'));
 orgRouter.use('/decisions', require('./decisions'));
 orgRouter.use('/support', require('./support'));

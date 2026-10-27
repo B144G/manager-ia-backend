@@ -1855,6 +1855,362 @@ const MIGRATIONS = [
     PRIMARY KEY (org_id, prefix)
   );
   `,
+  /* VAGUE 3 · socle : réglages par organisation, notifications internes, journal d'audit */ `
+  CREATE TABLE org_settings (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (org_id, key)
+  );
+  CREATE TABLE notices (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL,
+    kind TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL,
+    ref TEXT NOT NULL DEFAULT '',
+    is_read BIGINT NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_notices ON notices(org_id, user_id, is_read);
+  CREATE TABLE audit_log (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    user_id BIGINT,
+    entity TEXT NOT NULL,
+    entity_id BIGINT,
+    action TEXT NOT NULL,
+    before_json TEXT NOT NULL DEFAULT '',
+    after_json TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_audit_log_org ON audit_log(org_id, id);
+  `,
+  /* VAGUE 3 · RH : soldes de congés, jours fériés, dossier du personnel, contrats, pointage, recrutement, évaluations, formations */ `
+  ALTER TABLE employees ADD COLUMN cni_no TEXT NOT NULL DEFAULT '';
+  ALTER TABLE employees ADD COLUMN birth_date TEXT;
+  ALTER TABLE employees ADD COLUMN address TEXT NOT NULL DEFAULT '';
+  ALTER TABLE employees ADD COLUMN emergency_name TEXT NOT NULL DEFAULT '';
+  ALTER TABLE employees ADD COLUMN emergency_phone TEXT NOT NULL DEFAULT '';
+  ALTER TABLE employees ADD COLUMN diplomas TEXT NOT NULL DEFAULT '';
+  CREATE TABLE hr_holidays (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    name TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'manual',
+    UNIQUE (org_id, date)
+  );
+  CREATE TABLE leave_adjustments (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    employee_id BIGINT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    year TEXT NOT NULL,
+    days DOUBLE PRECISION NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE hr_contracts (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    employee_id BIGINT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'cdi',
+    start_date TEXT,
+    end_date TEXT,
+    trial_end TEXT,
+    medical_due TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE hr_attendance (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    employee_id BIGINT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'present',
+    minutes_late BIGINT NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    UNIQUE (employee_id, day)
+  );
+  CREATE TABLE hr_jobs (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    position_id BIGINT REFERENCES positions(id) ON DELETE SET NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE hr_candidates (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    job_id BIGINT NOT NULL REFERENCES hr_jobs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    phone TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    stage TEXT NOT NULL DEFAULT 'new',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE hr_reviews (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    employee_id BIGINT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    period TEXT NOT NULL,
+    score BIGINT NOT NULL DEFAULT 3,
+    strengths TEXT NOT NULL DEFAULT '',
+    goals TEXT NOT NULL DEFAULT '',
+    reviewer_id BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE hr_trainings (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    employee_id BIGINT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'training',
+    done_at TEXT,
+    expires_at TEXT,
+    provider TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  `,
+  /* VAGUE 3 · décisions à circuit, projets, juridique, procédures */ `
+  ALTER TABLE decisions ADD COLUMN link_kind TEXT NOT NULL DEFAULT '';
+  ALTER TABLE decisions ADD COLUMN link_id BIGINT;
+  ALTER TABLE decisions ADD COLUMN reminded_at TEXT;
+  CREATE TABLE decision_rules (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    min_amount BIGINT NOT NULL,
+    role TEXT NOT NULL,
+    UNIQUE (org_id, min_amount, role)
+  );
+  CREATE TABLE decision_steps (
+    id BIGSERIAL PRIMARY KEY,
+    decision_id BIGINT NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+    org_id BIGINT NOT NULL,
+    step_no BIGINT NOT NULL,
+    role TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    decided_by BIGINT,
+    decided_at TEXT,
+    note TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX idx_decision_steps ON decision_steps(decision_id, step_no);
+  CREATE TABLE decision_delegations (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    from_user BIGINT NOT NULL,
+    to_user BIGINT NOT NULL,
+    until_date TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  ALTER TABLE projects ADD COLUMN budget BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE tasks ADD COLUMN estimate_hours DOUBLE PRECISION NOT NULL DEFAULT 0;
+  ALTER TABLE tasks ADD COLUMN depends_on BIGINT;
+  ALTER TABLE tasks ADD COLUMN recurrence TEXT NOT NULL DEFAULT '';
+  ALTER TABLE tasks ADD COLUMN recur_next TEXT;
+  CREATE TABLE time_entries (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    task_id BIGINT,
+    project_id BIGINT,
+    user_id BIGINT NOT NULL,
+    day TEXT NOT NULL,
+    hours DOUBLE PRECISION NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_time_entries ON time_entries(org_id, project_id);
+  CREATE TABLE project_costs (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    project_id BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    label TEXT NOT NULL,
+    amount BIGINT NOT NULL,
+    date TEXT NOT NULL,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE project_milestones (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    project_id BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    due TEXT,
+    done BIGINT NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE task_comments (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE legal_registers (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    date TEXT,
+    ref TEXT NOT NULL DEFAULT '',
+    holder TEXT NOT NULL DEFAULT '',
+    shares BIGINT NOT NULL DEFAULT 0,
+    detail TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE legal_compliance (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    due_date TEXT,
+    recurrence TEXT NOT NULL DEFAULT 'once',
+    status TEXT NOT NULL DEFAULT 'todo',
+    note TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'manual',
+    verify BIGINT NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  ALTER TABLE processes ADD COLUMN owner_id BIGINT;
+  ALTER TABLE processes ADD COLUMN version BIGINT NOT NULL DEFAULT 1;
+  ALTER TABLE processes ADD COLUMN review_months BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE processes ADD COLUMN next_review TEXT;
+  CREATE TABLE process_versions (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    process_id BIGINT NOT NULL REFERENCES processes(id) ON DELETE CASCADE,
+    version BIGINT NOT NULL,
+    title TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    steps TEXT NOT NULL DEFAULT '[]',
+    edited_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE process_reads (
+    process_id BIGINT NOT NULL REFERENCES processes(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL,
+    version BIGINT NOT NULL,
+    read_at TEXT NOT NULL,
+    PRIMARY KEY (process_id, user_id, version)
+  );
+  `,
+  /* VAGUE 3 · service client (SLA, satisfaction, base de connaissances, lien client), marketing (consentement, segments, envois groupés, codes promo) */ `
+  ALTER TABLE tickets ADD COLUMN customer_id BIGINT REFERENCES customers(id) ON DELETE SET NULL;
+  ALTER TABLE tickets ADD COLUMN ref TEXT NOT NULL DEFAULT '';
+  ALTER TABLE tickets ADD COLUMN first_due_at TEXT;
+  ALTER TABLE tickets ADD COLUMN due_at TEXT;
+  ALTER TABLE tickets ADD COLUMN first_response_at TEXT;
+  ALTER TABLE tickets ADD COLUMN resolved_at TEXT;
+  ALTER TABLE tickets ADD COLUMN csat BIGINT;
+  ALTER TABLE tickets ADD COLUMN csat_comment TEXT NOT NULL DEFAULT '';
+  ALTER TABLE tickets ADD COLUMN csat_token TEXT NOT NULL DEFAULT '';
+  ALTER TABLE tickets ADD COLUMN csat_at TEXT;
+  ALTER TABLE ticket_messages ADD COLUMN sent_via TEXT NOT NULL DEFAULT '';
+  ALTER TABLE ticket_messages ADD COLUMN send_status TEXT NOT NULL DEFAULT '';
+  ALTER TABLE ticket_messages ADD COLUMN send_error TEXT NOT NULL DEFAULT '';
+  CREATE TABLE kb_articles (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    published BIGINT NOT NULL DEFAULT 1,
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  ALTER TABLE customers ADD COLUMN marketing_consent BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE customers ADD COLUMN consent_at TEXT;
+  ALTER TABLE customers ADD COLUMN consent_source TEXT NOT NULL DEFAULT '';
+  CREATE TABLE marketing_segments (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    filter TEXT NOT NULL DEFAULT '{}',
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE broadcasts (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL,
+    filter TEXT NOT NULL DEFAULT '{}',
+    template_id BIGINT,
+    total BIGINT NOT NULL DEFAULT 0,
+    sent BIGINT NOT NULL DEFAULT 0,
+    skipped BIGINT NOT NULL DEFAULT 0,
+    failed BIGINT NOT NULL DEFAULT 0,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE broadcast_sends (
+    id BIGSERIAL PRIMARY KEY,
+    broadcast_id BIGINT NOT NULL REFERENCES broadcasts(id) ON DELETE CASCADE,
+    org_id BIGINT NOT NULL,
+    customer_id BIGINT NOT NULL,
+    status TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE promo_codes (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'percent',
+    value BIGINT NOT NULL,
+    starts TEXT,
+    ends TEXT,
+    max_uses BIGINT NOT NULL DEFAULT 0,
+    used BIGINT NOT NULL DEFAULT 0,
+    active BIGINT NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, code)
+  );
+  ALTER TABLE documents ADD COLUMN promo_code TEXT NOT NULL DEFAULT '';
+  ALTER TABLE documents ADD COLUMN discount BIGINT NOT NULL DEFAULT 0;
+  `,
+  /* VAGUE 3 · agents planifiés et actions confirmées, historique de livraison des webhooks */ `
+  CREATE TABLE agent_schedules (
+    org_id BIGINT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    enabled BIGINT NOT NULL DEFAULT 0,
+    weekday BIGINT NOT NULL DEFAULT 1,
+    hour BIGINT NOT NULL DEFAULT 8,
+    agent_key TEXT NOT NULL DEFAULT 'direction',
+    last_run TEXT,
+    last_status TEXT NOT NULL DEFAULT ''
+  );
+  CREATE TABLE agent_actions (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    ref_id BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE webhook_deliveries (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    hook_id BIGINT NOT NULL,
+    event TEXT NOT NULL,
+    ok BIGINT NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT '',
+    payload TEXT NOT NULL DEFAULT '',
+    attempts BIGINT NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_webhook_deliveries ON webhook_deliveries(org_id, id);
+  `,
 ];
 
 
