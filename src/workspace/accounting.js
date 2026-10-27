@@ -42,6 +42,7 @@ async function post(org, userId, { journal, date, label, piece, lines, source, s
   if (!isDate(date)) throw new HttpError(400, 'Date invalide (AAAA-MM-JJ).');
   const cleanLabel = A.text(label, 200, { required: true, msg: "Indiquez le libellé de l'écriture." });
   if (settings.locked_until && date <= settings.locked_until) throw new HttpError(400, `Les écritures jusqu'au ${settings.locked_until} sont verrouillées (période clôturée).`);
+  if (await db.prepare("SELECT 1 FROM month_closings WHERE org_id = ? AND month = ? AND status = 'closed'").get(org.id, date.slice(0, 7))) throw new HttpError(400, `Le mois ${date.slice(0, 7)} est clôturé : rouvrez-le (avec un motif) dans la clôture mensuelle pour y passer une écriture.`);
   if (!Array.isArray(lines) || lines.length < 2 || lines.length > 50) throw new HttpError(400, 'Une écriture comporte au moins deux lignes.');
   let d = 0; let c = 0;
   const L = await amap(lines, async (l) => {
@@ -334,7 +335,13 @@ Règles : journaux possibles : ${Object.keys(JOURNALS).join(', ')} (CA = caisse,
   res.json({ proposal: { journal: JOURNALS[out.journal] ? out.journal : 'OD', date: isDate(out.date) ? out.date : today(), label: A.text(out.label, 200) || text.slice(0, 120), lines } });
 }));
 
+// VAGUE 2 : rapprochement bancaire, lettrage, balance âgée, dettes fournisseurs, immobilisations, clôture mensuelle, écarts de caisse.
+router.use('/bank', require('./acc-bank'));
+router.use(require('./acc-thirdparty'));
+router.use(require('./acc-ops'));
+
 module.exports = router;
+module.exports.pending = pending;
 module.exports.statements = statements;
 module.exports.balance = balance;
 module.exports.recordEntry = recordEntry;

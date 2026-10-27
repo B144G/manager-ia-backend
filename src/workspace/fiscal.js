@@ -355,6 +355,16 @@ module.exports.sigOf = sigOf;
 module.exports.addMonths = addMonths;
 module.exports.NOTICE = NOTICE;
 
+/** Clôture mensuelle du mois précédent et rapprochements en attente (Comptabilité, VAGUE 2). */
+async function closingLine(req) {
+  try {
+    const prev = new Date(Date.UTC(Number(today().slice(0, 4)), Number(today().slice(5, 7)) - 2, 1)).toISOString().slice(0, 7);
+    const c = await db.prepare('SELECT status FROM month_closings WHERE org_id = ? AND month = ?').get(req.org.id, prev);
+    const unm = (await db.prepare("SELECT COUNT(*) c FROM bank_lines WHERE org_id = ? AND status = 'unmatched'").get(req.org.id)).c;
+    return `Clôture mensuelle de ${prev} : ${c && c.status === 'closed' ? 'faite' : 'pas encore faite'}. Lignes de relevé bancaire non pointées : ${unm}.`;
+  } catch { return ''; }
+}
+
 // Crochets lus par ai.js : ctx(req) = ce que l'IA voit (administrateurs seulement : aucun chiffre financier pour un rôle inférieur).
 module.exports.ctx = async (req) => {
   if (!A.can(req, 'admin')) return '';
@@ -368,6 +378,7 @@ module.exports.ctx = async (req) => {
     `Anomalies à corriger avant dépôt : ${l.toFix}${l.issues.filter((i) => i.level === 'error').length ? '\n' + l.issues.filter((i) => i.level === 'error').slice(0, 6).map((i) => '- ' + i.text.slice(0, 160)).join('\n') : ''}`,
     `Échéances en retard (${o.late.length}) :\n${show(o.late)}`, `Échéances dans les 7 jours (${o.soon.length}) :\n${show(o.soon)}`,
     `Échéances récurrentes ouvertes : ${rec.length}. Rappel : quand une échéance « Répéter » est marquée déposée ou payée, la suivante est créée automatiquement ; ${noAuto.length ? `${noAuto.length} échéance(s) récurrente(s) n'ont PAS « Répéter » (la suivante est à créer à la main) : ${noAuto.slice(0, 5).map((x) => String(x.title).slice(0, 40)).join(', ')}.` : 'toutes ont « Répéter ».'}`,
+    await closingLine(req),
     l.carry.priorResult ? `Résultat des exercices précédents non affecté : ${f(l.carry.priorResult)} (affectation à saisir par le comptable).` : '', l.exercise.closed ? `Exercice ${year} clôturé (verrou au ${l.exercise.lockedUntil}).` : `Verrou de clôture : ${l.exercise.lockedUntil || 'aucun'}.`].filter(Boolean).join('\n').slice(0, 2900);
 };
 module.exports.min = 'admin';

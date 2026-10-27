@@ -1675,6 +1675,141 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_payroll_settlements ON payroll_settlements(org_id, exit_date);
   `,
+  /* VAGUE 2 · comptabilité : rapprochement bancaire, lettrage, dettes fournisseurs, immobilisations, clôture mensuelle, écarts de caisse */ `
+  CREATE TABLE bank_accounts (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    gl_account TEXT NOT NULL DEFAULT '521',
+    account_no TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE bank_lines (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    bank_id BIGINT NOT NULL REFERENCES bank_accounts(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    reference TEXT NOT NULL DEFAULT '',
+    amount BIGINT NOT NULL,
+    balance BIGINT,
+    status TEXT NOT NULL DEFAULT 'unmatched',
+    acc_line_id BIGINT,
+    matched_by BIGINT,
+    matched_at TEXT,
+    hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (bank_id, hash)
+  );
+  CREATE INDEX idx_bank_lines_bank ON bank_lines(bank_id, date);
+  CREATE UNIQUE INDEX uq_bank_lines_acc ON bank_lines(acc_line_id) WHERE acc_line_id IS NOT NULL;
+  ALTER TABLE acc_lines ADD COLUMN letter TEXT NOT NULL DEFAULT '';
+  CREATE TABLE acc_lettering (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    account TEXT NOT NULL,
+    code TEXT NOT NULL,
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, account, code)
+  );
+  CREATE TABLE supplier_bills (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    supplier_id BIGINT REFERENCES suppliers(id) ON DELETE SET NULL,
+    supplier_name TEXT NOT NULL DEFAULT '',
+    number TEXT NOT NULL DEFAULT '',
+    bill_date TEXT NOT NULL,
+    due_date TEXT NOT NULL,
+    amount BIGINT NOT NULL,
+    paid BIGINT NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'open',
+    source TEXT NOT NULL DEFAULT 'manual',
+    source_id BIGINT,
+    acc_entry_id BIGINT,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_supplier_bills ON supplier_bills(org_id, status, due_date);
+  CREATE UNIQUE INDEX uq_supplier_bills_src ON supplier_bills(org_id, source, source_id) WHERE source <> 'manual';
+  CREATE TABLE supplier_payments (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    bill_id BIGINT NOT NULL REFERENCES supplier_bills(id) ON DELETE CASCADE,
+    amount BIGINT NOT NULL,
+    date TEXT NOT NULL,
+    method TEXT NOT NULL DEFAULT 'bank',
+    reference TEXT NOT NULL DEFAULT '',
+    acc_entry_id BIGINT,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE fixed_assets (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    label TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'equipment',
+    acquired_on TEXT NOT NULL,
+    start_month TEXT NOT NULL,
+    cost BIGINT NOT NULL,
+    residual BIGINT NOT NULL DEFAULT 0,
+    life_months BIGINT NOT NULL,
+    asset_account TEXT NOT NULL,
+    amort_account TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    disposed_on TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE asset_depreciations (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    asset_id BIGINT NOT NULL REFERENCES fixed_assets(id) ON DELETE CASCADE,
+    period TEXT NOT NULL,
+    amount BIGINT NOT NULL,
+    acc_entry_id BIGINT,
+    created_at TEXT NOT NULL,
+    UNIQUE (asset_id, period)
+  );
+  CREATE TABLE month_closings (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    month TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    checks TEXT NOT NULL DEFAULT '{}',
+    note TEXT NOT NULL DEFAULT '',
+    closed_by BIGINT,
+    closed_at TEXT,
+    reopen_reason TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (org_id, month)
+  );
+  CREATE TABLE acc_adjustments (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    month TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    amount BIGINT NOT NULL,
+    account TEXT NOT NULL,
+    entry_id BIGINT,
+    reversal_id BIGINT,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE cash_counts (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    branch_id BIGINT REFERENCES branches(id) ON DELETE SET NULL,
+    date TEXT NOT NULL,
+    expected BIGINT NOT NULL,
+    counted BIGINT NOT NULL,
+    diff BIGINT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    entry_id BIGINT,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  `,
 ];
 
 
