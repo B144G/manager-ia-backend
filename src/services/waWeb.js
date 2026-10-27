@@ -283,7 +283,9 @@ function createManager(opts = {}) {
   async function known(orgId, to) {
     if (await db.prepare("SELECT 1 FROM chats WHERE org_id = ? AND channel = 'whatsapp' AND contact = ?").get(orgId, to)) return true;
     const last = to.slice(-9);
-    return (await db.prepare('SELECT phone FROM digest_subs WHERE org_id = ?').all(orgId)).some((r) => digits(r.phone).slice(-9) === last && last.length >= 8);
+    if ((await db.prepare('SELECT phone FROM digest_subs WHERE org_id = ?').all(orgId)).some((r) => digits(r.phone).slice(-9) === last && last.length >= 8)) return true;
+    // Responsables de relais désignés dans les réglages (relay.js) : leur numéro est connu de l'organisation.
+    return (await db.prepare('SELECT phone FROM relay_contacts WHERE org_id = ?').all(orgId)).some((r) => digits(r.phone).slice(-9) === last && last.length >= 8);
   }
   const typingMs = (len) => { const lo = 1000 + Math.min(1500, len * 8); const hi = Math.min(4000, 1500 + Math.min(2500, len * 20)); return Math.round(lo + Math.random() * Math.max(0, hi - lo)); };
 
@@ -325,7 +327,7 @@ function createManager(opts = {}) {
     const n = digits(to);
     if (n.length < 8 || n.length > 15) throw new Error('Numéro de téléphone invalide.');
     const lastIn = s.recent.get(n);
-    if (!(lastIn && clock.now() - lastIn < 24 * 3600000) && !(await known(Number(orgId), n))) throw new Error("Message refusé : on n'écrit jamais en premier à une personne inconnue.");
+    if (n !== s.number && !(lastIn && clock.now() - lastIn < 24 * 3600000) && !(await known(Number(orgId), n))) throw new Error("Message refusé : on n'écrit jamais en premier à une personne inconnue.");
     return { s, jid: s.jids.get(n) || `${n}@s.whatsapp.net`, n, o };
   }
   async function humanSend(s, sock, jid, content, len) {

@@ -13,6 +13,7 @@ const { sendMail, mailEnabled } = require('../services/notify');
 const { amap, afilter, HttpError, asyncHandler, isEmail, oneLine, log } = require('../util');
 
 const router = express.Router({ mergeParams: true });
+router.use('/', require('./pricing').router); // suggestions de prix, prix et remise par client (pricing.js)
 
 const customerOf = async (req, id) => {
   const c = await db.prepare('SELECT * FROM customers WHERE id = ? AND org_id = ?').get(A.id(id), req.org.id);
@@ -32,7 +33,7 @@ const MOBILE = { mtn_momo: 'MTN', orange_money: 'Orange' };
 /** Lignes validées : [{label, quantity, price}] ; les totaux sont TOUJOURS recalculés ici (jamais ceux envoyés par l'écran). */
 function cleanLines(v) {
   if (!Array.isArray(v) || !v.length || v.length > 40) throw new HttpError(400, 'Ajoutez au moins une ligne (40 au plus).');
-  return v.map((l) => ({ label: A.text(l && l.label, 150, { required: true, msg: 'Chaque ligne doit avoir un libellé.' }), quantity: A.qty(l.quantity === undefined || l.quantity === '' ? 1 : l.quantity), price: Number(l.price) < 0 && /^Remise/i.test(String(l.label || '')) ? -A.amount(-Number(l.price)) : A.amount(l.price) })); // seule une ligne « Remise… » (code promo) peut être négative
+  return v.map((l) => ({ ...(Number.isInteger(Number(l && l.itemId)) && Number(l.itemId) > 0 ? { itemId: Number(l.itemId) } : {}), label: A.text(l && l.label, 150, { required: true, msg: 'Chaque ligne doit avoir un libellé.' }), quantity: A.qty(l.quantity === undefined || l.quantity === '' ? 1 : l.quantity), price: Number(l.price) < 0 && /^Remise/i.test(String(l.label || '')) ? -A.amount(-Number(l.price)) : A.amount(l.price) })); // seule une ligne « Remise… » (code promo) peut être négative
 }
 const vatRate = (v, def) => {
   if (v === undefined || v === null || v === '') return def;
@@ -52,7 +53,7 @@ const view = (d, extra = {}, org) => {
     id: d.id, kind: d.kind, number: d.number, status: d.status, total: d.total, paid: d.paid, credited: d.credited, balance: d.kind === 'invoice' ? balanceOf(d) : undefined,
     refundDue: d.kind === 'invoice' && d.paid > d.total - d.credited ? d.paid - (d.total - d.credited) : undefined,
     subtotalHt: a.ht, vatRate: a.rate, vatAmount: a.vat, pricesIncl: Number(d.prices_incl) === 1, creditOf: d.credit_of, creditReason: d.credit_reason || undefined,
-    issued: d.issued, due: d.due, note: d.note, customerId: d.customer_id, promoCode: d.promo_code || undefined, discount: Number(d.discount || 0) || undefined, overdue: isOverdue(d), lines: JSON.parse(d.lines), ...extra,
+    issued: d.issued, due: d.due, note: d.note, customerId: d.customer_id, negotiated: Boolean(d.negotiated) || undefined, discountPct: Number(d.discount_pct) || undefined, approval: d.approval || undefined, promoCode: d.promo_code || undefined, discount: Number(d.discount || 0) || undefined, overdue: isOverdue(d), lines: JSON.parse(d.lines), ...extra,
   };
 };
 
@@ -106,7 +107,7 @@ router.delete('/customers/:id', A.need('manager'), async (req, res) => {
 router.get('/customers/:id', A.need('manager'), async (req, res) => {
   const c = await customerOf(req, req.params.id);
   const docs = await amap(await db.prepare('SELECT * FROM documents WHERE customer_id = ? ORDER BY id DESC LIMIT 50').all(c.id), (d) => view(d, {}, req.org));
-  res.json({ customer: { id: c.id, name: c.name, phone: c.phone, email: c.email, notes: c.notes, niu: c.niu, address: c.address }, documents: docs });
+  res.json({ customer: { id: c.id, name: c.name, phone: c.phone, email: c.email, notes: c.notes, niu: c.niu, address: c.address, defaultDiscount: Number(c.default_discount) || 0, followupOptout: Boolean(c.followup_optout) }, documents: docs });
 });
 
 // ---------- Devis et factures (responsables et plus) ----------
@@ -144,6 +145,7 @@ async function createDoc(req, b, kind, extra = {}) {
   const rate = b.vatRate !== undefined ? vatRate(b.vatRate, Number(req.org.vat_rate)) : extra.vatRate !== undefined ? extra.vatRate : Number(req.org.vat_rate);
   const incl = kind === 'order' ? true : bool(b.pricesIncl, extra.pricesIncl !== undefined ? extra.pricesIncl : true);
   const t = D.totals(lines, rate, incl);
+  if (['quote', 'invoice'].includes(kind) && !extra.skipFloor) await require('./pricing').guardLines(req, c, lines, b.priceOverride, kind === 'quote' ? 'devis' : 'facture');
   const now = nowISO();
   return await db.transaction(async () => {
     const id = (await db.prepare('INSERT INTO documents (org_id, branch_id, customer_id, kind, number, status, lines, total, issued, due, note, created_by, created_at, updated_at, vat_rate, prices_incl, subtotal_ht, vat_amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
@@ -166,6 +168,7 @@ router.put('/documents/:id', A.need('manager'), async (req, res) => {
   if (b.lines !== undefined || b.vatRate !== undefined || b.pricesIncl !== undefined) {
     if (d.status !== 'draft') throw new HttpError(400, 'Seul un brouillon peut être modifié dans ses lignes ou sa TVA.');
     const lines = b.lines !== undefined ? cleanLines(b.lines) : JSON.parse(d.lines);
+    if (b.lines !== undefined && ['quote', 'invoice'].includes(d.kind)) await require('./pricing').guardLines(req, await customerOf(req, d.customer_id), lines, b.priceOverride, d.number);
     const rate = vatRate(b.vatRate, d.vat_rate === null ? Number(req.org.vat_rate) : Number(d.vat_rate));
     const incl = bool(b.pricesIncl, Number(d.prices_incl) === 1);
     const t = D.totals(lines, rate, incl);
@@ -211,7 +214,7 @@ router.post('/documents/:id/convert', A.need('manager'), async (req, res) => {
   const d = await docOf(req, req.params.id);
   if (d.kind !== 'quote' || d.status !== 'accepted') throw new HttpError(400, 'Seul un devis accepté peut devenir une facture.');
   const id = await createDoc(req, { customerId: d.customer_id, lines: JSON.parse(d.lines).map((l) => ({ label: l.label, quantity: l.quantity, price: l.price })), note: `Suite au devis ${d.number}`, due: req.body && req.body.due }, 'invoice',
-    { vatRate: d.vat_rate === null ? undefined : Number(d.vat_rate), pricesIncl: Number(d.prices_incl) === 1 });
+    { vatRate: d.vat_rate === null ? undefined : Number(d.vat_rate), pricesIncl: Number(d.prices_incl) === 1, skipFloor: true });
   res.status(201).json({ id });
 });
 

@@ -45,6 +45,7 @@ async function runOnce() {
 async function safeRun() {
   try {
     await runOnce();
+    require('./workspace/followups').tickAll().catch((e) => log.warn('Relances :', oneLine(e.message, 160)));
     require('./workspace/wa-out').runAllAuto().catch(() => {});
   } catch (e) {
     log.error('Tâches automatiques en erreur :', oneLine(e.message, 200));

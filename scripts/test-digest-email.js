@@ -1,6 +1,6 @@
 'use strict';
 // Test du résumé du matin et des alertes PAR E-MAIL (canal par défaut) : abonnement, consentement, envoi (faux service Brevo), dédoublonnage,
-// désabonnement (lien signé), quota de l'offre, migration des anciens abonnés, canal WhatsApp inchangé, e-mail invalide, e-mails non configurés.
+// désabonnement (lien signé), quota de l'offre, migration des anciens abonnés, canal WhatsApp retiré, e-mail invalide, e-mails non configurés.
 // Lancez-le avec : npm run test:digest-email   (base PostgreSQL temporaire, FAUX service d'e-mails, FAUX serveur Meta : aucun appel externe)
 const { spawn } = require('child_process');
 const http = require('http');
@@ -68,7 +68,8 @@ async function migrationTest() {
   // On remet la base dans l'état « avant la migration » : sans colonnes channel / email, migration non enregistrée.
   await db.prepare('ALTER TABLE digest_subs DROP COLUMN channel').run();
   await db.prepare('ALTER TABLE digest_subs DROP COLUMN email').run();
-  await db.prepare('DELETE FROM schema_migrations WHERE version = ?').run(MIGRATIONS.length);
+  const MV = MIGRATIONS.findIndex((m) => m.includes('ALTER TABLE digest_subs ADD COLUMN channel')) + 1; // migration visée (pas forcément la dernière)
+  await db.prepare('DELETE FROM schema_migrations WHERE version = ?').run(MV);
   const u = (await db.prepare("INSERT INTO users (name, contact, pass_hash, created_at) VALUES ('Ancien', 'ancien@exemple.com', 'x', ?)").run(now)).lastInsertRowid;
   const o = (await db.prepare("INSERT INTO orgs (name, owner_id, intake_token, created_at) VALUES ('Ancienne Org', ?, 'tok-migration-test', ?)").run(u, now)).lastInsertRowid;
   await db.prepare("INSERT INTO digest_subs (org_id, user_id, phone, morning, urgent, send_minute, template_name, consent_at, consent_text, updated_at) VALUES (?, ?, '237655112233', 1, 1, 450, 'resume_matin', ?, 'ancien texte WhatsApp', ?)").run(o, u, now, now);
@@ -77,7 +78,7 @@ async function migrationTest() {
   check('abonnement existant : passé sur le canal e-mail', s.channel === 'email', s.channel);
   check('abonnement existant : numéro, horaire, options, modèle et consentement conservés', s.phone === '237655112233' && Number(s.morning) === 1 && Number(s.urgent) === 1 && Number(s.send_minute) === 450 && s.template_name === 'resume_matin' && s.consent_at === now && s.unsub_at === null, s);
   check('adresse dédiée vide par défaut (l\'e-mail du compte sert)', s.email === '');
-  const again = await db.prepare('SELECT COUNT(*) c FROM schema_migrations WHERE version = ?').get(MIGRATIONS.length);
+  const again = await db.prepare('SELECT COUNT(*) c FROM schema_migrations WHERE version = ?').get(MV);
   check('migration enregistrée une seule fois', Number(again.c) === 1);
   await db.close();
 }
@@ -117,13 +118,11 @@ async function main() {
 
     console.log('Abonnement par e-mail');
     r = await owner('GET', D);
-    check('canal par défaut : e-mail ; e-mails configurés ; WhatsApp non connecté ; adresse du compte connue', r.status === 200 && r.json.me.channel === 'email' && r.json.mailEnabled === true && r.json.connected === false && r.json.hasEmail === true && r.json.me.address === awaMail && /e-mail/.test(r.json.consentTextEmail), r.json);
+    check('e-mail seulement (plus de champ WhatsApp) ; e-mails configurés ; adresse du compte connue', r.status === 200 && r.json.me.channel === undefined && r.json.mailEnabled === true && r.json.connected === undefined && r.json.hasEmail === true && r.json.me.address === awaMail && /e-mail/.test(r.json.consentText), r.json);
     r = await owner('PUT', `${D}/me`, { morning: true, hour: future() });
     check('sans consentement -> 400 (jamais d\'envoi sans consentement)', r.status === 400 && /consentement/.test(r.json.error), r.json);
     r = await owner('PUT', `${D}/me`, { morning: true, consent: true, hour: future(), email: 'pas-une-adresse' });
     check('adresse e-mail invalide -> 400', r.status === 400 && /invalide/.test(r.json.error), r.json);
-    r = await owner('PUT', `${D}/me`, { channel: 'sms', morning: true, consent: true, hour: future() });
-    check('canal inconnu -> 400', r.status === 400, r.json);
     r = await marc('PUT', `${D}/me`, { morning: true, consent: true, hour: future() });
     check('compte sans e-mail (inscrit avec un téléphone) et sans adresse dédiée -> 400', r.status === 400 && /adresse e-mail/.test(r.json.error), r.json);
     const m0 = fake.seen.mail.length;
@@ -132,7 +131,7 @@ async function main() {
     r = await owner('PUT', `${D}/me`, { morning: true, urgent: false, consent: true, hour: future() });
     check('abonnement par e-mail : aucun numéro WhatsApp requis, WhatsApp non connecté', r.status === 200, r.json);
     r = await owner('GET', D);
-    check('consentement e-mail enregistré avec sa date et son texte', r.json.me.consented && /^\d{4}-\d{2}-\d{2}T/.test(r.json.me.consentAt) && r.json.me.channel === 'email', r.json.me);
+    check('consentement e-mail enregistré avec sa date et son texte', r.json.me.consented && /^\d{4}-\d{2}-\d{2}T/.test(r.json.me.consentAt) && (await rawDb.prepare('SELECT channel FROM digest_subs WHERE org_id = ? AND user_id = ?').get(org, uid)).channel === 'email', r.json.me);
     const cons = await rawDb.prepare('SELECT consent_text FROM digest_subs WHERE org_id = ? AND user_id = ?').get(org, uid);
     check('texte de consentement adapté à l\'e-mail', /par e-mail/.test(cons.consent_text) && !/WhatsApp/.test(cons.consent_text), cons);
 
@@ -215,20 +214,15 @@ async function main() {
     r = await marc('POST', `${D}/me/unsubscribe`);
     check('bouton « Me désabonner » (un clic) pour un autre responsable', r.status === 200 && (await marc('GET', D)).json.me.consented === false);
 
-    // WhatsApp : comportement conservé
-    console.log('Canal WhatsApp inchangé');
-    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '', morning: true, consent: true, hour: future() });
-    check('canal WhatsApp : le numéro reste obligatoire -> 400', r.status === 400 && /numéro WhatsApp/.test(r.json.error), r.json);
+    // WhatsApp : canal retiré de ce module
+    console.log('Canal WhatsApp retiré');
     r = await owner('PUT', `${O}/sales/whatsapp`, { phoneId: '109876543210', number: '237 677 11 22 33', token: 'EAAG-jeton-de-test-0123456789', appSecret: 'app-secret-de-test-xyz' });
-    check('WhatsApp de l\'organisation connecté', r.status === 200 && r.json.connected === true, r.json);
+    check('WhatsApp de l\'organisation connecté (pour le passage de relais)', r.status === 200 && r.json.connected === true, r.json);
     r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '655 44 33 22', morning: true, urgent: false, consent: true, hour: future() });
-    check('canal WhatsApp : abonnement avec numéro et consentement', r.status === 200, r.json);
-    r = await owner('GET', D);
-    check('canal WhatsApp enregistré ; texte de consentement WhatsApp', r.json.me.channel === 'whatsapp' && r.json.connected === true, r.json.me);
+    check('un ancien appel « whatsapp » reste un abonnement par e-mail', r.status === 200 && (await rawDb.prepare('SELECT channel FROM digest_subs WHERE org_id = ? AND user_id = ?').get(org, uid)).channel === 'email');
     const nm = fake.seen.mail.length;
     r = await owner('POST', `${D}/test`);
-    const w = fake.seen.wa[fake.seen.wa.length - 1];
-    check('test WhatsApp : message WhatsApp livré (pas d\'e-mail)', r.json.status === 'delivered' && r.json.channel === 'whatsapp' && w && w.to === '237655443322' && /\[Test\]/.test(w.body) && /point du matin/.test(w.body) && fake.seen.mail.length === nm, r.json);
+    check('test : toujours un e-mail, jamais de message WhatsApp', r.json.status === 'email_sent' && r.json.channel === 'email' && fake.seen.mail.length === nm + 1 && fake.seen.wa.length === 0, r.json);
 
     // E-mails non configurés
     console.log('E-mails non configurés');

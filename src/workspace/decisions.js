@@ -12,7 +12,7 @@ const { HttpError, oneLine } = require('../util');
 const router = express.Router({ mergeParams: true });
 const LEVELS = ['manager', 'admin', 'owner'];
 const LEVEL_LABEL = { manager: 'Responsable', admin: 'Administrateur', owner: 'Propriétaire' };
-const LINKS = { purchase: ['purchase_orders', 'Achat'], expense: ['expense_requests', 'Dépense'], project: ['projects', 'Projet'] };
+const LINKS = { purchase: ['purchase_orders', 'Achat'], expense: ['expense_requests', 'Dépense'], project: ['projects', 'Projet'], order: ['documents', 'Commande'] };
 
 const view = (d, steps) => ({ id: d.id, title: d.title, detail: d.detail, amount: d.amount, status: d.status, requestedBy: d.requested_by, requester: d.requester || null, note: d.note, createdAt: d.created_at, decidedAt: d.decided_at,
   link: d.link_kind ? { kind: d.link_kind, id: d.link_id, label: (LINKS[d.link_kind] || [])[1] || d.link_kind } : null,
@@ -129,6 +129,7 @@ router.put('/:id', async (req, res) => {
     await W.push(req.org.id, d.requested_by, 'decision', `Votre demande « ${oneLine(d.title, 60)} » a passé un niveau de validation.`, 'decision:' + d.id);
   } else {
     await A.logActivity(req.org.id, req.user.id, 'dashboard', `${final === 'approved' ? 'Décision validée' : 'Décision refusée'} : ${d.title}`);
+    if (d.link_kind === 'order') await require('./negotiation').onOrderDecision(req, d, final);
     await W.push(req.org.id, d.requested_by, 'decision', `Votre demande « ${oneLine(d.title, 60)} » est ${final === 'approved' ? 'validée' : 'refusée'}${note ? ` : ${note}` : '.'}`, 'decision:' + d.id);
     wh.emit(req.org.id, 'decision.decided', { id: d.id, title: d.title, status: final });
   }

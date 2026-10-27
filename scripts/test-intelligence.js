@@ -341,9 +341,7 @@ async function main() {
     r = await paul('GET', D);
     check('réservé aux responsables : un membre -> 403', r.status === 403, r.json);
     r = await owner('GET', D);
-    check('réglages vides au départ ; WhatsApp non connecté ; consentement attendu', r.status === 200 && r.json.connected === false && r.json.me.consented === false && r.json.me.morning === false && /accepte/.test(r.json.consentText) && r.json.settings.tzOffset === 60 && r.json.settings.canEdit === true, r.json);
-    r = await owner('PUT', `${O}/sales/whatsapp`, { phoneId: PID, number: '237 677 11 22 33', token: TOKEN_WA, appSecret: APPSECRET });
-    check('WhatsApp de l\'organisation connecté', r.status === 200 && r.json.connected === true, r.json);
+    check('réglages vides au départ ; consentement e-mail attendu ; plus aucun champ WhatsApp', r.status === 200 && r.json.me.consented === false && r.json.me.morning === false && /e-mail/.test(r.json.consentText) && r.json.connected === undefined && r.json.me.phone === undefined && r.json.settings.tzOffset === 60 && r.json.settings.canEdit === true, r.json);
     // Données à résumer
     const today = new Date().toISOString().slice(0, 10);
     const old = new Date(Date.now() - 50 * 86400000).toISOString().slice(0, 10);
@@ -359,55 +357,35 @@ async function main() {
     const hm = (m) => `${String(Math.floor(((m % 1440) + 1440) % 1440 / 60)).padStart(2, '0')}:${String(((m % 1440) + 1440) % 1440 % 60).padStart(2, '0')}`;
     const future = () => hm(nowLocal() + 180); // jamais déclenché pendant les essais manuels
 
-    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '677 11 22 33', morning: true, urgent: false, hour: future() });
+    r = await owner('PUT', `${D}/me`, { morning: true, urgent: false, hour: future() });
     check('abonnement sans consentement -> 400 (jamais d\'envoi sans consentement)', r.status === 400 && /consentement/.test(r.json.error), r.json);
-    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: 'abc', morning: true, consent: true, hour: future() });
-    check('numéro invalide -> 400', r.status === 400, r.json);
-    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '655 44 33 22', morning: true, consent: true, hour: '25:99' });
+    r = await owner('PUT', `${D}/me`, { email: 'pas-un-mail', morning: true, consent: true, hour: future() });
+    check('adresse e-mail invalide -> 400', r.status === 400, r.json);
+    r = await owner('PUT', `${D}/me`, { morning: true, consent: true, hour: '25:99' });
     check('heure invalide -> 400', r.status === 400, r.json);
-    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '655 44 33 22', morning: true, consent: true, hour: future(), templateName: 'Mauvais Nom' });
-    check('nom de modèle invalide -> 400', r.status === 400, r.json);
-    const w0 = fake.seen.wa.length;
+    const m0 = mailbox.length;
     r = await owner('POST', `${D}/test`);
-    check('« Envoyer un test » sans abonnement ni consentement -> 400, rien d\'envoyé', r.status === 400 && fake.seen.wa.length === w0, r.json);
+    check('« Envoyer un test » sans abonnement ni consentement -> 400, rien d\'envoyé', r.status === 400 && mailbox.length === m0, r.json);
     r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '655 44 33 22', morning: true, urgent: false, consent: true, hour: future() });
-    check('abonnement avec consentement', r.status === 200);
+    check('abonnement avec consentement (un ancien champ « whatsapp » est ignoré : e-mail seulement)', r.status === 200);
     r = await owner('GET', D);
-    check('consentement enregistré avec sa date ; aucun secret renvoyé', r.json.me.consented && /^\d{4}-\d{2}-\d{2}T/.test(r.json.me.consentAt) && r.json.connected && !JSON.stringify(r.json).includes('EAAG') && !JSON.stringify(r.json).includes(APPSECRET) && !JSON.stringify(r.json).includes('v1:'), r.json.me);
-
+    check('consentement enregistré avec sa date ; aucun secret renvoyé ; canal e-mail', r.json.me.consented && /^\d{4}-\d{2}-\d{2}T/.test(r.json.me.consentAt) && !JSON.stringify(r.json).includes('EAAG') && !JSON.stringify(r.json).includes('v1:') && (await rawDb.prepare("SELECT channel FROM digest_subs WHERE org_id = ?").get(org)).channel === 'email', r.json.me);
     r = await owner('POST', `${D}/test`);
-    const m1 = fake.seen.wa[fake.seen.wa.length - 1];
-    check('test : message envoyé sur WhatsApp, statut « livré »', r.status === 200 && r.json.status === 'delivered' && r.json.channel === 'whatsapp' && m1 && m1.to === '237655443322' && m1.type === 'text', r.json);
-    check('message composé par le serveur : impayés, stock, tâches, conversation en attente (sans IA)', /\[Test\]/.test(m1.body) && /Impayés : 1 facture/.test(m1.body) && /80 000 FCFA/.test(m1.body) && /Stock : 1 article en rupture, 1 sous son seuil/.test(m1.body) && /Tâches en retard : 1/.test(m1.body) && /attente d'un conseiller : 1/.test(m1.body) && m1.body.length < 1000 && !/undefined|NaN/.test(m1.body), m1.body);
-    check('le jeton Meta de l\'organisation est utilisé côté serveur', m1.auth === `Bearer ${TOKEN_WA}`);
+    const qp = (x) => Buffer.from(String(x).replace(/=\r?\n/g, '').replace(/=([0-9A-F]{2})/g, (m, h) => String.fromCharCode(parseInt(h, 16))), 'latin1').toString('utf8').replace(/\u00a0|\u202f/g, ' ');
+    const tm = qp(mailbox[mailbox.length - 1] || '');
+    check('test : e-mail envoyé, statut « envoyé par e-mail »', r.status === 200 && r.json.status === 'email_sent' && r.json.channel === 'email' && mailbox.length === m0 + 1, r.json);
+    check('message composé par le serveur : impayés, stock, tâches, conversation en attente (sans IA)', /Test/.test(tm) && /Impayés : 1 facture/.test(tm) && /80 000 FCFA/.test(tm) && /Stock : 1 article en rupture, 1 sous son seuil/.test(tm) && /Tâches en retard : 1/.test(tm) && /Conversations en attente d'un conseiller : 1/.test(tm), tm.slice(0, 600));
     r = await owner('GET', D);
-    check('statut du dernier envoi : livré', r.json.last && r.json.last.status === 'delivered' && r.json.last.kind === 'test' && r.json.statusText.delivered, r.json.last);
-    // Fenêtre de 24 h fermée -> e-mail de secours
-    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '655 00 00 00', morning: true, hour: future() });
-    check('changer de numéro redemande le consentement -> 400', r.status === 400 && /consentement/.test(r.json.error), r.json);
-    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '237 655 00 00 00', morning: true, urgent: false, consent: true, hour: future() });
-    const mail0 = mailbox.length;
-    r = await owner('POST', `${D}/test`);
-    check('WhatsApp refuse (fenêtre 24 h, code 131047) : bascule sur l\'e-mail, statut clair', r.status === 200 && r.json.status === 'emailed' && r.json.channel === 'email' && /24 h/.test(r.json.waError) && mailbox.length === mail0 + 1 && /point du matin/.test(mailbox[mailbox.length - 1]), r.json);
-    r = await owner('GET', D);
-    check('journal : dernier envoi « WhatsApp non livré → e-mail », avec l\'explication', r.json.last.status === 'emailed' && /24 h/.test(r.json.last.waError) && r.json.log.length >= 2, r.json.last);
-    // Modèle approuvé
-    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '237 655 00 00 00', morning: true, hour: future(), templateName: 'resume_matin' });
-    check('nom du modèle approuvé enregistré (le numéro n\'a pas changé : pas de nouveau consentement)', r.status === 200, r.json);
-    r = await owner('POST', `${D}/test`);
-    const mt = fake.seen.wa[fake.seen.wa.length - 1];
-    check('avec un modèle renseigné : envoi du modèle à la place du texte libre', mt.type === 'template' && mt.tpl.name === 'resume_matin' && mt.tpl.components[0].parameters[0].text.includes('point du matin') && !/\n/.test(mt.tpl.components[0].parameters[0].text), mt);
-    // Sans e-mail (Marc s'est inscrit avec un numéro de téléphone) : « non livré (fenêtre fermée) »
-    r = await marc('PUT', `${D}/me`, { channel: 'whatsapp', phone: '237 655 00 00 00', morning: true, consent: true, hour: future() });
-    check('un responsable s\'abonne aussi', r.status === 200, r.json);
-    const mail1 = mailbox.length;
+    check('statut du dernier envoi : envoyé par e-mail', r.json.last && r.json.last.status === 'email_sent' && r.json.last.kind === 'test' && r.json.statusText.email_sent, r.json.last);
+    // Un responsable sans adresse e-mail (inscrit avec un numéro) ne peut pas s'abonner
+    r = await marc('PUT', `${D}/me`, { morning: true, consent: true, hour: future() });
+    check('sans adresse e-mail : abonnement refusé avec un message clair', r.status === 400 && /e-mail/.test(r.json.error), r.json);
+    r = await marc('PUT', `${D}/me`, { email: 'marc.responsable@exemple.com', morning: true, consent: true, hour: future() });
+    check('un responsable s\'abonne avec une adresse dédiée', r.status === 200, r.json);
     r = await marc('POST', `${D}/test`);
-    check('sans e-mail : statut « non livré (fenêtre WhatsApp fermée) »', r.status === 200 && r.json.status === 'window_closed' && /fenêtre WhatsApp fermée/.test(r.json.statusText) && mailbox.length === mail1, r.json);
+    check('son test part à l\'adresse dédiée', r.status === 200 && r.json.status === 'email_sent' && /marc\.responsable@exemple\.com/.test(mailbox[mailbox.length - 1]), r.json);
     r = await marc('GET', D);
-    check('responsable non administrateur : réglages de l\'organisation en lecture seule', r.json.settings.canEdit === false && r.json.hasEmail === false && r.json.last.status === 'window_closed');
-    r = await marc('PUT', `${D}/me`, { channel: 'whatsapp', phone: '237 655 99 99', morning: true, consent: true, hour: future() });
-    r = await marc('POST', `${D}/test`);
-    check('autre refus de Meta : statut « non livré » avec le motif', r.json.status === 'failed' && /Numéro non valide/.test(r.json.waError), r.json);
+    check('responsable non administrateur : réglages de l\'organisation en lecture seule', r.json.settings.canEdit === false && r.json.hasEmail === false && r.json.me.address === 'marc.responsable@exemple.com');
     r = await marc('PUT', `${D}/settings`, { urgentMaxPerDay: 3 });
     check('réglages de l\'organisation réservés aux administrateurs -> 403', r.status === 403);
     r = await owner('PUT', `${D}/settings`, { tzOffset: 5000 });
@@ -418,42 +396,43 @@ async function main() {
     check('un administrateur règle fuseau, plafond d\'alertes, délais', r.status === 200 && (await owner('GET', D)).json.settings.urgentMaxPerDay === 1);
 
     // Un abonné sans consentement n'est jamais servi, même si le planificateur passe (ligne forcée dans la base)
-    await rawDb.prepare("UPDATE digest_subs SET phone = '237655777777', morning = 1, urgent = 1, send_minute = 0, consent_at = NULL, unsub_at = NULL WHERE org_id = ? AND user_id = (SELECT id FROM users WHERE name = 'Marc')").run(org);
+    await rawDb.prepare("UPDATE digest_subs SET email = 'jamais@exemple.com', morning = 1, urgent = 1, send_minute = 0, consent_at = NULL, unsub_at = NULL WHERE org_id = ? AND user_id = (SELECT id FROM users WHERE name = 'Marc')").run(org);
 
     // Planificateur : envoi du résumé à l'heure choisie, une seule fois
-    const wSched = fake.seen.wa.length;
-    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '237 655 44 33 22', morning: true, urgent: false, consent: true, hour: hm(nowLocal() - 1) });
+    const mSched = mailbox.length;
+    r = await owner('PUT', `${D}/me`, { morning: true, urgent: false, consent: true, hour: hm(nowLocal() - 1) });
     check('abonnement à une heure déjà passée (rattrapage)', r.status === 200);
     const gotMorning = await until(async () => (await owner('GET', D)).json.log.some((l) => l.kind === 'morning'));
-    check('planificateur : le résumé du matin part tout seul (statut livré)', gotMorning && (await owner('GET', D)).json.log.find((l) => l.kind === 'morning').status === 'delivered');
-    const sentMorning = fake.seen.wa.slice(wSched).filter((x) => x.to === '237655443322' && /point du matin/.test(x.body || '') && !/Test/.test(x.body || ''));
+    check('planificateur : le résumé du matin part tout seul (statut envoyé)', gotMorning && (await owner('GET', D)).json.log.find((l) => l.kind === 'morning').status === 'email_sent');
+    const isMorning = (x) => /point du matin/.test(x) && !/Test/.test(x);
+    const sentMorning = mailbox.slice(mSched).filter(isMorning);
     await sleep(2500);
-    const sentMorning2 = fake.seen.wa.slice(wSched).filter((x) => x.to === '237655443322' && /point du matin/.test(x.body || '') && !/Test/.test(x.body || ''));
+    const sentMorning2 = mailbox.slice(mSched).filter(isMorning);
     const cnt = (await rawDb.prepare("SELECT COUNT(*) c FROM digest_log WHERE org_id = ? AND kind = 'morning'").get(org)).c;
     check('planificateur : jamais de doublon (verrou par personne et par jour, même après plusieurs passages)', sentMorning.length === 1 && sentMorning2.length === 1 && cnt === 1, [sentMorning.length, sentMorning2.length, cnt]);
     const dup = await rawDb.prepare("INSERT OR IGNORE INTO digest_log (org_id, user_id, kind, dedupe_key, created_at) SELECT org_id, user_id, kind, dedupe_key, created_at FROM digest_log WHERE kind = 'morning' AND org_id = ?").run(org);
     check('verrou en base : la clé unique empêche un 2e envoi par un autre serveur', dup.changes === 0, dup.changes);
-    check('aucun envoi à un abonné sans consentement ni à un désabonné', !fake.seen.wa.some((x) => x.to === '237655777777') && !fake.seen.wa.slice(wSched).some((x) => x.to === '237655000000' && !/Test/.test(x.body || '')));
+    check('aucun envoi à un abonné sans consentement', !mailbox.slice(mSched).some((x) => /jamais@exemple\.com/.test(x)));
 
     // Alertes urgentes
-    const wU = fake.seen.wa.length;
-    r = await owner('PUT', `${D}/me`, { channel: 'whatsapp', phone: '237 655 44 33 22', morning: true, urgent: true, hour: hm(nowLocal() - 1) });
-    const gotUrgent = await until(async () => fake.seen.wa.slice(wU).some((x) => /Alerte urgente/.test(x.body || '')));
-    const al = fake.seen.wa.slice(wU).find((x) => /Alerte urgente/.test(x.body || ''));
-    check('alerte urgente : rupture de stock, facture très en retard, conversation en attente', gotUrgent && /Rupture de stock : Savon noir/.test(al.body) && /FA-9001 .* impayée depuis 50 jours/.test(al.body) && /conversation client attend un conseiller depuis 9 h/.test(al.body), al && al.body);
+    const mU = mailbox.length;
+    r = await owner('PUT', `${D}/me`, { morning: true, urgent: true, hour: hm(nowLocal() - 1) });
+    const gotUrgent = await until(async () => mailbox.slice(mU).some((x) => /Alerte urgente/.test(x)));
+    const al = mailbox.slice(mU).find((x) => /Alerte urgente/.test(x)) || '';
+    check('alerte urgente : rupture de stock, facture très en retard, conversation en attente', gotUrgent && /Rupture de stock : Savon noir/.test(al) && /FA-9001/.test(al) && /50 jours/.test(al) && /conversation client attend un conseiller/.test(al), al.slice(0, 500));
     await sleep(1500);
-    const alerts1 = fake.seen.wa.slice(wU).filter((x) => /Alerte urgente/.test(x.body || '')).length;
+    const alerts1 = mailbox.slice(mU).filter((x) => /Alerte urgente/.test(x)).length;
     check('alerte urgente : un seul message pour les trois événements, pas de répétition', alerts1 === 1, alerts1);
     await rawDb.prepare("INSERT INTO stock_items (org_id, name, unit, quantity, min_quantity, created_at) VALUES (?, 'Sel fin', 'kg', 0, 2, ?)").run(org, new Date().toISOString());
     await sleep(2000);
-    const alerts2 = fake.seen.wa.slice(wU).filter((x) => /Alerte urgente/.test(x.body || '')).length;
+    const alerts2 = mailbox.slice(mU).filter((x) => /Alerte urgente/.test(x)).length;
     check('anti-spam : au plus N alertes par jour (ici 1) même si un nouvel événement arrive', alerts2 === 1, alerts2);
     r = await owner('PUT', `${D}/settings`, { urgentMaxPerDay: 5 });
-    const got2 = await until(async () => fake.seen.wa.slice(wU).filter((x) => /Alerte urgente/.test(x.body || '')).length === 2);
-    const al2 = fake.seen.wa.slice(wU).filter((x) => /Alerte urgente/.test(x.body || ''))[1];
-    check('plafond relevé : la nouvelle alerte part (uniquement le nouvel événement)', got2 && /Sel fin/.test(al2.body) && !/Savon noir/.test(al2.body), al2 && al2.body);
+    const got2 = await until(async () => mailbox.slice(mU).filter((x) => /Alerte urgente/.test(x)).length === 2);
+    const al2 = mailbox.slice(mU).filter((x) => /Alerte urgente/.test(x))[1] || '';
+    check('plafond relevé : la nouvelle alerte part (uniquement le nouvel événement)', got2 && /Sel fin/.test(al2) && !/Savon noir/.test(al2), al2.slice(0, 300));
     r = await owner('GET', D);
-    check('journal des envois : date, type, statut', r.json.log.some((l) => l.kind === 'urgent' && l.status === 'delivered' && l.at) && r.json.log.some((l) => l.kind === 'morning') && r.json.log.some((l) => l.kind === 'test'), r.json.log.map((l) => [l.kind, l.status]));
+    check('journal des envois : date, type, statut', r.json.log.some((l) => l.kind === 'urgent' && l.status === 'email_sent' && l.at) && r.json.log.some((l) => l.kind === 'morning') && r.json.log.some((l) => l.kind === 'test'), r.json.log.map((l) => [l.kind, l.status]));
     check('journal : un lot d\'alertes = une seule ligne', r.json.log.filter((l) => l.kind === 'urgent').length === 2, r.json.log.filter((l) => l.kind === 'urgent').length);
 
     // Désabonnement en un clic
@@ -462,14 +441,14 @@ async function main() {
     r = await owner('GET', D);
     check('après désabonnement : plus rien d\'actif, date de désabonnement enregistrée', !r.json.me.morning && !r.json.me.urgent && !r.json.me.consented && r.json.me.unsubAt, r.json.me);
     await rawDb.prepare("INSERT INTO stock_items (org_id, name, unit, quantity, min_quantity, created_at) VALUES (?, 'Riz', 'kg', 0, 2, ?)").run(org, new Date().toISOString());
-    const wAfter = fake.seen.wa.length;
+    const mAfter = mailbox.length;
     await sleep(2000);
-    check('après désabonnement : aucun envoi, même avec un nouvel événement', fake.seen.wa.length === wAfter, fake.seen.wa.slice(wAfter));
+    check('après désabonnement : aucun envoi, même avec un nouvel événement', mailbox.length === mAfter, mailbox.slice(mAfter).map((x) => x.slice(0, 80)));
     r = await owner('POST', `${D}/test`);
     check('après désabonnement : le test refuse tant qu\'il n\'y a pas de nouveau consentement', r.status === 400);
     // Isolation
     r = await zoe('GET', `${O2}/mail/digest`);
-    check('isolation : une autre organisation ne voit ni abonnés ni journal', r.status === 200 && r.json.log.length === 0 && r.json.me.phone === '' && r.json.connected === false, r.json);
+    check('isolation : une autre organisation ne voit ni abonnés ni journal', r.status === 200 && r.json.log.length === 0 && r.json.me.consented === false, r.json);
     r = await zoe('GET', `${O}/mail/digest`);
     check('une personne extérieure -> 404', r.status === 404);
     r = await marc('GET', D);

@@ -50,6 +50,7 @@ pub.get('/calendar/:token.ics', limits.make(60 * 1000, 60, 'Trop de requêtes.')
 pub.use('/', require('./support-w3').pub);
 pub.use('/', require('./marketing-w3').pub);
 pub.use('/', require('./digest').pub);
+pub.use('/', require('./followups').pub);
 pub.use('/whatsapp', require('./whatsapp'));
 pub.use('/meta', require('./meta-channels'));
 

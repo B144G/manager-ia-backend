@@ -19,8 +19,8 @@ const fail = (r, what) => {
   return err;
 };
 
-async function sendText(org, to, body) {
-  if (modeOf(org) === 'qr') return await waWeb().sendText(org.id, to, body);
+async function sendText(org, to, body, o) {
+  if (modeOf(org) === 'qr') return await waWeb().sendText(org.id, to, body, o);
   const c = creds(org);
   if (!c.phoneId || !c.token) throw new Error('WhatsApp non connecté');
   const r = await fetchJson(`${config.meta.graphUrl}/${encodeURIComponent(c.phoneId)}/messages`, {

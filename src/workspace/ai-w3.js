@@ -74,4 +74,26 @@ const processes = safe(async (req) => {
   return `\nPROCÉDURES À RÉVISER : ${r.map((x) => `${oneLine(x.title, 60)} (depuis ${x.next_review})`).join(', ') || 'aucune'}.`;
 });
 
-module.exports = { support, hr, projects, legal, marketing, structure, processes };
+
+// Vague 4 : négociation des prix et relances. L'IA voit les règles et l'état, JAMAIS les prix planchers ni les remises maximales (le serveur décide des prix).
+const sales = safe(async (req) => {
+  if (!A.can(req, 'manager')) return '';
+  const N = require('./negotiation'); const F = require('./followups');
+  const s = await N.settingsOf(req.org.id);
+  const since = new Date(Date.now() - 30 * 86400000).toISOString();
+  const c = async (k) => Number((await db.prepare('SELECT COUNT(*) c FROM neg_log WHERE org_id = ? AND kind = ? AND created_at >= ?').get(req.org.id, k, since)).c);
+  const wait = Number((await db.prepare("SELECT COUNT(*) c FROM documents WHERE org_id = ? AND kind = 'order' AND approval = 'needed'").get(req.org.id)).c);
+  const q = await F.queueSummary(req);
+  return `\nNÉGOCIATION DE L'ASSISTANT : ${s.enabled ? 'activée' : 'désactivée'} (${s.maxCounters} contre-offre(s) au plus par article, validation d'un responsable au-delà de ${s.approvalPct} % de remise). Sur 30 jours : ${await c('offer')} offre(s) de clients, ${await c('accept')} prix accepté(s), ${await c('refused')} refus du serveur. Commandes remisées en attente de validation : ${wait}. Les prix planchers et les remises maximales ne te sont pas communiqués : ne les devine pas et ne promets aucune remise.` +
+    `\nCENTRE DE RELANCES : mode ${q.mode === 'auto' ? 'automatique' : 'proposer, une personne valide'}, canal par défaut ${q.channel}. À envoyer : ${q.toSend}, reportées : ${q.postponed}, envoyées sur 7 jours : ${q.sent7}. Tu peux rédiger un brouillon de relance ; la personne le relit et l'envoie depuis l'onglet Relances (jamais d'envoi sans validation hors mode automatique).`;
+});
+const crm = safe(async (req) => {
+  if (!A.can(req, 'manager')) return '';
+  const n = await db.prepare('SELECT COUNT(*) c FROM customer_prices WHERE org_id = ?').get(req.org.id);
+  const d = await db.prepare('SELECT COUNT(*) c FROM customers WHERE org_id = ? AND default_discount > 0').get(req.org.id);
+  const o = await db.prepare('SELECT COUNT(*) c FROM customers WHERE org_id = ? AND followup_optout = 1').get(req.org.id);
+  const f = await require('./followups').queueSummary(req);
+  return `\nPRIX ET RELANCES CLIENTS : ${n.c} prix négocié(s) par client, ${d.c} client(s) avec une remise de fidélité, ${o.c} client(s) opposé(s) aux relances (ne jamais les relancer). Relances à envoyer : ${f.toSend} (factures échues : cadence J+3, J+10, J+20 par défaut). Un devis ou une facture ne peut pas descendre sous le prix plancher d'un article, sauf décision motivée d'un administrateur.`;
+});
+
+module.exports = { support, hr, projects, legal, marketing, structure, processes, sales, crm };

@@ -11,7 +11,7 @@
     "setup": "node scripts/setup.js",
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "npm run test:ai && npm run test:webhooks && npm run smoke && npm run smoke:signup && npm run smoke:security && npm run smoke:central && npm run smoke:ws && npm run test:finance && npm run test:commerce && npm run test:ops && npm run test:intelligence && npm run test:mail && npm run test:embedded && npm run test:waqr && npm run test:wave1 && npm run test:wave2 && npm run test:wave3 && npm run test:digest-email",
+    "test": "npm run test:ai && npm run test:webhooks && npm run smoke && npm run smoke:signup && npm run smoke:security && npm run smoke:central && npm run smoke:ws && npm run test:finance && npm run test:commerce && npm run test:ops && npm run test:intelligence && npm run test:mail && npm run test:embedded && npm run test:waqr && npm run test:wave1 && npm run test:wave2 && npm run test:wave3 && npm run test:digest-email && npm run test:wave4",
     "smoke": "node scripts/smoke.js",
     "smoke:ws": "node scripts/smoke-workspace.js",
     "smoke:signup": "node scripts/smoke-signup.js",
@@ -34,6 +34,7 @@
     "test:wave1": "node scripts/test-wave1-billing.js && node scripts/test-wave1-stock.js && node scripts/test-wave1-fleet.js",
     "test:wave2": "node scripts/test-wave2-payroll.js && node scripts/test-wave2-accounting.js && node scripts/test-wave2-budget.js",
     "test:digest-email": "node scripts/test-digest-email.js",
+    "test:wave4": "node scripts/test-wave4-negotiation.js && node scripts/test-wave4-followups.js && node scripts/test-wave4-relay.js",
     "test:wave3": "node scripts/test-wave3-hr.js && node scripts/test-wave3-ops.js && node scripts/test-wave3-support.js && node scripts/test-wave3-reports.js"
   },
   "dependencies": {

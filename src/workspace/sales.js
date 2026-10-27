@@ -10,6 +10,8 @@ const stt = require('../services/stt');
 const vault = require('../services/vault');
 const waOrg = require('../services/waOrg');
 const B = require('./sales-brief');
+const N = require('./negotiation');
+const P = require('./pricing');
 const tts = require('../services/tts');
 const metaChat = require('../services/metaChat');
 const crypto = require('crypto');
@@ -24,9 +26,12 @@ router.use('/', require('./wa-media').router);
 router.use('/', require('./sales-appt').router);
 router.use('/meta', require('./meta-channels').settings);
 router.use('/wa-qr', require('./wa-qr'));
+router.use('/negotiation', N.router);
+router.use('/relay', require('./relay').router);
+router.use('/followups', require('./followups').router);
 
 const today = () => nowISO().slice(0, 10);
-const catItem = (r) => ({ id: r.id, name: r.name, description: r.description, price: r.price, unit: r.unit, active: Boolean(r.active), photos: r.n_img || 0, videos: r.n_vid || 0 });
+const catItem = (r) => ({ id: r.id, name: r.name, description: r.description, price: r.price, unit: r.unit, floorPrice: Number(r.floor_price) || null, maxDiscount: Number(r.max_discount) || null, negotiable: P.floorOf(r) > 0, floor: P.floorOf(r) || null, tiers: P.readTiers(r.tiers), active: Boolean(r.active), photos: r.n_img || 0, videos: r.n_vid || 0 });
 
 const waNumberOf = (org, qrNumber) => (waOrg.modeOf(org) === 'qr' && qrNumber ? qrNumber : org.wa_number);
 router.get('/', async (req, res) => {
@@ -66,19 +71,34 @@ router.put('/settings', A.need('admin'), async (req, res) => {
 
 // ---------- Catalogue ----------
 router.get('/catalog', async (req, res) => res.json({ items: (await db.prepare("SELECT c.*, (SELECT COUNT(*) FROM catalog_media m WHERE m.item_id = c.id AND m.kind = 'image') AS n_img, (SELECT COUNT(*) FROM catalog_media m WHERE m.item_id = c.id AND m.kind = 'video') AS n_vid FROM catalog c WHERE c.org_id = ? ORDER BY c.active DESC, c.name COLLATE NOCASE").all(req.org.id)).map(catItem) }));
+/** Prix, plancher, remise maximale et paliers d'un article, validés ensemble (le plancher ne peut pas dépasser le prix de liste). */
+function priceFields(b, cur) {
+  const price = b.price === undefined ? Number(cur.price) : A.amount(b.price);
+  const fp = b.floorPrice === undefined ? Number(cur.floor_price) || 0 : (b.floorPrice === null || b.floorPrice === '' || Number(b.floorPrice) === 0 ? 0 : A.amount(b.floorPrice));
+  if (fp > price) throw new HttpError(400, 'Le prix plancher ne peut pas dépasser le prix de liste.');
+  let md = b.maxDiscount === undefined ? Number(cur.max_discount) || 0 : (b.maxDiscount === null || b.maxDiscount === '' ? 0 : Number(String(b.maxDiscount).replace(',', '.')));
+  if (!Number.isFinite(md) || md < 0 || md > 90) throw new HttpError(400, 'La remise maximale est un pourcentage entre 0 et 90.');
+  md = Math.round(md * 10) / 10;
+  const floor = P.floorOf({ price, floor_price: fp, max_discount: md });
+  const tiers = b.tiers === undefined ? P.readTiers(cur.tiers) : P.cleanTiers(b.tiers, price, floor);
+  return { price, fp, md, tiers: JSON.stringify(tiers) };
+}
 router.post('/catalog', async (req, res) => {
   const b = req.body || {};
   if ((await db.prepare('SELECT COUNT(*) c FROM catalog WHERE org_id = ?').get(req.org.id)).c >= 200) throw new HttpError(403, 'Le catalogue est limité à 200 articles.');
-  const id = (await db.prepare('INSERT INTO catalog (org_id, name, description, price, unit, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(req.org.id, A.text(b.name, 100, { required: true, msg: "Indiquez le nom de l'article." }), A.text(b.description, 300), A.amount(b.price), A.text(b.unit, 30), nowISO())).lastInsertRowid;
+  const pf = priceFields({ ...b, price: A.amount(b.price) }, { price: 0 });
+  const id = (await db.prepare('INSERT INTO catalog (org_id, name, description, price, unit, created_at, floor_price, max_discount, tiers) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, A.text(b.name, 100, { required: true, msg: "Indiquez le nom de l'article." }), A.text(b.description, 300), pf.price, A.text(b.unit, 30), nowISO(), pf.fp, pf.md, pf.tiers)).lastInsertRowid;
   res.status(201).json({ id: Number(id) });
 });
 router.put('/catalog/:id', async (req, res) => {
   const r = await db.prepare('SELECT * FROM catalog WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
   if (!r) throw new HttpError(404, 'Article introuvable.');
   const b = req.body || {};
-  await db.prepare('UPDATE catalog SET name = ?, description = ?, price = ?, unit = ?, active = ? WHERE id = ?').run(
+  const pf = priceFields(b, r);
+  await db.prepare('UPDATE catalog SET name = ?, description = ?, price = ?, unit = ?, active = ?, floor_price = ?, max_discount = ?, tiers = ? WHERE id = ?').run(
     b.name === undefined ? r.name : A.text(b.name, 100, { required: true, msg: "Indiquez le nom de l'article." }), b.description === undefined ? r.description : A.text(b.description, 300),
-    b.price === undefined ? r.price : A.amount(b.price), b.unit === undefined ? r.unit : A.text(b.unit, 30), b.active === undefined ? r.active : b.active ? 1 : 0, r.id);
+    pf.price, b.unit === undefined ? r.unit : A.text(b.unit, 30), b.active === undefined ? r.active : b.active ? 1 : 0, pf.fp, pf.md, pf.tiers, r.id);
+  if (pf.price !== Number(r.price) || pf.fp !== Number(r.floor_price) || pf.md !== Number(r.max_discount)) await require('./w3').audit(req, 'catalog_price', r.id, 'update', { price: r.price, floor: r.floor_price, maxDiscount: r.max_discount }, { price: pf.price, floor: pf.fp, maxDiscount: pf.md });
   res.json({ ok: true });
 });
 router.delete('/catalog/:id', async (req, res) => {
@@ -98,7 +118,7 @@ router.get('/chats', async (req, res) => {
 router.get('/chats/:id', async (req, res) => {
   const c = await db.prepare('SELECT * FROM chats WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
   if (!c) throw new HttpError(404, 'Conversation introuvable.');
-  res.json({ campaign: c.campaign, status: c.status, channel: c.channel, contact: c.contact, assigneeId: c.assignee_id, lead: L.cleanLead(JSON.parse(c.lead || '{}')), summary: L.leadSummary(c.lead), brief: B.read(c), appointments: await db.prepare("SELECT id, date, time, purpose, status FROM appointments WHERE chat_id = ? ORDER BY id DESC LIMIT 5").all(c.id), messages: await db.prepare('SELECT role, content, created_at AS at FROM chat_messages WHERE chat_id = ? ORDER BY id LIMIT 200').all(c.id) });
+  res.json({ campaign: c.campaign, status: c.status, channel: c.channel, contact: c.contact, assigneeId: c.assignee_id, lead: L.cleanLead(JSON.parse(c.lead || '{}')), summary: L.leadSummary(c.lead), brief: B.read(c), appointments: await db.prepare("SELECT id, date, time, purpose, status FROM appointments WHERE chat_id = ? ORDER BY id DESC LIMIT 5").all(c.id), negotiation: await N.logOfChat(req.org.id, c.id), messages: await db.prepare('SELECT role, content, created_at AS at FROM chat_messages WHERE chat_id = ? ORDER BY id LIMIT 200').all(c.id) });
 });
 
 // Dossier préparé par l'IA interne : régénérer, ou appliquer la fiche client trouvée.
@@ -248,7 +268,10 @@ router.post('/whatsapp/embedded/complete', A.need('admin'), embeddedLimit, async
 // ---------- Commandes des clients (à valider) ----------
 router.get('/orders', async (req, res) => {
   const rows = await db.prepare("SELECT d.*, c.name AS customer, c.phone, c.email FROM documents d JOIN customers c ON c.id = d.customer_id WHERE d.org_id = ? AND d.kind = 'order' ORDER BY CASE d.status WHEN 'pending' THEN 0 ELSE 1 END, d.id DESC LIMIT 100").all(req.org.id);
-  res.json({ orders: rows.map((d) => ({ id: d.id, number: d.number, status: d.status, total: d.total, note: d.note, lines: JSON.parse(d.lines), customer: d.customer, customerId: d.customer_id, phone: d.phone, email: d.email, at: d.created_at })) });
+  const ids = rows.filter((d) => Number(d.negotiated)).map((d) => d.id);
+  const logs = {};
+  for (const id of ids) logs[id] = await N.logOfDoc(req.org.id, id);
+  res.json({ orders: rows.map((d) => ({ id: d.id, number: d.number, status: d.status, total: d.total, note: d.note, lines: JSON.parse(d.lines), customer: d.customer, customerId: d.customer_id, phone: d.phone, email: d.email, at: d.created_at, negotiated: Boolean(d.negotiated), discountPct: Number(d.discount_pct) || 0, approval: d.approval || '', decisionId: d.decision_id || null, negotiation: logs[d.id] || [] })) });
 });
 const orderOf = async (req) => {
   const d = await db.prepare("SELECT * FROM documents WHERE id = ? AND org_id = ? AND kind = 'order'").get(A.id(req.params.id), req.org.id);
@@ -259,7 +282,9 @@ router.put('/orders/:id/status', async (req, res) => {
   const d = await orderOf(req);
   const st = A.oneOf((req.body || {}).status, ['confirmed', 'cancelled'], undefined, 'Statut inconnu.');
   if (d.status !== 'pending') throw new HttpError(400, 'Cette commande a déjà été traitée.');
+  if (st === 'confirmed' && ['needed', 'rejected'].includes(d.approval)) throw new HttpError(409, d.approval === 'needed' ? `Cette commande a une remise de ${Number(d.discount_pct)} % au-dessus du seuil : elle doit d'abord être validée dans « Décisions » par un responsable.` : 'La remise de cette commande a été refusée : refusez la commande ou négociez avec le client.');
   await db.prepare('UPDATE documents SET status = ?, updated_at = ? WHERE id = ?').run(st, nowISO(), d.id);
+  if (d.negotiated) await N.log(req.org.id, { docId: d.id, chatId: d.chat_id, label: d.number, actor: 'human', kind: st === 'confirmed' ? 'confirmed' : 'cancelled', userId: req.user.id, note: `commande ${st === 'confirmed' ? 'confirmée' : 'refusée'} par l'équipe` });
   await A.logActivity(req.org.id, req.user.id, 'sales', `Commande ${d.number} ${st === 'confirmed' ? 'confirmée' : 'refusée'}`);
   res.json({ ok: true });
 });
@@ -267,7 +292,7 @@ router.put('/orders/:id/status', async (req, res) => {
 router.post('/orders/:id/invoice', async (req, res) => {
   const d = await orderOf(req);
   if (d.status !== 'confirmed') throw new HttpError(400, "Confirmez d'abord la commande.");
-  const id = await crm.createDoc(req, { customerId: d.customer_id, lines: JSON.parse(d.lines), note: `Suite à la commande ${d.number}`, due: (req.body || {}).due }, 'invoice');
+  const id = await crm.createDoc(req, { customerId: d.customer_id, lines: JSON.parse(d.lines), note: `Suite à la commande ${d.number}`, due: (req.body || {}).due }, 'invoice', { skipFloor: true });
   await db.prepare("UPDATE documents SET status = 'invoiced', updated_at = ? WHERE id = ?").run(nowISO(), d.id);
   res.status(201).json({ id });
 });
@@ -297,7 +322,7 @@ mine.get('/chats', async (req, res) => {
 });
 mine.get('/chats/:id', async (req, res) => {
   const c = await mineChat(req);
-  res.json({ campaign: c.campaign, status: c.status, channel: c.channel, contact: c.contact, assigneeId: c.assignee_id, lead: L.cleanLead(JSON.parse(c.lead || '{}')), summary: L.leadSummary(c.lead), brief: B.read(c), appointments: await db.prepare("SELECT id, date, time, purpose, status FROM appointments WHERE chat_id = ? ORDER BY id DESC LIMIT 5").all(c.id), messages: await db.prepare('SELECT role, content, created_at AS at FROM chat_messages WHERE chat_id = ? ORDER BY id LIMIT 200').all(c.id) });
+  res.json({ campaign: c.campaign, status: c.status, channel: c.channel, contact: c.contact, assigneeId: c.assignee_id, lead: L.cleanLead(JSON.parse(c.lead || '{}')), summary: L.leadSummary(c.lead), brief: B.read(c), appointments: await db.prepare("SELECT id, date, time, purpose, status FROM appointments WHERE chat_id = ? ORDER BY id DESC LIMIT 5").all(c.id), negotiation: await N.logOfChat(req.org.id, c.id), messages: await db.prepare('SELECT role, content, created_at AS at FROM chat_messages WHERE chat_id = ? ORDER BY id LIMIT 200').all(c.id) });
 });
 mine.get('/chats/:id/media/:mid', async (req, res) => await sendMedia(req, res, await mineChat(req)));
 mine.post('/chats/:id/apply-brief', async (req, res) => { res.json({ ok: true, done: await B.apply(req.org, await mineChat(req)) }); });

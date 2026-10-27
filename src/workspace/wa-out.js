@@ -84,6 +84,8 @@ async function sendInvoice(org, tpl, inv) {
 /** Relances automatiques (appelées chaque heure pour les organisations qui les ont activées). */
 async function runAuto(org, max = 20) {
   if (!org.wa_followup || !waOrg.isConnected(org) || waOrg.modeOf(org) === 'qr') return 0;
+  const fu = await db.prepare("SELECT mode FROM fu_settings WHERE org_id = ?").get(org.id);
+  if (fu && fu.mode === 'auto') return 0; // le centre de relances (followups.js) en mode automatique prend le relais : pas de doublon
   let n = 0;
   const t1 = await tplOf(org.id, 'relance'); const t2 = await tplOf(org.id, 'impaye');
   if (t1) for (const l of await silentLeads(org)) { if (n >= max) break; const r = await sendLead(org, t1, l); if (r.ok) n++; else if (/Plafond|connecté/.test(r.error)) return n; }

@@ -2217,6 +2217,150 @@ const MIGRATIONS = [
   ALTER TABLE digest_subs ADD COLUMN email TEXT NOT NULL DEFAULT '';
   UPDATE digest_subs SET channel = 'email';
   `,
+  /* VAGUE 4 · Négociation des prix (plancher, remise maximale, paliers, prix par client, règles de l'assistant, journal) et centre de relances
+     (réglages, modèles, file, journal, opposition des clients). Les articles existants restent « non négociables » (plancher 0). */ `
+  UPDATE digest_subs SET channel = 'email' WHERE channel <> 'email';
+  ALTER TABLE catalog ADD COLUMN floor_price BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE catalog ADD COLUMN max_discount DOUBLE PRECISION NOT NULL DEFAULT 0;
+  ALTER TABLE catalog ADD COLUMN tiers TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE customers ADD COLUMN default_discount DOUBLE PRECISION NOT NULL DEFAULT 0;
+  ALTER TABLE customers ADD COLUMN followup_optout BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE customers ADD COLUMN followup_optout_at TEXT;
+  ALTER TABLE documents ADD COLUMN negotiated BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE documents ADD COLUMN discount_pct DOUBLE PRECISION NOT NULL DEFAULT 0;
+  ALTER TABLE documents ADD COLUMN approval TEXT NOT NULL DEFAULT '';
+  ALTER TABLE documents ADD COLUMN decision_id BIGINT;
+  CREATE TABLE customer_prices (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES catalog(id) ON DELETE CASCADE,
+    price BIGINT NOT NULL,
+    valid_until TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    UNIQUE (customer_id, item_id)
+  );
+  CREATE TABLE neg_settings (
+    org_id BIGINT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    enabled BIGINT NOT NULL DEFAULT 0,
+    max_counters BIGINT NOT NULL DEFAULT 3,
+    approval_pct DOUBLE PRECISION NOT NULL DEFAULT 10,
+    handoff_message TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE neg_log (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    chat_id BIGINT,
+    doc_id BIGINT,
+    item_id BIGINT,
+    item_label TEXT NOT NULL DEFAULT '',
+    actor TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    price BIGINT,
+    quantity DOUBLE PRECISION NOT NULL DEFAULT 1,
+    discount_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    user_id BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_neg_log_chat ON neg_log(org_id, chat_id);
+  CREATE INDEX idx_neg_log_doc ON neg_log(org_id, doc_id);
+  CREATE TABLE fu_settings (
+    org_id BIGINT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    mode TEXT NOT NULL DEFAULT 'propose',
+    channel TEXT NOT NULL DEFAULT 'email',
+    cad_prospect TEXT NOT NULL DEFAULT '2,7',
+    cad_quote TEXT NOT NULL DEFAULT '3,10',
+    cad_invoice TEXT NOT NULL DEFAULT '3,10,20',
+    cad_order TEXT NOT NULL DEFAULT '1,3',
+    cad_unpaid TEXT NOT NULL DEFAULT '7,15',
+    max_per_item BIGINT NOT NULL DEFAULT 3,
+    day_quota BIGINT NOT NULL DEFAULT 30,
+    hour_from BIGINT NOT NULL DEFAULT 8,
+    hour_to BIGINT NOT NULL DEFAULT 18,
+    tz_offset BIGINT NOT NULL DEFAULT 60,
+    notified_on TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE fu_templates (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    UNIQUE (org_id, kind)
+  );
+  CREATE TABLE fu_items (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    ref_id BIGINT NOT NULL,
+    step BIGINT NOT NULL DEFAULT 1,
+    customer_id BIGINT,
+    state TEXT NOT NULL DEFAULT 'to_send',
+    channel TEXT NOT NULL DEFAULT '',
+    postponed_until TEXT,
+    attempts BIGINT NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    stop_reason TEXT NOT NULL DEFAULT '',
+    handled_by BIGINT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (org_id, kind, ref_id, step)
+  );
+  CREATE INDEX idx_fu_items_org ON fu_items(org_id, state);
+  CREATE TABLE fu_log (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_id BIGINT,
+    kind TEXT NOT NULL,
+    ref_id BIGINT,
+    step BIGINT NOT NULL DEFAULT 1,
+    customer_id BIGINT,
+    user_id BIGINT,
+    channel TEXT NOT NULL DEFAULT '',
+    result TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_fu_log_org ON fu_log(org_id, id);
+  CREATE TABLE relay_settings (
+    org_id BIGINT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    enabled BIGINT NOT NULL DEFAULT 1,
+    max_per_hour BIGINT NOT NULL DEFAULT 6,
+    quiet_from BIGINT NOT NULL DEFAULT -1,
+    quiet_to BIGINT NOT NULL DEFAULT -1,
+    tz_offset BIGINT NOT NULL DEFAULT 60,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE relay_contacts (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL,
+    phone TEXT NOT NULL,
+    priority BIGINT NOT NULL,
+    UNIQUE (org_id, priority)
+  );
+  CREATE TABLE relay_log (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    chat_id BIGINT,
+    dedupe_key TEXT NOT NULL,
+    contact_user BIGINT,
+    channel TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    detail TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, dedupe_key)
+  );
+  CREATE INDEX idx_relay_log_org ON relay_log(org_id, id);
+  `,
 ];
 
 

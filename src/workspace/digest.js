@@ -1,11 +1,10 @@
 'use strict';
-// Résumé du matin et alertes urgentes pour les responsables (manager, admin, owner), par E-MAIL (défaut) ou par WhatsApp (au choix de chaque abonné : colonne `channel`).
+// Résumé du matin et alertes urgentes pour les responsables (manager, admin, owner), UNIQUEMENT PAR E-MAIL (le canal WhatsApp a été retiré de ce module :
+// WhatsApp sert désormais au passage de relais vers un humain, voir relay.js). Les anciennes colonnes `channel` / `phone` / `template_name` restent en base sans effet.
 // - Jamais d'envoi sans consentement explicite (date enregistrée, lié à l'adresse e-mail ou au numéro) ; désabonnement en un clic (lien dans chaque e-mail).
-// - Canal e-mail : envoi direct à l'adresse du compte (ou à une adresse dédiée), aucun numéro WhatsApp, pas de fenêtre 24 h ; quota d'e-mails de l'offre respecté (journal `outbox`).
+// - Envoi direct à l'adresse du compte (ou à une adresse dédiée), quota d'e-mails de l'offre respecté (journal `outbox`).
 // - Message composé par le serveur à partir des données (aucun appel à l'IA).
 // - Planificateur : chaque tick (voir jobs.js), verrou en base par personne / type / jour (clé unique) : pas de doublon, même avec plusieurs serveurs.
-// - Canal WhatsApp (conservé tel quel) : un texte libre n'est livré que si la personne a écrit à l'entreprise dans les dernières 24 h. Sinon Meta refuse (code 131047) :
-//   l'échec est enregistré, on bascule sur l'e-mail s'il existe, et un modèle approuvé peut être indiqué pour remplacer le texte libre.
 // Les routes sont montées sous /mail/digest (module « Alertes », réservé aux responsables).
 const crypto = require('crypto');
 const express = require('express');
@@ -13,7 +12,6 @@ const config = require('../config');
 const { db, nowISO } = require('../db');
 const limits = require('../middleware/limits');
 const A = require('./access');
-const waOrg = require('../services/waOrg');
 const { sendMail, mailEnabled } = require('../services/notify');
 const { HttpError, asyncHandler, oneLine, safeEqual, log } = require('../util');
 
@@ -23,19 +21,13 @@ const pub = express.Router(); // lien de désinscription des e-mails (sans conne
 const DEFAULTS = { tz_offset: 60, urgent_max_day: 5, handoff_hours: 4, invoice_late_days: 30 };
 const CATCHUP_MIN = 360; // rattrapage : un résumé manqué (serveur arrêté) part encore jusqu'à 6 h après l'heure choisie
 const MAX_EVENTS = 5;
-const CONSENT = "J'accepte de recevoir, sur ce numéro WhatsApp, le résumé du matin et/ou les alertes urgentes de mon organisation. Je peux me désabonner à tout moment.";
 const CONSENT_EMAIL = "J'accepte de recevoir, par e-mail à l'adresse indiquée, le résumé du matin et/ou les alertes urgentes de mon organisation. Je peux me désabonner à tout moment (lien dans chaque e-mail).";
-const CHANNELS = ['email', 'whatsapp'];
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const esc = (x) => String(x == null ? '' : x).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 /** Adresse de réception : l'adresse dédiée de l'abonnement si elle est valide, sinon le contact du compte s'il s'agit d'une e-mail. */
 const emailOf = (sub, user) => { const e = String((sub && sub.email) || '').trim(); if (EMAIL_RE.test(e)) return e; const c = String((user && user.contact) || '').trim(); return EMAIL_RE.test(c) ? c : ''; };
 const KIND_LABEL = { morning: 'Résumé du matin', urgent: 'Alerte urgente', test: 'Test' };
 
-const digits = (x) => String(x || '').replace(/\D/g, '');
-const CC = String(process.env.DEFAULT_COUNTRY_CODE || '237').replace(/\D/g, '');
-const intl = (x) => { let d = digits(x); if (d.startsWith('00')) d = d.slice(2); return d.length === 9 && /^[2368]/.test(d) ? CC + d : d; };
-const phoneOk = (x) => { const d = intl(x); return d.length >= 8 && d.length <= 15; };
 const fmtMoney = (n, cur) => `${Number(n).toLocaleString('fr-FR')} ${cur}`.replace(/[  ]/g, ' ');
 const plural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
 const hhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
@@ -102,8 +94,6 @@ const urgentLines = (events) => [...events.slice(0, MAX_EVENTS).map((e) => e.tex
 const composeUrgent = (org, events) => `Alerte urgente — ${org.name}\n${urgentLines(events).map((l) => `- ${l}`).join('\n')}\nOuvrez Brij-IA pour agir.`.slice(0, 1500);
 
 // ---------- Envoi : e-mail (défaut), ou WhatsApp puis e-mail de secours ----------
-const isWindowError = (e) => e && (e.metaCode === 131047 || /re-?engagement|24[ -]?hour|outside the allowed window/i.test(String(e.message)));
-
 // Lien de désinscription signé (un clic, sans connexion). Il pointe vers l'adresse publique de CE serveur (API_PUBLIC_URL ou SITE_URL) ; sans elle, pas de lien.
 const sign = (o, u) => crypto.createHmac('sha256', config.jwtSecret).update(`digest-unsub:${o}:${u}`).digest('hex').slice(0, 24);
 const unsubLink = (orgId, userId) => (config.apiPublicUrl ? `${config.apiPublicUrl}/api/ws/public/digest-unsub/${orgId}.${userId}.${sign(orgId, userId)}` : '');
@@ -138,31 +128,7 @@ async function deliverEmail(org, user, sub, msg, subject) {
   return status === 'sent' ? { channel: 'email', status: 'email_sent', waError: '' } : { channel: 'email', status: 'failed', waError: `L'e-mail n'a pas pu partir : ${error}` };
 }
 
-async function deliver(org, user, sub, msg, subject) {
-  if ((sub.channel || 'email') === 'email') return await deliverEmail(org, user, sub, msg, subject);
-  // Canal WhatsApp (inchangé) : WhatsApp d'abord ; si WhatsApp ne livre pas, e-mail de secours.
-  const text = msg.text;
-  const to = intl(sub.phone);
-  let waError = ''; let waStatus = 'failed';
-  if (!waOrg.isConnected(org)) waError = "WhatsApp n'est pas connecté pour cette organisation.";
-  else if (!phoneOk(to)) waError = 'Numéro de téléphone invalide.';
-  else if (await require('./wa-out').isOptedOut(org.id, to)) { waError = 'Ce numéro a demandé à ne plus recevoir de messages WhatsApp (STOP).'; }
-  else {
-    try {
-      if (sub.template_name && waOrg.modeOf(org) !== 'qr') await waOrg.sendTemplate(org, to, sub.template_name, 'fr', [oneLine(text, 900)]);
-      else await waOrg.sendText(org, to, text);
-      return { channel: 'whatsapp', status: 'delivered', waError: '' };
-    } catch (e) {
-      if (isWindowError(e)) { waStatus = 'window_closed'; waError = "WhatsApp a refusé le message : vous n'avez pas écrit au numéro de l'entreprise depuis plus de 24 h. Il faut un modèle de message approuvé par Meta."; }
-      else waError = `WhatsApp a refusé l'envoi : ${oneLine(String(e.message).replace(/^.*HTTP \d+ : /, ''), 160)}`;
-    }
-  }
-  if (emailOf(sub, user) && mailEnabled()) {
-    const r = await deliverEmail(org, user, sub, msg, subject);
-    if (r.status === 'email_sent') return { channel: 'email', status: 'emailed', waError };
-  }
-  return { channel: 'whatsapp', status: waStatus, waError };
-}
+const deliver = async (org, user, sub, msg, subject) => await deliverEmail(org, user, sub, msg, subject);
 
 async function finish(where, args, r) {
   await db.prepare(`UPDATE digest_log SET channel = ?, status = ?, wa_error = ? WHERE ${where}`).run(r.channel, r.status, r.waError || '', ...args);
@@ -176,7 +142,7 @@ async function processSub(org, st, s) {
   const clock = localClock(st.tz_offset);
   const req = reqFor(org, { id: s.user_id, name: s.uname, contact: s.ucontact }, { user_id: s.user_id, org_id: s.org_id, role: s.role, branch_id: s.branch_id, title: s.title });
   const user = req.user;
-  if (s.channel === 'email' && !mailEnabled()) return; // e-mails non configurés : rien n'est consommé, le résumé partira dès que le serveur enverra des e-mails (dans la fenêtre de rattrapage)
+  if (!mailEnabled()) return; // e-mails non configurés : rien n'est consommé, le résumé partira dès que le serveur enverra des e-mails (dans la fenêtre de rattrapage)
   if (s.morning && clock.minute >= s.send_minute && clock.minute < s.send_minute + CATCHUP_MIN) {
     if (await claim(org.id, user.id, 'morning', clock.date)) {
       try {
@@ -194,7 +160,7 @@ async function processUrgent(org, st, s) {
   const clock = localClock(st.tz_offset);
   const req = reqFor(org, { id: s.user_id, name: s.uname, contact: s.ucontact }, { user_id: s.user_id, org_id: s.org_id, role: s.role, branch_id: s.branch_id, title: s.title });
   const user = req.user;
-  if (s.channel === 'email' && !mailEnabled()) return; // les alertes restent « neuves » tant que l'envoi d'e-mails n'est pas configuré
+  if (!mailEnabled()) return; // les alertes restent « neuves » tant que l'envoi d'e-mails n'est pas configuré
   const week = Math.floor(Date.now() / (7 * 86400000));
   const events = (await urgentEvents(req, st, clock.date)).map((e) => ({ ...e, key: `${e.key}:w${week}` }));
   if (!events.length) return;
@@ -249,9 +215,9 @@ const STATUS_TEXT = {
   mail_off: "Non envoyé (l'envoi d'e-mails n'est pas activé sur le serveur)",
   no_email: 'Non envoyé (aucune adresse e-mail)',
   quota: "Non envoyé (limite d'e-mails du jour atteinte)",
-  delivered: 'Livré sur WhatsApp',
-  window_closed: 'Non livré (fenêtre WhatsApp fermée)',
-  emailed: "WhatsApp n'a pas livré : envoyé par e-mail à la place",
+  delivered: 'Ancien envoi WhatsApp (canal retiré)',
+  window_closed: 'Ancien envoi WhatsApp (canal retiré)',
+  emailed: 'Envoyé par e-mail',
   failed: 'Non livré',
   pending: 'En cours',
 };
@@ -266,9 +232,9 @@ router.get('/', async (req, res) => {
   const rows = raw.filter((r) => { if (r.kind !== 'urgent') return true; const k = `${r.user_id}:${r.batch}`; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 30);
   const mine = rows.find((r) => r.user_id === req.user.id);
   res.json({
-    connected: waOrg.isConnected(req.org), mailEnabled: mailEnabled(), hasEmail: Boolean(emailOf(null, req.user)), accountEmail: emailOf(null, req.user), consentText: CONSENT, consentTextEmail: CONSENT_EMAIL, statusText: STATUS_TEXT,
-    me: sub ? { channel: sub.channel || 'email', email: sub.email || '', address: emailOf(sub, req.user), phone: sub.phone, morning: Boolean(sub.morning), urgent: Boolean(sub.urgent), hour: hhmm(sub.send_minute), templateName: sub.template_name, consented: Boolean(sub.consent_at && !sub.unsub_at), consentAt: sub.consent_at, unsubAt: sub.unsub_at }
-      : { channel: 'email', email: '', address: emailOf(null, req.user), phone: '', morning: false, urgent: false, hour: '08:00', templateName: '', consented: false, consentAt: null, unsubAt: null },
+    mailEnabled: mailEnabled(), hasEmail: Boolean(emailOf(null, req.user)), accountEmail: emailOf(null, req.user), consentText: CONSENT_EMAIL, statusText: STATUS_TEXT,
+    me: sub ? { email: sub.email || '', address: emailOf(sub, req.user), morning: Boolean(sub.morning), urgent: Boolean(sub.urgent), hour: hhmm(sub.send_minute), consented: Boolean(sub.consent_at && !sub.unsub_at), consentAt: sub.consent_at, unsubAt: sub.unsub_at }
+      : { email: '', address: emailOf(null, req.user), morning: false, urgent: false, hour: '08:00', consented: false, consentAt: null, unsubAt: null },
     settings: { tzOffset: st.tz_offset, urgentMaxPerDay: st.urgent_max_day, handoffHours: st.handoff_hours, invoiceLateDays: st.invoice_late_days, canEdit: admin },
     last: mine ? logView(mine, admin) : null,
     log: rows.map((r) => logView(r, admin)),
@@ -279,36 +245,25 @@ router.put('/me', async (req, res) => {
   const b = req.body || {};
   const morning = Boolean(b.morning); const urgent = Boolean(b.urgent);
   const sub = await db.prepare('SELECT * FROM digest_subs WHERE org_id = ? AND user_id = ?').get(req.org.id, req.user.id);
-  const channel = b.channel === undefined || b.channel === '' ? (sub ? sub.channel || 'email' : 'email') : b.channel;
-  if (!CHANNELS.includes(channel)) throw new HttpError(400, 'Choisissez e-mail ou WhatsApp.');
-  const phone = A.text(b.phone, 30);
   const email = A.text(b.email, 120).trim().toLowerCase();
   if (email && !EMAIL_RE.test(email)) throw new HttpError(400, 'Adresse e-mail invalide.');
   const hm = /^(\d{1,2}):(\d{2})$/.exec(String(b.hour || '08:00'));
   if (!hm || Number(hm[1]) > 23 || Number(hm[2]) > 59) throw new HttpError(400, "Heure invalide (format HH:MM, par exemple 07:30).");
   const minute = Number(hm[1]) * 60 + Number(hm[2]);
-  const tpl = A.text(b.templateName, 80);
-  if (tpl && !/^[a-z0-9_]{1,80}$/.test(tpl)) throw new HttpError(400, "Le nom d'un modèle Meta ne contient que des minuscules, chiffres et « _ » (ex. resume_matin).");
   const now = nowISO();
   let consentAt = sub ? sub.consent_at : null; let unsubAt = sub ? sub.unsub_at : null; let consentText = sub ? sub.consent_text : '';
   const address = emailOf({ email }, req.user);
   if (morning || urgent) {
-    if (channel === 'email' && !address) throw new HttpError(400, "Indiquez l'adresse e-mail où recevoir le résumé et les alertes.");
-    if (channel === 'whatsapp' && !phoneOk(phone)) throw new HttpError(400, 'Indiquez votre numéro WhatsApp avec l\'indicatif du pays (ex. 237 677 11 22 33).');
-    // Le consentement est lié à la destination (adresse e-mail ou numéro) et au canal : en changer demande un nouveau consentement.
-    const prevChannel = sub ? sub.channel || 'email' : '';
-    const prevTarget = !sub ? '' : prevChannel === 'email' ? emailOf(sub, req.user).toLowerCase() : intl(sub.phone);
-    const target = channel === 'email' ? address.toLowerCase() : intl(phone);
-    const need = !sub || !sub.consent_at || sub.unsub_at || prevChannel !== channel || prevTarget !== target;
-    if (need && b.consent !== true) throw new HttpError(400, channel === 'email' ? 'Cochez la case de consentement pour recevoir des e-mails à cette adresse.' : 'Cochez la case de consentement pour recevoir des messages sur ce numéro.');
-    if (need) { consentAt = now; unsubAt = null; consentText = channel === 'email' ? CONSENT_EMAIL : CONSENT; }
+    if (!address) throw new HttpError(400, "Indiquez l'adresse e-mail où recevoir le résumé et les alertes.");
+    // Le consentement est lié à l'adresse e-mail : en changer demande un nouveau consentement.
+    const need = !sub || !sub.consent_at || sub.unsub_at || emailOf(sub, req.user).toLowerCase() !== address.toLowerCase();
+    if (need && b.consent !== true) throw new HttpError(400, 'Cochez la case de consentement pour recevoir des e-mails à cette adresse.');
+    if (need) { consentAt = now; unsubAt = null; consentText = CONSENT_EMAIL; }
   } else if (sub && sub.consent_at && !sub.unsub_at) unsubAt = now; // tout décocher = se désabonner
-  // Le numéro est conservé quand on passe à l'e-mail (aucun réglage perdu) ; il n'est remplacé que par un numéro valide.
-  const phoneSave = channel === 'whatsapp' || phoneOk(phone) ? phone : (sub ? sub.phone : '');
   await db.prepare(`INSERT INTO digest_subs (org_id, user_id, phone, morning, urgent, send_minute, template_name, consent_at, consent_text, unsub_at, updated_at, channel, email) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (org_id, user_id) DO UPDATE SET phone = EXCLUDED.phone, morning = EXCLUDED.morning, urgent = EXCLUDED.urgent, send_minute = EXCLUDED.send_minute, template_name = EXCLUDED.template_name,
     consent_at = EXCLUDED.consent_at, consent_text = EXCLUDED.consent_text, unsub_at = EXCLUDED.unsub_at, updated_at = EXCLUDED.updated_at, channel = EXCLUDED.channel, email = EXCLUDED.email`)
-    .run(req.org.id, req.user.id, phoneSave, morning ? 1 : 0, urgent ? 1 : 0, minute, tpl, consentAt, consentAt ? consentText : '', unsubAt, now, channel, email);
+    .run(req.org.id, req.user.id, sub ? sub.phone : '', morning ? 1 : 0, urgent ? 1 : 0, minute, sub ? sub.template_name : '', consentAt, consentAt ? consentText : '', unsubAt, now, 'email', email);
   await A.logActivity(req.org.id, req.user.id, 'alerts', morning || urgent ? 'Résumé et alertes : réglages enregistrés' : 'Résumé et alertes : désabonnement');
   res.json({ ok: true });
 });
@@ -322,8 +277,7 @@ router.post('/me/unsubscribe', async (req, res) => {
 
 router.post('/test', limits.make(60 * 1000, 10, 'Trop de tests. Patientez une minute.'), asyncHandler(async (req, res) => {
   const sub = await db.prepare('SELECT * FROM digest_subs WHERE org_id = ? AND user_id = ?').get(req.org.id, req.user.id);
-  const viaMail = sub && (sub.channel || 'email') === 'email';
-  if (!sub || !sub.consent_at || sub.unsub_at || (viaMail ? !emailOf(sub, req.user) : !phoneOk(sub.phone))) throw new HttpError(400, !sub ? "Enregistrez d'abord vos réglages et votre consentement, puis réessayez." : viaMail ? "Enregistrez d'abord votre adresse e-mail et votre consentement, puis réessayez." : "Enregistrez d'abord votre numéro et votre consentement, puis réessayez.");
+  if (!sub || !sub.consent_at || sub.unsub_at || !emailOf(sub, req.user)) throw new HttpError(400, !sub ? "Enregistrez d'abord vos réglages et votre consentement, puis réessayez." : "Enregistrez d'abord votre adresse e-mail et votre consentement, puis réessayez.");
   const clock = localClock((await settingsOf(req.org.id)).tz_offset);
   const m = await composeMorning(req, clock.date);
   const key = `t${Date.now()}${rand()}`;
@@ -360,4 +314,4 @@ pub.get('/digest-unsub/:token', limits.make(60 * 1000, 30, 'Trop de requêtes.')
   return page(`<h1 style="font-size:20px">C'est fait</h1><p>Vous ne recevrez plus le résumé du matin ni les alertes de ${esc(row.org)}. Vous pouvez vous réabonner à tout moment depuis Brij-IA, module Alertes.</p>`, 200);
 });
 
-module.exports = { router, pub, tick, composeMorning, composeUrgent, localClock, intl };
+module.exports = { router, pub, tick, composeMorning, composeUrgent, localClock };

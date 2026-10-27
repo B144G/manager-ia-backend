@@ -88,7 +88,7 @@ function fakeClaude(port) {
         else if (parts) o = { reply: 'Belle robe ! Elle ressemble à notre Robe wax Aïcha.', action: null };
         else if (/WAORDER/.test(lastUser)) o = { reply: 'Parfait, je confirme.', action: { type: 'order', items: [{ name: 'Robe wax Aïcha', quantity: 2 }], note: 'Akwa' } };
         else if (/REGWA/.test(lastUser)) o = { reply: 'Merci, je vous enregistre.', action: { type: 'register', name: 'Paul WA' } };
-        else if (/ORDER/.test(lastUser)) o = { reply: 'Parfait, je confirme votre commande.', action: { type: 'order', items: [{ name: 'robe WAX', quantity: 2, price: 1 }, { name: 'Chapeau', quantity: 1 }], note: 'Douala, Akwa', name: 'Paul Test', phone: '677 11 22 33' } };
+        else if (/ORDER/.test(lastUser)) o = { reply: 'Parfait, je confirme votre commande.', action: { type: 'order', items: [{ name: 'robe WAX', quantity: 2, price: 99999 }, { name: 'Chapeau', quantity: 1 }], note: 'Douala, Akwa', name: 'Paul Test', phone: '677 11 22 33' } };
         else if (/REGISTER/.test(lastUser)) o = { reply: 'Merci, je vous enregistre.', action: { type: 'register', name: 'Paul Test', phone: '677 11 22 33', email: 'paul@exemple.com' } };
         else if (/HUMAIN/.test(lastUser)) o = { reply: 'Je transmets à un conseiller.', action: { type: 'handoff', reason: 'demande de remise' } };
         o.lead = { need: 'robes wax', quantity: '2 pièces', deadline: 'vendredi', place: 'Douala', budget: '', temperature: 'tiede' };

@@ -16,6 +16,7 @@ const L = require('./sales-assign');
 const wh = require('../services/webhooks');
 const appt = require('./sales-appt');
 const briefAI = require('./sales-brief');
+const N = require('./negotiation');
 const { HttpError, asyncHandler, cleanText, oneLine, stripAccents, log } = require('../util');
 
 const router = express.Router();
@@ -57,10 +58,14 @@ async function upsertCustomer(org, chat, a) {
   return c.id;
 }
 
-/** Crée une commande « à valider ». Prix et total viennent du catalogue. Renvoie null si aucun article reconnu. */
-async function createOrder(org, customerId, items, note, chatId) {
+/**
+ * Crée une commande « à valider ». Les prix viennent du serveur (priceFor) : prix de référence du client, ou prix accepté dans la négociation (journal).
+ * Un prix annoncé par l'IA sous le minimum autorisé est REFUSÉ (refused: true). Renvoie null si aucun article reconnu.
+ */
+async function createOrder(org, customerId, items, note, chatId, chat) {
   const catalog = await catalogOf(org.id);
-  const lines = []; const unknown = [];
+  const s = await N.settingsOf(org.id);
+  const lines = []; const unknown = []; const notes = [];
   for (const it of (Array.isArray(items) ? items : []).slice(0, 20)) {
     const want = norm(it && it.name);
     if (!want) continue;
@@ -68,19 +73,32 @@ async function createOrder(org, customerId, items, note, chatId) {
     const qty = Number.isFinite(q) && q > 0 && q <= 10000 ? q : 1;
     const hit = catalog.find((c) => norm(c.name) === want) || catalog.find((c) => norm(c.name).includes(want) || want.includes(norm(c.name)));
     if (!hit) { unknown.push(oneLine(it.name, 60)); continue; }
+    const claimed = Number(it.price) > 0 ? Math.round(Number(it.price)) : 0;
     const ex = lines.find((l) => l.id === hit.id);
-    if (ex) ex.quantity += qty; else lines.push({ id: hit.id, label: hit.name, quantity: qty, price: hit.price });
+    const qtyTotal = (ex ? ex.quantity : 0) + qty;
+    const pl = await N.priceOrderLine(org, chat || (chatId ? { id: chatId } : null), customerId, hit, qtyTotal, claimed, s);
+    if (pl.refused) return { order: null, unknown, refused: true };
+    if (pl.note) notes.push(`${hit.name} : ${pl.note}`);
+    if (ex) { ex.quantity = qtyTotal; ex.price = pl.unit; ex.reference = pl.pf.reference; ex.negotiated = pl.negotiated; } else lines.push({ id: hit.id, label: hit.name, quantity: qty, price: pl.unit, listPrice: Number(hit.price), reference: pl.pf.reference, negotiated: pl.negotiated });
   }
   if (!lines.length) return { order: null, unknown };
   const total = lines.reduce((a, l) => a + Math.round(l.quantity * l.price), 0);
+  const listTotal = lines.reduce((a, l) => a + Math.round(l.quantity * l.listPrice), 0);
+  const negotiated = lines.some((l) => l.negotiated);
+  const discountPct = negotiated && listTotal > 0 ? Math.round((1 - total / listTotal) * 1000) / 10 : 0;
+  const needsApproval = negotiated && discountPct > s.approvalPct;
   const now = nowISO();
   const number = await crm.nextNumber(org.id, 'order');
-  const id = (await db.prepare("INSERT INTO documents (org_id, customer_id, kind, number, status, lines, total, issued, note, created_by, created_at, updated_at, chat_id) VALUES (?, ?, 'order', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(org.id, customerId, number, JSON.stringify(lines.map(({ label, quantity, price }) => ({ label, quantity, price }))), total, now.slice(0, 10), cleanText(note, 500), org.owner_id, now, now, chatId || null)).lastInsertRowid;
+  const id = (await db.prepare("INSERT INTO documents (org_id, customer_id, kind, number, status, lines, total, issued, note, created_by, created_at, updated_at, chat_id, negotiated, discount_pct) VALUES (?, ?, 'order', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(org.id, customerId, number, JSON.stringify(lines.map(({ label, quantity, price, listPrice, negotiated: ng }) => ({ label, quantity, price, ...(ng ? { listPrice } : {}) }))), total, now.slice(0, 10), cleanText(note, 500), org.owner_id, now, now, chatId || null, negotiated ? 1 : 0, discountPct)).lastInsertRowid;
   await db.prepare("UPDATE customers SET stage = 'client' WHERE id = ?").run(customerId);
   await A.logActivity(org.id, null, 'sales', `Nouvelle commande ${number} à valider`);
-  wh.emit(org.id, 'order.created', { id: Number(id), number, total, currency: org.currency, customer_id: customerId, lines: lines.map((l) => ({ label: l.label, quantity: l.quantity, price: l.price })) });
-  return { order: { id: Number(id), number, total, lines: lines.map((l) => ({ label: l.label, quantity: l.quantity })) }, unknown };
+  const doc = { id: Number(id), number, total };
+  const cu = await db.prepare('SELECT name FROM customers WHERE id = ?').get(customerId);
+  if (negotiated) for (const l of lines.filter((x) => x.negotiated)) await N.log(org.id, { chatId, docId: Number(id), itemId: l.id, label: l.label, quantity: l.quantity, actor: 'assistant', kind: 'order', price: l.price, pct: N.pctOf(l.listPrice, l.price), note: `commande ${number} au prix négocié` });
+  if (needsApproval) await N.requestApproval(org, doc, discountPct, cu ? cu.name : 'client');
+  wh.emit(org.id, 'order.created', { id: Number(id), number, total, currency: org.currency, customer_id: customerId, negotiated, discount_pct: discountPct, lines: lines.map((l) => ({ label: l.label, quantity: l.quantity, price: l.price })) });
+  return { order: { id: Number(id), number, total, negotiated, discountPct, needsApproval, lines: lines.map((l) => ({ label: l.label, quantity: l.quantity, price: l.price, negotiated: l.negotiated })) }, unknown, notes };
 }
 
 async function handoff(org, chat, reason) {
@@ -99,6 +117,8 @@ async function handoff(org, chat, reason) {
   await A.logActivity(org.id, null, 'sales', 'Une conversation attend un conseiller');
   wh.emit(org.id, 'chat.handoff', { chat_id: chat.id, channel: chat.channel, reason: oneLine(reason, 120), customer: cu ? cu.name : null });
   await L.autoAssign(org, await db.prepare('SELECT * FROM chats WHERE id = ?').get(chat.id)); // répartition automatique si elle est activée
+  // Alerte WhatsApp au responsable prioritaire (sans attendre : l'envoi peut durer quelques secondes) ; repli notice + e-mail (relay.js)
+  require('./relay').notifyHandoff(org, await db.prepare('SELECT * FROM chats WHERE id = ?').get(chat.id), reason).catch(() => {});
 }
 
 const saveMsg = async (chatId, role, content) => await db.prepare('INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)').run(chatId, role, String(content).slice(0, 4000), nowISO());
@@ -185,7 +205,7 @@ async function respond(org, chat, { text = '', viaVoice = false, media = null } 
     out.reply = HANDOFF_TEXT; out.handoff = true; await saveMsg(chat.id, 'assistant', out.reply); return out;
   }
 
-  const customer = chat.customer_id ? await db.prepare('SELECT name, phone FROM customers WHERE id = ?').get(chat.customer_id) : null;
+  const customer = chat.customer_id ? await db.prepare('SELECT id, name, phone, default_discount FROM customers WHERE id = ?').get(chat.customer_id) : null;
   const history = (await db.prepare("SELECT role, content FROM chat_messages WHERE chat_id = ? AND role IN ('user','assistant') ORDER BY id DESC LIMIT 16").all(chat.id)).reverse();
   while (history.length && history[0].role !== 'user') history.shift();
   const messages = history.map((m) => ({ role: m.role, content: m.content.replace(/^\[message vocal\] /, '').replace(/^\[(image|document) #\d+\]\s*/, '[Le client a envoyé une pièce jointe] ') }));
@@ -195,8 +215,11 @@ async function respond(org, chat, { text = '', viaVoice = false, media = null } 
   }
 
   let res;
+  const catalogNow = await catalogOf(org.id);
+  const negSettings = await N.settingsOf(org.id);
   try {
-    const raw = await claude.ask({ stable: agent.stable(), system: agent.dataBlock({ org, catalog: await catalogOf(org.id), chat, customer, today: nowISO().slice(0, 10), weekday: ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'][new Date(Date.now() + 3600000).getUTCDay()], busy: await appt.busyText(org.id) }), messages, maxTokens: 600, tier: 'fast' });
+    const negotiation = await N.contextFor(org, chat, customer, catalogNow, history.slice(-6).map((m) => m.content));
+    const raw = await claude.ask({ stable: agent.stable(), system: agent.dataBlock({ org, catalog: catalogNow, negotiation, chat, customer, today: nowISO().slice(0, 10), weekday: ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'][new Date(Date.now() + 3600000).getUTCDay()], busy: await appt.busyText(org.id) }), messages, maxTokens: 600, tier: 'fast' });
     await db.prepare('INSERT INTO ai_usage (org_id, user_id, created_at) VALUES (?, 0, ?)').run(org.id, nowISO());
     res = agent.parse(raw);
     out.spoken = res.reply;
@@ -219,17 +242,32 @@ async function respond(org, chat, { text = '', viaVoice = false, media = null } 
     } else if (!cid) {
       reply += '\n\nPour enregistrer votre commande, j\'ai besoin de votre nom et de votre numéro de téléphone.';
     } else {
-      const r = await createOrder(org, cid, a.items, a.note, chat.id);
-      if (r.order) {
+      const r = await createOrder(org, cid, a.items, a.note, chat.id, chat);
+      if (r.refused) {
+        // Prix annoncé sous le minimum autorisé : refusé par le serveur, un conseiller reprend la main.
+        reply = N.handoffText(negSettings);
+        await handoff(org, chat, 'prix demandé sous le minimum autorisé');
+        out.handoff = true;
+      } else if (r.order) {
         out.order = r.order; out.registered = true;
         await L.mergeLead(chat, null, 'chaud');
         if (org.handoff_order) toHuman = `commande ${r.order.number} enregistrée`;
-        reply += `\n\nVotre commande ${r.order.number} est enregistrée :\n${r.order.lines.map((l) => `• ${l.label} × ${l.quantity}`).join('\n')}\nTotal : ${r.order.total.toLocaleString('fr-FR')} ${org.currency}.\nL'équipe va la confirmer et vous contacter très bientôt.`;
+        out.negotiated = r.order.negotiated;
+        reply += `\n\nVotre commande ${r.order.number} est enregistrée :\n${r.order.lines.map((l) => `• ${l.label} × ${l.quantity}${l.negotiated ? ' à ' + N.money(l.price, org) + ' l\'unité' : ''}`).join('\n')}\nTotal : ${r.order.total.toLocaleString('fr-FR')} ${org.currency}.\n${r.order.needsApproval ? 'Cette commande avec remise doit d\'abord être validée par un responsable ; il vous contactera très bientôt.' : 'L\'équipe va la confirmer et vous contacter très bientôt.'}`;
+        if (r.notes && r.notes.length) reply += `\n(${r.notes.join(' ; ')}.)`;
         if (r.unknown.length) reply += `\n(Non trouvé dans notre catalogue : ${r.unknown.join(', ')}.)`;
       } else {
         reply += `\n\nJe n'ai pas retrouvé ces articles dans notre catalogue${r.unknown.length ? ` (${r.unknown.join(', ')})` : ''}. Pouvez-vous me préciser lesquels vous souhaitez ?`;
       }
     }
+  } else if (a.type === 'negotiate') {
+    const nr = await N.negotiate(org, chat, customer, a, catalogNow);
+    if (nr) {
+      reply = nr.replace ? nr.text : `${reply}\n\n${nr.text}`;
+      if (nr.decision === 'accept') await L.mergeLead(chat, null, 'chaud');
+      if (nr.handoff) { await handoff(org, chat, 'négociation : passage de relais'); out.handoff = true; }
+      out.negotiation = { decision: nr.decision, price: nr.price || null };
+    } else reply += "\n\n(Je n'ai pas retrouvé cet article dans notre catalogue : pouvez-vous me le préciser ?)";
   } else if (a.type === 'appointment') {
     const cid = await upsertCustomer(org, chat, a) || chat.customer_id;
     if (!cid) reply += "\n\nPour fixer le rendez-vous, j'ai besoin de votre nom et de votre numéro de téléphone.";
@@ -263,6 +301,14 @@ async function respond(org, chat, { text = '', viaVoice = false, media = null } 
     await handoff(org, chat, toHuman);
     out.handoff = true; out.toHuman = true;
     setImmediate(async () => { briefAI.build(org, chat.id).catch(() => {}); });
+  }
+  // Garde-fou : un prix cité par l'IA sous le minimum autorisé ne part jamais chez le client ; un conseiller reprend la main.
+  const cited = await N.guardReply(org, chat, customer, res.reply, catalogNow, negSettings);
+  if (cited) {
+    await N.log(org.id, { chatId: chat.id, itemId: cited.id, label: cited.name, actor: 'assistant', kind: 'refused', note: 'prix cité dans le message sous le minimum autorisé : message remplacé' });
+    reply = reply.startsWith(res.reply) ? reply.slice(res.reply.length).trim() : reply;
+    reply = `${N.handoffText(negSettings)}${reply ? '\n\n' + reply : ''}`;
+    if (!out.handoff) { await handoff(org, chat, 'prix cité sous le minimum autorisé'); out.handoff = true; }
   }
   out.reply = reply;
   await saveMsg(chat.id, 'assistant', reply);
