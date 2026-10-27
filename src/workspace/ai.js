@@ -61,7 +61,23 @@ async function ctxBudget(req) {
   const cur = req.org.currency;
   return `BUDGET du mois ${s.month} : entrées ${money(s.income, cur)}, sorties ${money(s.expense, cur)}, solde ${money(s.balance, cur)}.\nDépenses par catégorie :\n` +
     (s.categories.map((c) => `- ${oneLine(c.category, 60)} : ${money(c.spent, cur)}${c.limit ? ` / limite ${money(c.limit, cur)}${c.spent > c.limit ? ' (DÉPASSÉE)' : ''}` : ''}`).join('\n') || '(aucune dépense)') +
-    '\nDernières lignes :\n' + (s.entries.slice(0, 15).map((e) => `- ${e.date} ${e.kind === 'income' ? 'ENTRÉE' : 'SORTIE'} ${money(e.amount, cur)} (${oneLine(e.category, 40)}) ${oneLine(e.label, 80)}`).join('\n') || '(aucune)');
+    '\nDernières lignes :\n' + (s.entries.slice(0, 15).map((e) => `- ${e.date} ${e.kind === 'income' ? 'ENTRÉE' : 'SORTIE'} ${money(e.amount, cur)} (${oneLine(e.category, 40)}) ${oneLine(e.label, 80)}`).join('\n') || '(aucune)') + await ctxBudgetAnnual(req);
+}
+
+/** Budget annuel, engagements, trésorerie à 3 mois et dépenses à valider (administrateurs seulement : données de la compta). Le « réalisé » vient de la compta. */
+async function ctxBudgetAnnual(req) {
+  if (!A.can(req, 'admin')) return '';
+  try {
+    const B = require('./budget-annual'); const cur = req.org.currency; const year = nowISO().slice(0, 4);
+    const a = await B.annualView(req, year); const cf = await B.cashflow(req, 3, 100);
+    const pend = (await db.prepare("SELECT COUNT(*) c FROM expense_requests WHERE org_id = ? AND status = 'pending'").get(req.org.id)).c;
+    const over = a.lines.filter((l) => l.overBudget).slice(0, 6).map((l) => `${oneLine(l.category, 40)} (réalisé ${money(l.realizedTotal, cur)} + engagé ${money(l.committed, cur)} pour un budget de ${money(l.plannedTotal, cur)})`);
+    return `\nBUDGET ANNUEL ${year} (réalisé = comptabilité ; estimation de gestion, pas un conseil financier) : ${a.hasPlan ? `dépenses prévues ${money(a.totals.expensePlanned, cur)}, réalisées ${money(a.totals.expenseRealized, cur)} ; recettes prévues ${money(a.totals.incomePlanned, cur)}, réalisées ${money(a.totals.incomeRealized, cur)}` : 'aucun budget annuel saisi'}.` +
+      (a.totals.manual ? ` Dont ${money(a.totals.manual, cur)} saisis au budget mais pas en compta.` : '') + (over.length ? `\nCatégories qui dépassent ou vont dépasser leur budget : ${over.join(' ; ')}.` : '') +
+      `\nEngagements : commandes validées ${money(a.commitments.ordersAmount, cur)}, factures fournisseurs à payer ${money(a.commitments.billsAmount, cur)}.` +
+      `\nTrésorerie prévisionnelle (3 mois, estimation) : départ ${money(cf.opening, cur)} ; ${cf.months.map((m) => `${m.month} : +${money(m.inflows, cur)} / -${money(m.outflows, cur)} => ${money(m.closing, cur)}`).join(' ; ')}.` +
+      (cf.alert ? ` ALERTE : trésorerie négative prévue en ${cf.alert.month} (${money(cf.alert.closing, cur)}).` : '') + (pend ? `\nDépenses en attente de validation : ${pend}.` : '');
+  } catch { return ''; }
 }
 
 async function ctxStructure(req) {

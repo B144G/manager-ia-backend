@@ -459,6 +459,7 @@ router.post('/slips/:id/budget', async (req, res) => {
     if (!lock.changes) throw new HttpError(409, 'Ce bulletin est déjà enregistré au budget.');
     id = Number((await db.prepare('INSERT INTO budget_entries (org_id, branch_id, kind, category, label, amount, date, created_by, created_at) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?)').run(
       req.org.id, 'expense', 'Salaires', `Paie ${s.month} - ${s.employee_name}`.slice(0, 150), s.employer_cost, date, req.user.id, nowISO())).lastInsertRowid);
+    await db.prepare("UPDATE budget_entries SET source = 'payroll', source_id = ? WHERE id = ?").run(s.id, id); // ligne « miroir » : la compta (écriture de paie) fait foi
     await db.prepare('UPDATE payroll_slips SET budget_entry_id = ? WHERE id = ?').run(id, s.id);
   })();
   await A.logActivity(req.org.id, req.user.id, 'payroll', `Bulletin de ${s.employee_name} (${s.month}) enregistré au budget`);

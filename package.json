@@ -11,7 +11,7 @@
     "setup": "node scripts/setup.js",
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "npm run test:ai && npm run test:webhooks && npm run smoke && npm run smoke:signup && npm run smoke:security && npm run smoke:central && npm run smoke:ws && npm run test:finance && npm run test:commerce && npm run test:ops && npm run test:intelligence && npm run test:mail && npm run test:embedded && npm run test:waqr && npm run test:wave1",
+    "test": "npm run test:ai && npm run test:webhooks && npm run smoke && npm run smoke:signup && npm run smoke:security && npm run smoke:central && npm run smoke:ws && npm run test:finance && npm run test:commerce && npm run test:ops && npm run test:intelligence && npm run test:mail && npm run test:embedded && npm run test:waqr && npm run test:wave1 && npm run test:wave2",
     "smoke": "node scripts/smoke.js",
     "smoke:ws": "node scripts/smoke-workspace.js",
     "smoke:signup": "node scripts/smoke-signup.js",
@@ -31,7 +31,8 @@
     "test:mail": "node scripts/test-mail-api.js",
     "test:embedded": "node scripts/test-embedded.js",
     "test:waqr": "node scripts/test-waqr.js",
-    "test:wave1": "node scripts/test-wave1-billing.js && node scripts/test-wave1-stock.js && node scripts/test-wave1-fleet.js"
+    "test:wave1": "node scripts/test-wave1-billing.js && node scripts/test-wave1-stock.js && node scripts/test-wave1-fleet.js",
+    "test:wave2": "node scripts/test-wave2-payroll.js && node scripts/test-wave2-accounting.js && node scripts/test-wave2-budget.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc14",

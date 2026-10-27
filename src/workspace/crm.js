@@ -247,7 +247,8 @@ async function applyPayment(req, d, amount, row) {
   let status;
   await db.transaction(async () => {
     status = await settle(d, paid, d.credited);
-    await db.prepare("INSERT INTO budget_entries (org_id, branch_id, kind, category, label, amount, date, created_by, created_at) VALUES (?, ?, 'income', 'Ventes', ?, ?, ?, ?, ?)").run(req.org.id, d.branch_id, `Paiement ${d.number}`, amount, today(), req.user.id, nowISO());
+    // Ligne « miroir » (source = facture) : quand la facture est en comptabilité, le budget lit la compta et ignore cette ligne (une seule source de vérité).
+    await db.prepare("INSERT INTO budget_entries (org_id, branch_id, kind, category, label, amount, date, created_by, created_at, source, source_id) VALUES (?, ?, 'income', 'Ventes', ?, ?, ?, ?, ?, 'invoice', ?)").run(req.org.id, d.branch_id, `Paiement ${d.number}`, amount, today(), req.user.id, nowISO(), d.id);
   })();
   require('../services/webhooks').emit(req.org.id, 'payment.received', { invoice_id: d.id, number: d.number, amount, paid, total: d.total, status, method: row.method, reference: row.reference });
   return { paid, status };

@@ -297,13 +297,14 @@ async function receive(req, o, it, qtyIn, opts = {}) {
   await db.transaction(async () => {
     await L.adjust(req, it, q, complete && o.received_qty === 0 ? `Commande #${o.id} reçue` : `Commande #${o.id} : réception ${complete ? 'du solde' : 'partielle'}`,
       { unitCost: price > 0 ? price : undefined, lotNo: opts.lotNo || `CMD-${o.id}`, expiry: opts.expiry, serials: opts.serials, strict: opts.strict, refKind: 'order', refId: o.id });
-    await db.prepare('INSERT INTO purchase_receipts (org_id, order_id, quantity, unit_price, lot_no, expiry, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, o.id, q, price, opts.lotNo || '', opts.expiry || null, A.text(opts.note, 200), req.user.id, nowISO());
+    const receiptId = Number((await db.prepare('INSERT INTO purchase_receipts (org_id, order_id, quantity, unit_price, lot_no, expiry, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, o.id, q, price, opts.lotNo || '', opts.expiry || null, A.text(opts.note, 200), req.user.id, nowISO())).lastInsertRowid);
     await db.prepare('UPDATE purchase_orders SET status = ?, received_qty = ?, received_at = ?, decided_by = COALESCE(decided_by, ?), updated_at = ? WHERE id = ?').run(complete ? 'received' : 'partial', done, nowISO(), req.user.id, nowISO(), o.id);
     if (price > 0) {
       await db.prepare('UPDATE stock_items SET unit_cost = ? WHERE id = ?').run(price, it.id);
       // La dépense est aussi inscrite au budget (catégorie « Achats »), pour que les chiffres restent d'accord.
-      await db.prepare("INSERT INTO budget_entries (org_id, branch_id, kind, category, label, amount, date, created_by, created_at) VALUES (?, ?, 'expense', 'Achats', ?, ?, ?, ?, ?)")
-        .run(req.org.id, it.branch_id, `Commande #${o.id} : ${it.name}${complete ? '' : ' (réception partielle)'}`, Math.max(Math.round(q * price), 1), today(), req.user.id, nowISO());
+      // Ligne « miroir » (source = réception) : si la réception est en comptabilité, le budget lit la compta et ignore cette ligne.
+      await db.prepare("INSERT INTO budget_entries (org_id, branch_id, kind, category, label, amount, date, created_by, created_at, source, source_id) VALUES (?, ?, 'expense', 'Achats', ?, ?, ?, ?, ?, 'receipt', ?)")
+        .run(req.org.id, it.branch_id, `Commande #${o.id} : ${it.name}${complete ? '' : ' (réception partielle)'}`, Math.max(Math.round(q * price), 1), today(), req.user.id, nowISO(), receiptId);
     }
   })();
   return { received: q, receivedQty: done, status: complete ? 'received' : 'partial' };

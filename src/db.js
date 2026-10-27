@@ -1810,6 +1810,51 @@ const MIGRATIONS = [
     created_at TEXT NOT NULL
   );
   `,
+  /* VAGUE 2 · budget : budget annuel, une seule source de vérité avec la compta (lignes miroirs repérées), validation des dépenses par seuil */ `
+  ALTER TABLE budget_entries ADD COLUMN source TEXT NOT NULL DEFAULT '';
+  ALTER TABLE budget_entries ADD COLUMN source_id BIGINT;
+  ALTER TABLE budget_entries ADD COLUMN acc_entry_id BIGINT;
+  ALTER TABLE budget_entries ADD COLUMN in_ledger BIGINT NOT NULL DEFAULT 0;
+  UPDATE budget_entries SET source = 'payroll', source_id = s.id FROM payroll_slips s WHERE s.budget_entry_id = budget_entries.id AND s.org_id = budget_entries.org_id;
+  UPDATE budget_entries SET source = 'invoice', source_id = d.id FROM documents d
+    WHERE d.org_id = budget_entries.org_id AND budget_entries.source = '' AND budget_entries.kind = 'income' AND budget_entries.category = 'Ventes' AND budget_entries.label = 'Paiement ' || d.number;
+  CREATE TABLE budget_annual (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    year TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    category TEXT NOT NULL,
+    amounts TEXT NOT NULL DEFAULT '[]',
+    UNIQUE (org_id, year, kind, category)
+  );
+  CREATE TABLE budget_settings (
+    org_id BIGINT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    approval_threshold BIGINT NOT NULL DEFAULT 0
+  );
+  CREATE TABLE expense_requests (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    branch_id BIGINT REFERENCES branches(id) ON DELETE SET NULL,
+    category TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    amount BIGINT NOT NULL,
+    date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    requested_by BIGINT NOT NULL,
+    decided_by BIGINT,
+    decided_at TEXT,
+    decision_note TEXT NOT NULL DEFAULT '',
+    budget_entry_id BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_expense_requests ON expense_requests(org_id, status);
+  CREATE TABLE budget_account_map (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    prefix TEXT NOT NULL,
+    category TEXT NOT NULL,
+    PRIMARY KEY (org_id, prefix)
+  );
+  `,
 ];
 
 
