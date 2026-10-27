@@ -53,7 +53,7 @@ pub.use('/meta', require('./meta-channels'));
 router.use(requireUser);
 
 const memberView = (m) => ({ userId: m.user_id, name: m.name, contact: m.contact, role: m.role, title: m.title, branchId: m.branch_id });
-const orgView = (o) => ({ id: o.id, name: o.name, sector: o.sector, description: o.description, currency: o.currency });
+const orgView = (o) => ({ id: o.id, name: o.name, sector: o.sector, description: o.description, currency: o.currency, vatRate: Number(o.vat_rate) });
 
 router.get('/modules', (req, res) => res.json({ modules }));
 
