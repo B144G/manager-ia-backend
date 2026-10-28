@@ -31,6 +31,7 @@ async function orgOf(token) {
   if (!org) throw new HttpError(404, 'Page introuvable.');
   return org;
 }
+const HK = require('./handoff-kind');
 const catalogOf = async (orgId) => await db.prepare("SELECT c.*, (SELECT COUNT(*) FROM catalog_media m WHERE m.item_id = c.id AND m.kind = 'image') AS n_img, (SELECT COUNT(*) FROM catalog_media m WHERE m.item_id = c.id AND m.kind = 'video') AS n_vid FROM catalog c WHERE c.org_id = ? AND c.active = 1 ORDER BY c.name COLLATE NOCASE LIMIT 200").all(orgId);
 const enabled = async (org) => Boolean(org.chat_enabled) && (await catalogOf(org.id)).length > 0;
 const digits = (v) => String(v || '').replace(/\D/g, '');
@@ -251,7 +252,6 @@ async function respond(org, chat, { text = '', viaVoice = false, media = null } 
       } else if (r.order) {
         out.order = r.order; out.registered = true;
         await L.mergeLead(chat, null, 'chaud');
-        if (org.handoff_order) toHuman = `commande ${r.order.number} enregistrée`;
         out.negotiated = r.order.negotiated;
         reply += `\n\nVotre commande ${r.order.number} est enregistrée :\n${r.order.lines.map((l) => `• ${l.label} × ${l.quantity}${l.negotiated ? ' à ' + N.money(l.price, org) + ' l\'unité' : ''}`).join('\n')}\nTotal : ${r.order.total.toLocaleString('fr-FR')} ${org.currency}.\n${r.order.needsApproval ? 'Cette commande avec remise doit d\'abord être validée par un responsable ; il vous contactera très bientôt.' : 'L\'équipe va la confirmer et vous contacter très bientôt.'}`;
         if (r.notes && r.notes.length) reply += `\n(${r.notes.join(' ; ')}.)`;
@@ -277,7 +277,6 @@ async function respond(org, chat, { text = '', viaVoice = false, media = null } 
         out.appointment = r.appt; out.registered = true;
         await L.mergeLead(chat, null, 'chaud');
         reply += `\n\nVotre demande de rendez-vous est enregistrée : ${r.appt.label}${r.appt.purpose ? ' (' + r.appt.purpose + ')' : ''}. L'équipe va la confirmer très bientôt.`;
-        if (org.handoff_appt) toHuman = `rendez-vous demandé : ${r.appt.label}`;
       } else reply += `\n\n(${r.error} Proposez-moi un autre jour ou une autre heure.)`;
     }
   } else if (a.type === 'send_media') {
@@ -295,8 +294,25 @@ async function respond(org, chat, { text = '', viaVoice = false, media = null } 
     await handoff(org, chat, oneLine(a.reason, 120));
     out.handoff = true;
   }
+  // Critères de passation (handoff-kind.js) : selon le type d'entreprise, la main n'est passée que lorsque la fiche est complète ; sinon l'IA demande ce qui manque.
+  if (!out.handoff) {
+    const intentNow = a.type === 'order' && out.order ? 'commande' : a.type === 'appointment' && out.appointment ? 'rendez-vous' : a.type === 'register' && out.registered ? ({ order: 'commande', service: 'service', prospect: 'prospect' }[await HK.kindOf(org)]) : '';
+    if (intentNow) await L.mergeLead(chat, { intent: intentNow }, null);
+    const fresh = await db.prepare('SELECT * FROM chats WHERE id = ?').get(chat.id);
+    const st = L.cleanLead(JSON.parse(fresh.lead || '{}')).intent ? await HK.status(org, fresh) : null;
+    const wanted = st && (st.intent === 'rendez-vous' ? org.handoff_appt : org.handoff_order);
+    if (st && wanted && (intentNow || toHuman || fresh.status !== 'handoff')) {
+      if (HK.ready(st)) {
+        toHuman = `${HK.titleOf(st)}${st.have.order ? ' ' + st.have.order.number : ''}`;
+      } else {
+        await L.mergeLead(chat, { asks: st.asks + 1 }, null);
+        reply += `\n\n${HK.askFor(st)}`;
+        toHuman = '';
+      }
+    }
+  }
   if (toHuman) {
-    // Commande ou rendez-vous enregistré : un conseiller prend le relais (attribution automatique si elle est activée), et l'IA interne prépare son dossier.
+    // Fiche complète : un conseiller prend le relais (attribution automatique si elle est activée), et l'IA interne prépare son dossier.
     reply += "\n\nUn conseiller de l'équipe va prendre le relais pour finaliser avec vous.";
     await handoff(org, chat, toHuman);
     out.handoff = true; out.toHuman = true;

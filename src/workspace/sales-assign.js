@@ -7,7 +7,8 @@ const { oneLine, cleanText } = require('../util');
 
 const TEMPS = ['chaud', 'tiede', 'froid'];
 const TEMP_LABEL = { chaud: 'Prospect chaud (prêt à acheter)', tiede: 'Prospect tiède (il compare ou hésite)', froid: 'Prospect froid (il se renseigne)' };
-const FIELDS = [['need', 'Besoin'], ['quantity', 'Quantité'], ['deadline', 'Pour quand'], ['place', 'Lieu ou livraison'], ['budget', 'Budget']];
+const FIELDS = [['need', 'Besoin'], ['quantity', 'Quantité'], ['deadline', 'Pour quand'], ['place', 'Lieu ou livraison'], ['budget', 'Budget'], ['city', 'Ville']];
+const INTENTS = ['commande', 'rendez-vous', 'service', 'prospect']; // ce que la personne veut ; sert aux critères de passation (handoff-kind.js)
 
 /** Nettoie ce que l'IA a compris : seulement des textes courts et une température connue. */
 function cleanLead(l) {
@@ -16,6 +17,10 @@ function cleanLead(l) {
   for (const [k] of FIELDS) { const v = cleanText(l[k], 160); if (v) out[k] = v; }
   const t = String(l.temperature || '').toLowerCase().replace('è', 'e');
   if (TEMPS.includes(t)) out.temperature = t;
+  const it = String(l.intent || '').toLowerCase();
+  if (INTENTS.includes(it)) out.intent = it;
+  const asks = Math.floor(Number(l.asks));
+  if (asks > 0 && asks < 100) out.asks = asks;
   return out;
 }
 

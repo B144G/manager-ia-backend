@@ -91,7 +91,7 @@ function fakeClaude(port) {
         else if (/ORDER/.test(lastUser)) o = { reply: 'Parfait, je confirme votre commande.', action: { type: 'order', items: [{ name: 'robe WAX', quantity: 2, price: 99999 }, { name: 'Chapeau', quantity: 1 }], note: 'Douala, Akwa', name: 'Paul Test', phone: '677 11 22 33' } };
         else if (/REGISTER/.test(lastUser)) o = { reply: 'Merci, je vous enregistre.', action: { type: 'register', name: 'Paul Test', phone: '677 11 22 33', email: 'paul@exemple.com' } };
         else if (/HUMAIN/.test(lastUser)) o = { reply: 'Je transmets à un conseiller.', action: { type: 'handoff', reason: 'demande de remise' } };
-        o.lead = { need: 'robes wax', quantity: '2 pièces', deadline: 'vendredi', place: 'Douala', budget: '', temperature: 'tiede' };
+        o.lead = { need: 'robes wax', quantity: '2 pièces', deadline: 'vendredi', place: 'Douala', budget: '', city: 'Douala', temperature: 'tiede' }; // fiche complète : critères de passation remplis
         text = JSON.stringify(o);
       } else
       if (sys.includes("Tu es l'assistant INTERNE")) { seen.briefs = (seen.briefs || 0) + 1; seen.briefInput = (j.messages[0] || {}).content; text = JSON.stringify({ summary: 'Zoé Test veut visiter la boutique. Rendez-vous demandé.', customer: { name: 'Zoé Test', phone: '677 55 44 33', email: 'zoe@exemple.com', address: 'Bonamoussadi, Douala' }, nextSteps: ['Confirmer le rendez-vous', 'Appeler la cliente'], draftReply: 'Bonjour Zoé, nous avons bien reçu votre demande. Un conseiller vous confirme très vite.' }); } else

@@ -41,7 +41,7 @@ router.get('/', async (req, res) => {
   const since = new Date(Date.now() - 7 * 86400000).toISOString();
   const one = async (sql, ...a) => (await db.prepare(sql).get(o, ...a)).c;
   res.json({
-    settings: { chatEnabled: Boolean(req.org.chat_enabled), salesInfo: req.org.sales_info, token: A.can(req, 'admin') ? req.org.intake_token : undefined, voice: stt.isConfigured(), autoAssign: Boolean(req.org.auto_assign), waNumber: waNumberOf(req.org, qrNumber), waMode: waOrg.modeOf(req.org), waConnected: waOrg.isConnected(req.org), replyDelay: req.org.reply_delay, voiceReply: req.org.voice_reply, handoffOrder: Boolean(req.org.handoff_order), handoffAppt: Boolean(req.org.handoff_appt), apptReminder: Boolean(req.org.appt_reminder), ttsAvailable: tts.isConfigured() },
+    settings: { chatEnabled: Boolean(req.org.chat_enabled), salesInfo: req.org.sales_info, token: A.can(req, 'admin') ? req.org.intake_token : undefined, voice: stt.isConfigured(), autoAssign: Boolean(req.org.auto_assign), waNumber: waNumberOf(req.org, qrNumber), waMode: waOrg.modeOf(req.org), waConnected: waOrg.isConnected(req.org), replyDelay: req.org.reply_delay, voiceReply: req.org.voice_reply, handoffOrder: Boolean(req.org.handoff_order), handoffAppt: Boolean(req.org.handoff_appt), handoffKind: req.org.handoff_kind || 'auto', apptReminder: Boolean(req.org.appt_reminder), ttsAvailable: tts.isConfigured() },
     stats: {
       chats7: await one('SELECT COUNT(*) c FROM chats WHERE org_id = ? AND created_at >= ?', since),
       prospects: await one("SELECT COUNT(*) c FROM customers WHERE org_id = ? AND stage = 'prospect'"),
@@ -64,7 +64,9 @@ router.put('/settings', A.need('admin'), async (req, res) => {
   const voice = b.voiceReply === undefined ? req.org.voice_reply : A.oneOf(b.voiceReply, ['off', 'mirror', 'always'], undefined, 'Réponse vocale : choix inconnu.');
   const rem = b.apptReminder === undefined ? req.org.appt_reminder : b.apptReminder ? 1 : 0;
   const hOrder = b.handoffOrder === undefined ? req.org.handoff_order : b.handoffOrder ? 1 : 0; const hAppt = b.handoffAppt === undefined ? req.org.handoff_appt : b.handoffAppt ? 1 : 0;
-  await db.prepare('UPDATE orgs SET chat_enabled = ?, sales_info = ?, auto_assign = ?, reply_delay = ?, voice_reply = ?, handoff_order = ?, handoff_appt = ?, appt_reminder = ? WHERE id = ?').run(on, b.salesInfo === undefined ? req.org.sales_info : A.text(b.salesInfo, 2500), b.autoAssign === undefined ? req.org.auto_assign : b.autoAssign ? 1 : 0, delay, voice, hOrder, hAppt, rem, req.org.id);
+  if (b.handoffKind !== undefined && !['auto', 'order', 'service', 'prospect'].includes(b.handoffKind)) throw new HttpError(400, "Type d'entreprise inconnu : auto, order (articles), service ou prospect (établissement).");
+  const hKind = b.handoffKind === undefined ? (req.org.handoff_kind || 'auto') : b.handoffKind;
+  await db.prepare('UPDATE orgs SET chat_enabled = ?, sales_info = ?, auto_assign = ?, reply_delay = ?, voice_reply = ?, handoff_order = ?, handoff_appt = ?, appt_reminder = ?, handoff_kind = ? WHERE id = ?').run(on, b.salesInfo === undefined ? req.org.sales_info : A.text(b.salesInfo, 2500), b.autoAssign === undefined ? req.org.auto_assign : b.autoAssign ? 1 : 0, delay, voice, hOrder, hAppt, rem, hKind, req.org.id);
   await A.logActivity(req.org.id, req.user.id, 'sales', on ? "Assistant commercial public activé" : 'Assistant commercial public désactivé');
   res.json({ ok: true });
 });

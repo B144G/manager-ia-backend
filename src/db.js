@@ -2361,6 +2361,10 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_relay_log_org ON relay_log(org_id, id);
   `,
+  // Critères de passation à un humain selon le type d'entreprise : marchandises (commande), services, établissement (prospect). 'auto' = déduit du secteur et du catalogue.
+  `
+  ALTER TABLE orgs ADD COLUMN handoff_kind TEXT NOT NULL DEFAULT 'auto';
+  `,
 ];
 
 
