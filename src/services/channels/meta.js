@@ -16,9 +16,9 @@ async function send(psid, message) {
   }
 }
 
-const sendText = (psid, text) => send(psid, { text: String(text).slice(0, 1900) });
-const sendMedia = (psid, type, url) =>
-  send(psid, { attachment: { type: type === 'video' ? 'video' : 'image', payload: { url, is_reusable: true } } });
+const sendText = async (psid, text) => await send(psid, { text: String(text).slice(0, 1900) });
+const sendMedia = async (psid, type, url) =>
+  await send(psid, { attachment: { type: type === 'video' ? 'video' : 'image', payload: { url, is_reusable: true } } });
 
 async function handleEvent(channel, ev) {
   const msg = ev && ev.message;

@@ -45,12 +45,12 @@ function receiver(processBody, label) {
       return res.status(503).json({ error: 'Webhook non configuré.' });
     }
     if (!validSignature(req)) {
-      log.warn(`Webhook ${label} : signature invalide, message rejeté.`);
+      log.warn(`Webhook ${label} : signature invalide, message rejeté.`); require('../security').abuse.strike(req, 'bad_signature');
       return res.status(403).json({ error: 'Signature invalide.' });
     }
     res.status(200).send('EVENT_RECEIVED'); // on répond vite à Meta...
     const body = req.body;
-    setImmediate(() => {
+    setImmediate(async () => {
       // ... puis on traite en arrière-plan.
       processBody(body).catch((e) => log.warn(`Webhook ${label} : erreur de traitement :`, String(e.message).slice(0, 200)));
     });

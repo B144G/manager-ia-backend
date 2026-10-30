@@ -57,14 +57,17 @@ const config = {
   isProd,
   port: int('PORT', 3000),
   trustProxy: str('TRUST_PROXY', isProd ? '1' : '0'),
-  testAuthBypass: str('NODE_ENV') === 'test' && bool('TEST_AUTH_BYPASS', false),
   siteUrl: str('SITE_URL'),
-  webAuthn: {
-    rpName: str('WEBAUTHN_RP_NAME', 'MANAGER-IA'),
-    rpID: str('WEBAUTHN_RP_ID', 'localhost'),
-    origin: str('WEBAUTHN_ORIGIN', 'http://localhost:5173'),
-  },
-  dbPath: resolvePath(str('DB_PATH', 'data/manager-ia.db')),
+  // Inscription avec code par e-mail : 'on', 'off' ou 'auto' (actif dès que l'envoi d'e-mails est configuré).
+  signupVerify: str('SIGNUP_VERIFY') || 'auto',
+  // PostgreSQL : DATABASE_URL (Neon : adresse « pooled »). DATABASE_URL_UNPOOLED (adresse directe) sert aux migrations si fournie.
+  // Pour les tests : DATABASE_URL=pglite://memory (ou pglite:///chemin/dossier), un vrai PostgreSQL embarqué sans installation.
+  database: (() => {
+    const url = str('DATABASE_URL');
+    if (!url) { console.error('[ERREUR] DATABASE_URL manquant. Exemple Neon : postgresql://utilisateur:motdepasse@ep-xxx.eu-central-1.aws.neon.tech/neondb?sslmode=require'); process.exit(1); }
+    if (/^pglite:/i.test(url)) { const rest = url.replace(/^pglite:\/\//i, ''); return { driver: 'pglite', pgliteDir: rest && rest !== 'memory' ? resolvePath(rest) : '', poolMax: 1 }; }
+    return { driver: 'pg', url, directUrl: str('DATABASE_URL_UNPOOLED') || url, ssl: str('DATABASE_SSL') === 'false' ? false : undefined, poolMax: Math.max(1, parseInt(str('DB_POOL_MAX', '10'), 10) || 10) };
+  })(),
   publicDir: path.join(ROOT, 'public'),
   adminDir: path.join(ROOT, 'admin'),
 
@@ -82,6 +85,12 @@ const config = {
     whatsapp: str('ADMIN_WHATSAPP', '237653621388').replace(/\D/g, ''),
   },
 
+  // E-mail par API web (HTTPS) : à utiliser quand l'hébergeur bloque les ports SMTP (plan gratuit de Render). Fournisseur géré : Brevo.
+  mailApi: {
+    provider: str('MAIL_API', str('BREVO_API_KEY') ? 'brevo' : '').toLowerCase(),
+    key: str('MAIL_API_KEY') || str('BREVO_API_KEY'),
+    baseUrl: str('MAIL_API_URL', 'https://api.brevo.com/v3').replace(/\/+$/, ''),
+  },
   smtp: {
     host: str('SMTP_HOST'),
     port: int('SMTP_PORT', 587),
@@ -100,8 +109,22 @@ const config = {
     verifyToken: str('META_VERIFY_TOKEN'),
     appSecret: str('META_APP_SECRET'),
     pageToken: str('PAGE_ACCESS_TOKEN'),
+    appId: str('META_APP_ID'),                              // « Connexion WhatsApp en un clic » (Embedded Signup)
+    embeddedConfigId: str('META_EMBEDDED_CONFIG_ID'),       // identifiant de configuration « Facebook Login for Business »
+    webhookVerifyToken: str('META_WEBHOOK_VERIFY_TOKEN'),   // jeton de vérification du webhook commun /api/webhooks/whatsapp
+    get embeddedEnabled() { return Boolean(this.appId && this.appSecret && this.embeddedConfigId); },
     graphUrl: str('META_GRAPH_URL', 'https://graph.facebook.com/v21.0').replace(/\/+$/, ''), // adresse de l'API Meta (changée seulement pour les tests)
   },
+  // WhatsApp par QR code (« Appareils connectés », méthode NON officielle) et canaux Meta (API officielle, Messenger, Instagram).
+  waQr: {
+    enabled: bool('WA_QR_ENABLED', true),
+    maxSessions: Math.max(1, int('WA_QR_MAX_SESSIONS', 20)),      // sessions ouvertes en même temps sur ce serveur
+    perMinute: Math.max(1, int('WA_QR_SEND_PER_MIN', 20)),        // messages envoyés par minute et par organisation
+    perDay: Math.max(1, int('WA_QR_SEND_PER_DAY', 1000)),         // messages envoyés par jour et par organisation
+    maxQueue: Math.max(1, int('WA_QR_MAX_QUEUE', 60)),            // messages en attente d'envoi, par organisation
+    maxAgeMin: Math.max(1, int('WA_QR_MAX_AGE_MIN', 10)),         // les messages reçus plus anciens (reconnexion) sont ignorés
+  },
+  metaChannelsVisible: bool('META_CHANNELS', false),              // interface Meta (WhatsApp Cloud, un clic, Messenger, Instagram) : masquée par défaut
   dataKey: str('DATA_KEY'), // clé de chiffrement des jetons WhatsApp enregistrés (par défaut dérivée de JWT_SECRET)
 
   // Fournisseur d'IA interchangeable : 'anthropic' (par défaut) ou 'openai' (tout service compatible OpenAI :
@@ -117,6 +140,11 @@ const config = {
       modelFast: str('AI_MODEL_FAST'),
       baseUrl: (str('AI_BASE_URL') || (a ? str('ANTHROPIC_BASE_URL', 'https://api.anthropic.com') : 'https://api.openai.com/v1')).replace(/\/+$/, ''),
       cache: str('AI_PROMPT_CACHE', '1') !== '0', // mise en cache des consignes répétées (Anthropic)
+      // Services « compatibles OpenAI » : effort de réflexion des modèles qui réfléchissent (minimal, low, medium, high). Vide = réglage du service.
+      reasoning: str('AI_REASONING_EFFORT').toLowerCase(),
+      // Nom de l'en-tête qui porte la clé (ex. x-goog-api-key pour les clés Google « AQ. »). Vide = « Authorization: Bearer » (OpenAI, Groq, Mistral, OpenRouter).
+      authHeader: str('AI_AUTH_HEADER').toLowerCase().replace(/[^a-z0-9-]/g, ''),
+      timeoutMs: Math.min(Math.max(int('AI_TIMEOUT_MS', 45000), 5000), 120000),
     };
   })(),
 

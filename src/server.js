@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
+require('express-async-errors'); // les erreurs des gestionnaires asynchrones (await) arrivent au gestionnaire d'erreurs d'Express
 const helmet = require('helmet');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
@@ -10,13 +11,17 @@ const config = require('./config');
 const { db } = require('./db');
 const limits = require('./middleware/limits');
 const { HttpError, log } = require('./util');
-const { mailEnabled } = require('./services/notify');
+const security = require('./security');
 
 const app = express();
 app.disable('x-powered-by');
 
 const tp = config.trustProxy;
 if (tp && tp !== '0' && tp.toLowerCase() !== 'false') app.set('trust proxy', /^\d+$/.test(tp) ? Number(tp) : tp.toLowerCase() === 'true' ? 1 : tp);
+
+// Centre de sécurité : numéro de requête, puis refus immédiat des adresses bloquées (avant tout le reste).
+app.use(security.requestId);
+app.use(security.abuse.guard);
 
 // CSP désactivée ici : elle est appliquée seulement à /admin (le frontend public a ses propres scripts).
 app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } }));
@@ -46,17 +51,19 @@ app.use(cookieParser());
 app.use((req, res, next) => {
   const t = Date.now();
   res.on('finish', () => {
-    if (req.path !== '/api/health') log.info(`${req.method} ${req.path} -> ${res.statusCode} (${Date.now() - t} ms)`);
+    if (req.path !== '/api/health') log.info(`${req.method} ${req.path} -> ${res.statusCode} (${Date.now() - t} ms) [${String(req.id).slice(0, 8)}]`);
   });
   next();
 });
 
 // Webhooks Meta (corps brut conservé pour la signature) : avant le lecteur JSON général.
 app.use('/webhooks', require('./routes/webhooks'));
+app.use('/api/webhooks/whatsapp', require('./routes/waShared')); // webhook commun (connexion en un clic)
 
 const jsonSmall = express.json({ limit: '100kb' });
+const jsonStatement = express.json({ limit: '2mb' }); // relevé bancaire CSV (Comptabilité > rapprochement) : seule route à corps plus gros
 // Les fichiers joints (images, PDF) arrivent en base64 : cette seule route a une limite plus large (elle la règle elle-même, après connexion).
-app.use((req, res, next) => ((/^\/api\/ws\/orgs\/\d+\/mail\/files$/.test(req.path) || /^\/api\/ws\/public\/chat\/[A-Za-z0-9]+\/voice$/.test(req.path) || /^\/api\/ws\/public\/(whatsapp|meta)\/[A-Za-z0-9]+$/.test(req.path)) && req.method === 'POST' ? next() : jsonSmall(req, res, next)));
+app.use((req, res, next) => (/^\/api\/ws\/orgs\/\d+\/(accounting\/bank\/\d+\/import|data\/import\/(customers|stock))$/.test(req.path) && req.method === 'POST' ? jsonStatement(req, res, next) : ((/^\/api\/ws\/orgs\/\d+\/mail\/files$/.test(req.path) || /^\/api\/ws\/public\/chat\/[A-Za-z0-9]+\/voice$/.test(req.path) || /^\/api\/ws\/public\/(whatsapp|meta)\/[A-Za-z0-9]+$/.test(req.path)) && req.method === 'POST' ? next() : jsonSmall(req, res, next))));
 
 // Protection contre les requêtes venant d'un autre site (CSRF) : l'en-tête Origin doit être connu.
 function originCheck(req, res, next) {
@@ -67,22 +74,27 @@ function originCheck(req, res, next) {
   try {
     host = new URL(o).host;
   } catch {
+    security.abuse.strike(req, 'origin_denied');
     throw new HttpError(403, 'Origine non autorisée.');
   }
   if (host === req.get('host') || sameOrigin(o)) return next();
+  security.abuse.strike(req, 'origin_denied');
+  security.audit.record(req, 'request.origin_denied', { severity: 'warn', target: req.path.slice(0, 120), detail: String(o).slice(0, 100) });
   throw new HttpError(403, 'Origine non autorisée.');
 }
 
-app.get('/api/health', (req, res) => res.json({ ok: true }));
+app.get('/api/health', async (req, res) => { try { await db.prepare('SELECT 1 AS ok').get(); res.json({ ok: true, db: true }); } catch (e) { res.status(503).json({ ok: false, db: false }); } });
 app.use('/api', limits.global, originCheck);
 app.use('/api', require('./routes/auth'));
 app.use('/api', require('./routes/contact'));
 app.use('/api', require('./routes/assistant'));
 app.use('/api', require('./routes/payments'));
+app.use('/api/security', require('./routes/security'));
 app.use('/api/v1', require('./workspace/public-api'));
 app.use('/api/admin', require('./routes/admin'));
 const workspace = require('./workspace');
 app.use('/api/ws/public', workspace.pub);
+app.use('/api/ws/orgs', security.sensitive.middleware); // actions sensibles -> journal d'audit
 app.use('/api/ws', workspace.router);
 app.use('/api', (req, res) => res.status(404).json({ error: 'Route introuvable.' }));
 
@@ -117,23 +129,26 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Erreur interne du serveur. Réessayez dans un instant.' });
 });
 
-function start() {
+async function start() {
   process.on('unhandledRejection', (e) => log.error('Promesse non gérée :', e && e.message ? e.message : e));
+  await db.ready; // schéma PostgreSQL à jour avant d'accepter des requêtes
   const server = app.listen(config.port, () => {
-    log.info(`MANAGER-IA démarré sur le port ${config.port} (${config.isProd ? 'production' : 'développement'})`);
-    log.info(`Base de données : ${config.dbPath}`);
+    log.info(`Brij-IA démarré sur le port ${config.port} (${config.isProd ? 'production' : 'développement'})`);
+    log.info(`Base de données : PostgreSQL (${db.driver === 'pglite' ? 'PGlite embarqué, tests' : 'pg'})`);
     const on = (v) => (v ? 'activé' : 'non configuré');
-    log.info(`Assistant IA : ${on(config.ai.key)} | Paiement automatique Campay : ${on(config.campay.enabled)} | WhatsApp admin : ${on(config.whatsapp.phoneId && config.whatsapp.token)} | E-mail : ${on(mailEnabled())} | Admin : ${on(config.admin.username && config.admin.password)} | Webhooks Meta : ${on(config.meta.appSecret)}`);
+    log.info(`Assistant IA : ${on(config.ai.key)} | Paiement automatique Campay : ${on(config.campay.enabled)} | WhatsApp admin : ${on(config.whatsapp.phoneId && config.whatsapp.token)} | E-mail : ${on(config.smtp.host || config.mailApi.key)} | Admin : ${on(config.admin.username && config.admin.password)} | Webhooks Meta : ${on(config.meta.appSecret)}`);
   });
+  security.configcheck.run().then((r) => { if (r.summary.bad || r.summary.warn) log.warn(`Sécurité : ${r.summary.bad} point(s) dangereux, ${r.summary.warn} à améliorer (npm run security:check pour le détail).`); else log.info('Sécurité : configuration solide.'); }).catch(() => {});
   require('./jobs').start();
   require('./workspace/inbound').start(); // réponses différées (délai choisi par l'organisation)
+  if (config.waQr.enabled) require('./services/waWeb').startWatcher(); // reprise échelonnée des sessions WhatsApp par QR code
   require('./workspace/sales-appt').startReminders(); // rappels de rendez-vous la veille
-  const stop = () => server.close(() => { try { db.close(); } catch { /* rien */ } process.exit(0); });
+  const stop = () => server.close(() => { Promise.resolve(require('./services/waWeb').shutdown()).catch(() => {}).then(() => db.close()).catch(() => {}).then(() => process.exit(0)); });
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
   return server;
 }
 
-if (require.main === module) start();
+if (require.main === module) start().catch((e) => { log.error('Démarrage impossible :', e && e.message ? e.message : e); process.exit(1); });
 
 module.exports = { app, start };

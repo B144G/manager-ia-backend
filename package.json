@@ -1,7 +1,7 @@
 {
   "name": "manager-ia-backend",
   "version": "1.0.0",
-  "description": "Serveur (API) de MANAGER-IA : comptes, abonnements et paiements, espace de travail (stock, clients, RH, comptabilité), assistant IA, WhatsApp / Messenger / Instagram, administration.",
+  "description": "Serveur (API) de Brij-IA : comptes, abonnements et paiements, espace de travail (stock, clients, RH, comptabilité), assistant IA, WhatsApp / Messenger / Instagram, administration. PostgreSQL (Neon) — hébergeable sur Render.",
   "main": "src/server.js",
   "private": true,
   "engines": {
@@ -11,27 +11,46 @@
     "setup": "node scripts/setup.js",
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "test": "npm run test:ai && npm run test:webhooks && npm run smoke && npm run smoke:signup && npm run smoke:security && npm run smoke:central && npm run smoke:ws && npm run test:finance && npm run test:commerce && npm run test:ops && npm run test:intelligence && npm run test:mail && npm run test:embedded && npm run test:waqr && npm run test:wave1 && npm run test:wave2 && npm run test:wave3 && npm run test:digest-email && npm run test:wave4",
     "smoke": "node scripts/smoke.js",
     "smoke:ws": "node scripts/smoke-workspace.js",
     "smoke:signup": "node scripts/smoke-signup.js",
     "smoke:security": "node scripts/smoke-security.js",
     "backup": "node scripts/backup.js",
+    "db:import-sqlite": "node scripts/import-sqlite.js",
+    "db:check": "node scripts/db-check.js",
     "test:ai": "node scripts/test-ai-adapter.js",
     "test:webhooks": "node scripts/test-webhooks.js",
-    "eval:ai": "node scripts/eval-ai.js"
+    "eval:ai": "node scripts/eval-ai.js",
+    "security:check": "node scripts/security-check.js",
+    "smoke:central": "node scripts/smoke-central.js",
+    "test:finance": "node scripts/test-finance.js",
+    "test:commerce": "node scripts/test-commerce.js",
+    "test:ops": "node scripts/test-ops.js",
+    "test:intelligence": "node scripts/test-intelligence.js",
+    "test:mail": "node scripts/test-mail-api.js",
+    "test:embedded": "node scripts/test-embedded.js",
+    "test:waqr": "node scripts/test-waqr.js",
+    "test:wave1": "node scripts/test-wave1-billing.js && node scripts/test-wave1-stock.js && node scripts/test-wave1-fleet.js",
+    "test:wave2": "node scripts/test-wave2-payroll.js && node scripts/test-wave2-accounting.js && node scripts/test-wave2-budget.js",
+    "test:digest-email": "node scripts/test-digest-email.js",
+    "test:wave4": "node scripts/test-wave4-negotiation.js && node scripts/test-wave4-followups.js && node scripts/test-wave4-relay.js",
+    "test:wave3": "node scripts/test-wave3-hr.js && node scripts/test-wave3-ops.js && node scripts/test-wave3-support.js && node scripts/test-wave3-reports.js"
   },
   "dependencies": {
-    "@simplewebauthn/server": "^14.0.3",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
     "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^11.10.0 || ^12.0.0",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
+    "express-async-errors": "^3.1.1",
     "express-rate-limit": "^7.4.0",
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
-    "nodemailer": "^10.1.1"
+    "nodemailer": "^10.1.1",
+    "pg": "^8.23.1",
+    "qrcode": "1.5.4"
   },
   "license": "UNLICENSED",
   "keywords": [
@@ -40,5 +59,11 @@
     "whatsapp",
     "ia",
     "ohada"
-  ]
+  ],
+  "devDependencies": {
+    "embedded-postgres": "^18.4.0-beta.17"
+  },
+  "optionalDependencies": {
+    "@electric-sql/pglite": "^0.5.10"
+  }
 }

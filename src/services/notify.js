@@ -23,20 +23,37 @@ function getTransporter() {
   return transporter;
 }
 
-/** Envoie un e-mail. Renvoie true si envoyé, false si SMTP non configuré. Peut lancer une erreur. */
-async function sendMail({ to, subject, text, replyTo, fromName, attachments }) {
+const apiMailOn = () => config.mailApi.provider === 'brevo' && Boolean(config.mailApi.key);
+const addrOf = (v) => String(v || '').replace(/^.*<|>.*$/g, '').trim();
+
+/** Envoi par l'API web de Brevo (HTTPS) : fonctionne là où le SMTP est bloqué. */
+async function sendViaApi({ to, subject, text, html, headers, replyTo, fromName, attachments }) {
+  const sender = addrOf(config.smtp.from || config.smtp.user);
+  if (!isEmail(sender)) throw new Error("Adresse d'expéditeur absente : renseignez SMTP_FROM (adresse validée chez Brevo).");
+  const name = String(fromName || (/^\s*"?([^"<]+?)"?\s*</.exec(config.smtp.from || '') || [])[1] || 'Brij-IA').replace(/["<>\r\n]/g, '').slice(0, 80);
+  const body = { sender: { name, email: sender }, to: [{ email: addrOf(to) }], subject: String(subject || '').slice(0, 300), textContent: String(text || '') };
+  if (html) body.htmlContent = String(html);
+  if (headers && Object.keys(headers).length) body.headers = headers;
+  if (replyTo && isEmail(addrOf(replyTo))) body.replyTo = { email: addrOf(replyTo) };
+  if (attachments && attachments.length) body.attachment = attachments.filter((a) => a && a.content != null).map((a) => ({ name: String(a.filename || 'piece-jointe').slice(0, 120), content: Buffer.from(a.content).toString('base64') }));
+  const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 15000);
+  try {
+    const res = await fetch(`${config.mailApi.baseUrl}/smtp/email`, { method: 'POST', headers: { 'api-key': config.mailApi.key, 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify(body), signal: ctl.signal });
+    if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`Service e-mail : refus (${res.status}) ${oneLine(t, 160)}`); }
+  } finally { clearTimeout(timer); }
+}
+
+/** Envoie un e-mail (texte, et HTML en option ; en-têtes facultatifs, ex. List-Unsubscribe). Renvoie true si envoyé, false si aucun envoi n'est configuré. Peut lancer une erreur. */
+async function sendMail({ to, subject, text, html, headers, replyTo, fromName, attachments }) {
+  if (apiMailOn()) { await sendViaApi({ to, subject, text, html, headers, replyTo, fromName, attachments }); return true; }
   const t = getTransporter();
   if (!t) return false;
   const addr = config.smtp.from || config.smtp.user;
   const name = String(fromName || '').replace(/["<>\r\n]/g, '').slice(0, 80);
-  await t.sendMail({ from: name ? `"${name}" <${String(addr).replace(/^.*<|>.*$/g, '')}>` : addr, to, subject, text, replyTo: replyTo || undefined, attachments: attachments || undefined });
+  await t.sendMail({ from: name ? `"${name}" <${String(addr).replace(/^.*<|>.*$/g, '')}>` : addr, to, subject, text, html: html || undefined, headers: headers || undefined, replyTo: replyTo || undefined, attachments: attachments || undefined });
   return true;
 }
-const mailEnabled = () => {
-  const hasUser = Boolean(config.smtp.user), hasPass = Boolean(config.smtp.pass);
-  const isGmail = /(^|\.)smtp\.gmail\.com$/i.test(config.smtp.host);
-  return Boolean(config.smtp.host && (config.smtp.from || config.smtp.user) && hasUser === hasPass && (!isGmail || (hasUser && hasPass)));
-};
+const mailEnabled = () => apiMailOn() || Boolean(config.smtp.host);
 
 /** E-mail à un utilisateur (seulement si son contact est un e-mail). N'attend pas, ne plante pas. */
 function mailUser(contact, subject, text) {
@@ -53,7 +70,7 @@ function mailUser(contact, subject, text) {
 
 async function run(type, text) {
   const channels = [];
-  const subject = `[MANAGER-IA] ${text}`.slice(0, 150);
+  const subject = `[Brij-IA] ${text}`.slice(0, 150);
 
   try {
     if (await sendMail({ to: config.admin.email, subject, text })) channels.push('email');
@@ -72,14 +89,14 @@ async function run(type, text) {
 
   if (channels.length === 0) log.info(`[notification ${type}] ${text}  (aucun canal configuré : affichée ici seulement)`);
 
-  db.prepare('INSERT INTO notifications (type, text, channels, created_at) VALUES (?, ?, ?, ?)').run(
+  await db.prepare('INSERT INTO notifications (type, text, channels, created_at) VALUES (?, ?, ?, ?)').run(
     type, oneLine(text, 1000), channels.join(','), nowISO()
   );
 }
 
 /** Lance la notification en arrière-plan. À appeler SANS await. */
 function notify(type, text) {
-  setImmediate(() => {
+  setImmediate(async () => {
     run(type, text).catch((e) => log.warn('Notification impossible :', oneLine(e.message, 200)));
   });
 }

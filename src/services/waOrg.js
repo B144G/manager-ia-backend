@@ -5,10 +5,22 @@ const vault = require('./vault');
 const { fetchJson, oneLine } = require('../util');
 
 const creds = (org) => ({ phoneId: org.wa_phone_id, token: vault.decrypt(org.wa_token) });
-const isConnected = (org) => Boolean(org.wa_phone_id && vault.decrypt(org.wa_token) && vault.decrypt(org.wa_secret));
-const fail = (r, what) => new Error(`${what} HTTP ${r.status} : ${oneLine(String((r.data && r.data.error && (r.data.error.message || r.data.error)) || 'réponse inattendue'), 160)}`);
+const waWeb = () => require('./waWeb');
+/** Canal de l'organisation : 'meta' (API officielle, par défaut) ou 'qr' (appareil connecté par QR code). */
+const modeOf = (org) => (org && org.wa_mode === 'qr' ? 'qr' : 'meta');
+const metaConnected = (org) => Boolean(org.wa_phone_id && vault.decrypt(org.wa_token) && vault.decrypt(org.wa_secret));
+const isConnected = (org) => (modeOf(org) === 'qr' ? waWeb().isOpen(org.id) : metaConnected(org));
+const NO_TPL = new Error('Les modèles de message de Meta ne sont pas disponibles avec la connexion par QR code.');
+const fail = (r, what) => {
+  const err = new Error(`${what} HTTP ${r.status} : ${oneLine(String((r.data && r.data.error && (r.data.error.message || r.data.error)) || 'réponse inattendue'), 160)}`);
+  // Code d'erreur de Meta (ex. 131047 = fenêtre de 24 h fermée) : permet de distinguer les refus, sans jamais exposer de secret.
+  if (r.data && r.data.error && typeof r.data.error === 'object') { err.metaCode = Number(r.data.error.code) || 0; err.metaSubcode = Number(r.data.error.error_subcode) || 0; }
+  err.httpStatus = r.status;
+  return err;
+};
 
-async function sendText(org, to, body) {
+async function sendText(org, to, body, o) {
+  if (modeOf(org) === 'qr') return await waWeb().sendText(org.id, to, body, o);
   const c = creds(org);
   if (!c.phoneId || !c.token) throw new Error('WhatsApp non connecté');
   const r = await fetchJson(`${config.meta.graphUrl}/${encodeURIComponent(c.phoneId)}/messages`, {
@@ -21,6 +33,7 @@ async function sendText(org, to, body) {
 
 /** Message « modèle » (template) approuvé par Meta : seul moyen d'écrire à un client plus de 24 h après son dernier message. */
 async function sendTemplate(org, to, name, language, params) {
+  if (modeOf(org) === 'qr') throw NO_TPL;
   const c = creds(org);
   if (!c.phoneId || !c.token) throw new Error('WhatsApp non connecté');
   const template = { name, language: { code: language || 'fr' } };
@@ -51,6 +64,7 @@ async function uploadMedia(org, buf, mime, filename) {
 }
 /** Envoie une image ou une vidéo déjà envoyée à Meta (kind = 'image' ou 'video'), avec une légende facultative. */
 async function sendMedia(org, to, kind, mediaId, caption) {
+  if (modeOf(org) === 'qr') throw new Error('Envoi par identifiant Meta impossible en mode QR code.');
   const c = creds(org);
   if (!c.phoneId || !c.token) throw new Error('WhatsApp non connecté');
   const body = { messaging_product: 'whatsapp', to: String(to).replace(/\D/g, ''), type: kind, [kind]: { id: mediaId } };
@@ -58,6 +72,19 @@ async function sendMedia(org, to, kind, mediaId, caption) {
   const r = await fetchJson(`${config.meta.graphUrl}/${encodeURIComponent(c.phoneId)}/messages`, { method: 'POST', headers: { Authorization: `Bearer ${c.token}` }, body });
   if (!r.ok) throw fail(r, 'WhatsApp');
   return r.data;
+}
+
+
+/** Abonne l'application de Meta au compte WhatsApp Business (WABA) : sans cela, Meta n'envoie pas les messages reçus au webhook. */
+async function subscribeApp(org) {
+  const waba = String(org.wa_waba || '').replace(/\D/g, '');
+  const token = vault.decrypt(org.wa_token);
+  if (!waba || !token) throw new Error("Identifiant du compte WhatsApp Business ou jeton manquant");
+  const r = await fetchJson(`${config.meta.graphUrl}/${encodeURIComponent(waba)}/subscribed_apps`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: {} });
+  if (!r.ok) throw fail(r, 'Abonnement');
+  const l = await fetchJson(`${config.meta.graphUrl}/${encodeURIComponent(waba)}/subscribed_apps`, { headers: { Authorization: `Bearer ${token}` } });
+  const apps = l.ok && l.data && Array.isArray(l.data.data) ? l.data.data.map((a) => oneLine(String((a.whatsapp_business_api_data && a.whatsapp_business_api_data.name) || a.name || a.id || 'application'), 60)) : [];
+  return { subscribed: Boolean(r.data && r.data.success !== false), apps };
 }
 
 /** Numéro affiché et nom vérifié du compte : sert à tester la connexion. */
@@ -83,4 +110,7 @@ async function downloadMedia(org, mediaId) {
   } finally { clearTimeout(timer); }
 }
 
-module.exports = { isConnected, sendText, sendTemplate, uploadMedia, sendMedia, profile, downloadMedia };
+/** Envoie un fichier dont on a le contenu (mode QR code). kind : image, video, audio (message vocal). */
+const sendFile = async (org, to, kind, buf, mime, caption) => await waWeb().sendFile(org.id, to, kind, buf, mime, caption);
+
+module.exports = { modeOf, sendFile, subscribeApp, isConnected, sendText, sendTemplate, uploadMedia, sendMedia, profile, downloadMedia };

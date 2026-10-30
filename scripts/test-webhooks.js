@@ -1,7 +1,7 @@
 'use strict';
 // Protection contre le SSRF des webhooks sortants : adresses privées refusées, y compris à la connexion (rebinding DNS). Lancez : npm run test:webhooks
 process.env.NODE_ENV = 'production'; process.env.JWT_SECRET = 'x'.repeat(40); process.env.ADMIN_PASSWORD = ''; process.env.WEBHOOK_ALLOW_PRIVATE = '1'; // ce réglage doit être ignoré en production
-process.env.DB_PATH = require('path').join(require('os').tmpdir(), `mia-wh-${process.pid}.db`);
+process.env.DATABASE_URL = 'pglite://memory';
 const wh = require('../src/services/webhooks');
 let fails = 0;
 const ok = (c, m) => { console.log(`${c ? '  ✓' : '  ✗'} ${m}`); if (!c) fails++; };
@@ -21,9 +21,8 @@ const metaChat = require('../src/services/metaChat');
 })();
 // Connexion réelle : un nom de domaine qui pointe vers 127.0.0.1 (localtest.me) doit être bloqué au moment de la connexion
 (async () => {
-  const r = await Promise.race([wh.deliver({ id: 0, url: 'https://localtest.me/x', secret: 's' }, 'test', {}), new Promise((res) => setTimeout(() => res({ ok: false, status: 'attente' }), 6000))]);
+  const r = await Promise.race([await wh.deliver({ id: 0, url: 'https://localtest.me/x', secret: 's' }, 'test', {}), new Promise((res) => setTimeout(() => res({ ok: false, status: 'attente' }), 6000))]);
   ok(r.ok === false, `domaine résolu vers le réseau interne : connexion refusée (${r.status})`);
   console.log(fails ? `\n${fails} échec(s)` : '\nTout est bon');
-  try { require('fs').unlinkSync(process.env.DB_PATH); } catch (e) { /* absent */ }
   process.exit(fails ? 1 : 0);
 })();

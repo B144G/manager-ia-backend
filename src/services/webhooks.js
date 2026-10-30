@@ -1,5 +1,5 @@
 'use strict';
-// Webhooks sortants : MANAGER-IA prévient un outil externe (Zapier, Make, n8n, votre propre serveur) quand quelque chose arrive.
+// Webhooks sortants : Brij-IA prévient un outil externe (Zapier, Make, n8n, votre propre serveur) quand quelque chose arrive.
 // Sécurité : seulement des adresses publiques en HTTPS (contrôlées AU MOMENT de la connexion, donc aucune attaque par redirection DNS vers
 // le réseau interne), aucune redirection suivie, corps signé HMAC-SHA256 (en-tête X-MIA-Signature), délai de 8 s, arrêt après 10 échecs de suite.
 const crypto = require('crypto');
@@ -10,7 +10,7 @@ const net = require('net');
 const { db, nowISO } = require('../db');
 const { log, oneLine } = require('../util');
 
-const EVENTS = { 'prospect.created': 'Nouveau prospect enregistré', 'order.created': 'Nouvelle commande à valider', 'payment.received': 'Paiement reçu sur une facture', 'chat.handoff': 'Conversation à reprendre par un conseiller', test: 'Message de test' };
+const EVENTS = { 'prospect.created': 'Nouveau prospect enregistré', 'order.created': 'Nouvelle commande à valider', 'payment.received': 'Paiement reçu sur une facture', 'chat.handoff': 'Conversation à reprendre par un conseiller', 'invoice.created': 'Facture créée', 'invoice.paid': 'Facture entièrement payée', 'customer.created': 'Client créé', 'ticket.created': 'Nouvelle demande client', 'ticket.resolved': 'Demande client résolue', 'leave.requested': 'Demande de congé', 'decision.created': 'Demande de validation créée', 'decision.decided': 'Décision prise', test: 'Message de test' };
 // Les essais automatiques d'un développeur peuvent viser sa machine ; interdit en production.
 const allowPrivate = () => process.env.NODE_ENV !== 'production' && process.env.WEBHOOK_ALLOW_PRIVATE === '1';
 
@@ -66,21 +66,22 @@ function post(hook, body) {
   });
 }
 
-async function deliver(hook, event, data) {
+async function deliver(hook, event, data, attempts = 1) {
   const body = JSON.stringify({ id: crypto.randomUUID(), event, created_at: nowISO(), data });
   const r = await post({ ...hook }, body);
-  if (r.ok) db.prepare('UPDATE webhooks_out SET fails = 0, last_status = ?, last_at = ? WHERE id = ?').run(r.status, nowISO(), hook.id);
+  try { await db.prepare('INSERT INTO webhook_deliveries (org_id, hook_id, event, ok, status, payload, attempts, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(hook.org_id, hook.id, event, r.ok ? 1 : 0, r.status, JSON.stringify(data).slice(0, 4000), attempts, nowISO()); } catch (e) { log.warn('Historique webhook :', oneLine(e.message, 100)); }
+  if (r.ok) await db.prepare('UPDATE webhooks_out SET fails = 0, last_status = ?, last_at = ? WHERE id = ?').run(r.status, nowISO(), hook.id);
   else {
-    db.prepare('UPDATE webhooks_out SET fails = fails + 1, last_status = ?, last_at = ?, active = CASE WHEN fails + 1 >= 10 THEN 0 ELSE active END WHERE id = ?').run(`échec : ${r.status}`, nowISO(), hook.id);
+    await db.prepare('UPDATE webhooks_out SET fails = fails + 1, last_status = ?, last_at = ?, active = CASE WHEN fails + 1 >= 10 THEN 0 ELSE active END WHERE id = ?').run(`échec : ${r.status}`, nowISO(), hook.id);
   }
   return r;
 }
 
 /** Prévient les webhooks de l'organisation abonnés à cet événement. Ne bloque jamais et ne plante jamais l'action d'origine. */
-function emit(orgId, event, data) {
+async function emit(orgId, event, data) {
   try {
-    const hooks = db.prepare('SELECT * FROM webhooks_out WHERE org_id = ? AND active = 1').all(orgId).filter((h) => JSON.parse(h.events).includes(event));
-    for (const h of hooks) setImmediate(() => deliver(h, event, data).catch((e) => log.warn('Webhook sortant :', oneLine(e.message, 120))));
+    const hooks = (await db.prepare('SELECT * FROM webhooks_out WHERE org_id = ? AND active = 1').all(orgId)).filter((h) => JSON.parse(h.events).includes(event));
+    for (const h of hooks) setImmediate(async () => deliver(h, event, data).catch((e) => log.warn('Webhook sortant :', oneLine(e.message, 120))));
   } catch (e) { log.warn('Webhook sortant : erreur', oneLine(e.message, 120)); }
 }
 

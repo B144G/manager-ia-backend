@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
-  <title>Administration MANAGER-IA</title>
+  <title>Administration Brij-IA</title>
   <link rel="stylesheet" href="/admin/admin.css">
 </head>
 <body>
@@ -14,6 +14,7 @@
       <p class="muted">Espace administrateur</p>
       <label>Identifiant <input name="username" autocomplete="username" required></label>
       <label>Mot de passe <input name="password" type="password" autocomplete="current-password" required></label>
+      <label id="codeRow" class="hidden">Code de l'application d'authentification (ou code de secours) <input name="code" autocomplete="one-time-code" inputmode="numeric"></label>
       <p id="loginError" class="error" role="alert"></p>
       <button class="bt solid" type="submit">Se connecter</button>
     </form>

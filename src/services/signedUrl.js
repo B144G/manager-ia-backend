@@ -22,8 +22,8 @@ function read(token) {
   return d;
 }
 /** Garde un fichier généré (voix) 1 h pour qu'un lien signé puisse le servir. */
-function stash(orgId, mime, buf) {
-  return Number(db.prepare('INSERT INTO tmp_files (org_id, mime, data, expires_at) VALUES (?, ?, ?, ?)').run(orgId, mime, buf, new Date(Date.now() + 3600000).toISOString()).lastInsertRowid);
+async function stash(orgId, mime, buf) {
+  return Number((await db.prepare('INSERT INTO tmp_files (org_id, mime, data, expires_at) VALUES (?, ?, ?, ?)').run(orgId, mime, buf, new Date(Date.now() + 3600000).toISOString())).lastInsertRowid);
 }
-const purge = () => db.prepare('DELETE FROM tmp_files WHERE expires_at < ?').run(nowISO());
+const purge = async () => await db.prepare('DELETE FROM tmp_files WHERE expires_at < ?').run(nowISO());
 module.exports = { make, read, stash, purge };

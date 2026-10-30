@@ -16,6 +16,7 @@ const L = require('./sales-assign');
 const wh = require('../services/webhooks');
 const appt = require('./sales-appt');
 const briefAI = require('./sales-brief');
+const N = require('./negotiation');
 const { HttpError, asyncHandler, cleanText, oneLine, stripAccents, log } = require('../util');
 
 const router = express.Router();
@@ -25,42 +26,47 @@ const voiceLimit = limits.make(10 * 60 * 1000, 20, 'Trop de messages vocaux. Pat
 const HANDOFF_TEXT = 'Merci pour votre message. Un conseiller va reprendre cette conversation très bientôt et vous contactera.';
 const TECH_TEXT = "Désolé, un petit souci technique est survenu. Un conseiller va vous répondre très bientôt.";
 
-function orgOf(token) {
-  const org = db.prepare('SELECT * FROM orgs WHERE intake_token = ?').get(String(token || '').slice(0, 80));
+async function orgOf(token) {
+  const org = await db.prepare('SELECT * FROM orgs WHERE intake_token = ?').get(String(token || '').slice(0, 80));
   if (!org) throw new HttpError(404, 'Page introuvable.');
   return org;
 }
-const catalogOf = (orgId) => db.prepare("SELECT c.*, (SELECT COUNT(*) FROM catalog_media m WHERE m.item_id = c.id AND m.kind = 'image') AS n_img, (SELECT COUNT(*) FROM catalog_media m WHERE m.item_id = c.id AND m.kind = 'video') AS n_vid FROM catalog c WHERE c.org_id = ? AND c.active = 1 ORDER BY c.name COLLATE NOCASE LIMIT 200").all(orgId);
-const enabled = (org) => Boolean(org.chat_enabled) && catalogOf(org.id).length > 0;
+const HK = require('./handoff-kind');
+const catalogOf = async (orgId) => await db.prepare("SELECT c.*, (SELECT COUNT(*) FROM catalog_media m WHERE m.item_id = c.id AND m.kind = 'image') AS n_img, (SELECT COUNT(*) FROM catalog_media m WHERE m.item_id = c.id AND m.kind = 'video') AS n_vid FROM catalog c WHERE c.org_id = ? AND c.active = 1 ORDER BY c.name COLLATE NOCASE LIMIT 200").all(orgId);
+const enabled = async (org) => Boolean(org.chat_enabled) && (await catalogOf(org.id)).length > 0;
 const digits = (v) => String(v || '').replace(/\D/g, '');
 const campaignOf = (v) => String(v || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);
 const norm = (s) => stripAccents(String(s || '').toLowerCase()).replace(/[^a-z0-9]+/g, ' ').trim();
 
 /** Enregistre (ou retrouve) la personne dans les clients, avec le statut « prospect » tant qu'elle n'a pas commandé. */
-function upsertCustomer(org, chat, a) {
+async function upsertCustomer(org, chat, a) {
   const name = cleanText(a.name, 100);
   const phone = digits(a.phone) || (chat.channel === 'whatsapp' ? digits(chat.contact) : '');
   if (!name || phone.length < 8 || phone.length > 15) return null;
   const email = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(a.email || '').trim()) ? String(a.email).trim().slice(0, 120) : '';
   const last = phone.slice(-9);
-  let c = db.prepare('SELECT id, phone FROM customers WHERE org_id = ?').all(org.id).find((r) => digits(r.phone).slice(-9) === last);
+  let c = (await db.prepare('SELECT id, phone FROM customers WHERE org_id = ?').all(org.id)).find((r) => digits(r.phone).slice(-9) === last);
   if (c) {
-    db.prepare("UPDATE customers SET email = CASE WHEN email = '' THEN ? ELSE email END WHERE id = ?").run(email, c.id);
+    await db.prepare("UPDATE customers SET email = CASE WHEN email = '' THEN ? ELSE email END WHERE id = ?").run(email, c.id);
   } else {
-    const id = db.prepare("INSERT INTO customers (org_id, name, phone, email, notes, stage, source, created_at) VALUES (?, ?, ?, ?, ?, 'prospect', ?, ?)")
-      .run(org.id, name, a.phone ? cleanText(a.phone, 40) : phone, email, 'Enregistré par l\'assistant commercial', chat.campaign || 'assistant', nowISO()).lastInsertRowid;
+    const id = (await db.prepare("INSERT INTO customers (org_id, name, phone, email, notes, stage, source, created_at) VALUES (?, ?, ?, ?, ?, 'prospect', ?, ?)")
+      .run(org.id, name, a.phone ? cleanText(a.phone, 40) : phone, email, 'Enregistré par l\'assistant commercial', chat.campaign || 'assistant', nowISO())).lastInsertRowid;
     c = { id: Number(id) };
-    A.logActivity(org.id, null, 'sales', `Nouveau prospect : ${name}`);
+    await A.logActivity(org.id, null, 'sales', `Nouveau prospect : ${name}`);
     wh.emit(org.id, 'prospect.created', { id: c.id, name, phone: a.phone ? cleanText(a.phone, 40) : phone, email, source: chat.campaign || 'assistant', channel: chat.channel });
   }
-  db.prepare('UPDATE chats SET customer_id = ? WHERE id = ?').run(c.id, chat.id);
+  await db.prepare('UPDATE chats SET customer_id = ? WHERE id = ?').run(c.id, chat.id);
   return c.id;
 }
 
-/** Crée une commande « à valider ». Prix et total viennent du catalogue. Renvoie null si aucun article reconnu. */
-function createOrder(org, customerId, items, note, chatId) {
-  const catalog = catalogOf(org.id);
-  const lines = []; const unknown = [];
+/**
+ * Crée une commande « à valider ». Les prix viennent du serveur (priceFor) : prix de référence du client, ou prix accepté dans la négociation (journal).
+ * Un prix annoncé par l'IA sous le minimum autorisé est REFUSÉ (refused: true). Renvoie null si aucun article reconnu.
+ */
+async function createOrder(org, customerId, items, note, chatId, chat) {
+  const catalog = await catalogOf(org.id);
+  const s = await N.settingsOf(org.id);
+  const lines = []; const unknown = []; const notes = [];
   for (const it of (Array.isArray(items) ? items : []).slice(0, 20)) {
     const want = norm(it && it.name);
     if (!want) continue;
@@ -68,68 +74,84 @@ function createOrder(org, customerId, items, note, chatId) {
     const qty = Number.isFinite(q) && q > 0 && q <= 10000 ? q : 1;
     const hit = catalog.find((c) => norm(c.name) === want) || catalog.find((c) => norm(c.name).includes(want) || want.includes(norm(c.name)));
     if (!hit) { unknown.push(oneLine(it.name, 60)); continue; }
+    const claimed = Number(it.price) > 0 ? Math.round(Number(it.price)) : 0;
     const ex = lines.find((l) => l.id === hit.id);
-    if (ex) ex.quantity += qty; else lines.push({ id: hit.id, label: hit.name, quantity: qty, price: hit.price });
+    const qtyTotal = (ex ? ex.quantity : 0) + qty;
+    const pl = await N.priceOrderLine(org, chat || (chatId ? { id: chatId } : null), customerId, hit, qtyTotal, claimed, s);
+    if (pl.refused) return { order: null, unknown, refused: true };
+    if (pl.note) notes.push(`${hit.name} : ${pl.note}`);
+    if (ex) { ex.quantity = qtyTotal; ex.price = pl.unit; ex.reference = pl.pf.reference; ex.negotiated = pl.negotiated; } else lines.push({ id: hit.id, label: hit.name, quantity: qty, price: pl.unit, listPrice: Number(hit.price), reference: pl.pf.reference, negotiated: pl.negotiated });
   }
   if (!lines.length) return { order: null, unknown };
   const total = lines.reduce((a, l) => a + Math.round(l.quantity * l.price), 0);
+  const listTotal = lines.reduce((a, l) => a + Math.round(l.quantity * l.listPrice), 0);
+  const negotiated = lines.some((l) => l.negotiated);
+  const discountPct = negotiated && listTotal > 0 ? Math.round((1 - total / listTotal) * 1000) / 10 : 0;
+  const needsApproval = negotiated && discountPct > s.approvalPct;
   const now = nowISO();
-  const number = crm.nextNumber(org.id, 'order');
-  const id = db.prepare("INSERT INTO documents (org_id, customer_id, kind, number, status, lines, total, issued, note, created_by, created_at, updated_at, chat_id) VALUES (?, ?, 'order', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(org.id, customerId, number, JSON.stringify(lines.map(({ label, quantity, price }) => ({ label, quantity, price }))), total, now.slice(0, 10), cleanText(note, 500), org.owner_id, now, now, chatId || null).lastInsertRowid;
-  db.prepare("UPDATE customers SET stage = 'client' WHERE id = ?").run(customerId);
-  A.logActivity(org.id, null, 'sales', `Nouvelle commande ${number} à valider`);
-  wh.emit(org.id, 'order.created', { id: Number(id), number, total, currency: org.currency, customer_id: customerId, lines: lines.map((l) => ({ label: l.label, quantity: l.quantity, price: l.price })) });
-  return { order: { id: Number(id), number, total, lines: lines.map((l) => ({ label: l.label, quantity: l.quantity })) }, unknown };
+  const number = await crm.nextNumber(org.id, 'order');
+  const id = (await db.prepare("INSERT INTO documents (org_id, customer_id, kind, number, status, lines, total, issued, note, created_by, created_at, updated_at, chat_id, negotiated, discount_pct) VALUES (?, ?, 'order', ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(org.id, customerId, number, JSON.stringify(lines.map(({ label, quantity, price, listPrice, negotiated: ng }) => ({ label, quantity, price, ...(ng ? { listPrice } : {}) }))), total, now.slice(0, 10), cleanText(note, 500), org.owner_id, now, now, chatId || null, negotiated ? 1 : 0, discountPct)).lastInsertRowid;
+  await db.prepare("UPDATE customers SET stage = 'client' WHERE id = ?").run(customerId);
+  await A.logActivity(org.id, null, 'sales', `Nouvelle commande ${number} à valider`);
+  const doc = { id: Number(id), number, total };
+  const cu = await db.prepare('SELECT name FROM customers WHERE id = ?').get(customerId);
+  if (negotiated) for (const l of lines.filter((x) => x.negotiated)) await N.log(org.id, { chatId, docId: Number(id), itemId: l.id, label: l.label, quantity: l.quantity, actor: 'assistant', kind: 'order', price: l.price, pct: N.pctOf(l.listPrice, l.price), note: `commande ${number} au prix négocié` });
+  if (needsApproval) await N.requestApproval(org, doc, discountPct, cu ? cu.name : 'client');
+  wh.emit(org.id, 'order.created', { id: Number(id), number, total, currency: org.currency, customer_id: customerId, negotiated, discount_pct: discountPct, lines: lines.map((l) => ({ label: l.label, quantity: l.quantity, price: l.price })) });
+  return { order: { id: Number(id), number, total, negotiated, discountPct, needsApproval, lines: lines.map((l) => ({ label: l.label, quantity: l.quantity, price: l.price, negotiated: l.negotiated })) }, unknown, notes };
 }
 
-function handoff(org, chat, reason) {
+async function handoff(org, chat, reason) {
   if (chat.status === 'handoff') return;
-  const cu = chat.customer_id ? db.prepare('SELECT name, phone, email FROM customers WHERE id = ?').get(chat.customer_id) : null;
-  const msgs = db.prepare('SELECT role, content FROM chat_messages WHERE chat_id = ? ORDER BY id DESC LIMIT 8').all(chat.id).reverse();
+  const cu = chat.customer_id ? await db.prepare('SELECT name, phone, email FROM customers WHERE id = ?').get(chat.customer_id) : null;
+  const msgs = (await db.prepare('SELECT role, content FROM chat_messages WHERE chat_id = ? ORDER BY id DESC LIMIT 8').all(chat.id)).reverse();
   const now = nowISO();
-  const t = db.prepare("INSERT INTO tickets (org_id, customer_name, customer_contact, channel, subject, priority, created_at, updated_at) VALUES (?, ?, ?, 'assistant-web', ?, 'high', ?, ?)")
-    .run(org.id, cu ? cu.name : 'Visiteur', cu ? (cu.phone || cu.email || '') : '', oneLine(`Conversation à reprendre : ${reason || 'demande d\'un conseiller'}`, 140), now, now).lastInsertRowid;
+  const t = (await db.prepare("INSERT INTO tickets (org_id, customer_name, customer_contact, channel, subject, priority, created_at, updated_at) VALUES (?, ?, ?, 'assistant-web', ?, 'high', ?, ?)")
+    .run(org.id, cu ? cu.name : 'Visiteur', cu ? (cu.phone || cu.email || '') : '', oneLine(`Conversation à reprendre : ${reason || 'demande d\'un conseiller'}`, 140), now, now)).lastInsertRowid;
+  await require('./support').applySla(org, Number(t), chat.customer_id);
   const add = db.prepare('INSERT INTO ticket_messages (ticket_id, author, content, created_at) VALUES (?, ?, ?, ?)');
   const sum = L.leadSummary(chat.lead);
-  if (sum) add.run(t, 'staff', `Fiche prospect :\n${sum}`, now);
-  for (const m of msgs) add.run(t, m.role === 'user' ? 'customer' : 'staff', oneLine(m.content, 900), now);
-  db.prepare("UPDATE chats SET status = 'handoff' WHERE id = ?").run(chat.id);
-  A.logActivity(org.id, null, 'sales', 'Une conversation attend un conseiller');
+  if (sum) await add.run(t, 'staff', `Fiche prospect :\n${sum}`, now);
+  for (const m of msgs) await add.run(t, m.role === 'user' ? 'customer' : 'staff', oneLine(m.content, 900), now);
+  await db.prepare("UPDATE chats SET status = 'handoff' WHERE id = ?").run(chat.id);
+  await A.logActivity(org.id, null, 'sales', 'Une conversation attend un conseiller');
   wh.emit(org.id, 'chat.handoff', { chat_id: chat.id, channel: chat.channel, reason: oneLine(reason, 120), customer: cu ? cu.name : null });
-  L.autoAssign(org, db.prepare('SELECT * FROM chats WHERE id = ?').get(chat.id)); // répartition automatique si elle est activée
+  await L.autoAssign(org, await db.prepare('SELECT * FROM chats WHERE id = ?').get(chat.id)); // répartition automatique si elle est activée
+  // Alerte WhatsApp au responsable prioritaire (sans attendre : l'envoi peut durer quelques secondes) ; repli notice + e-mail (relay.js)
+  require('./relay').notifyHandoff(org, await db.prepare('SELECT * FROM chats WHERE id = ?').get(chat.id), reason).catch(() => {});
 }
 
-const saveMsg = (chatId, role, content) => db.prepare('INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)').run(chatId, role, String(content).slice(0, 4000), nowISO());
+const saveMsg = async (chatId, role, content) => await db.prepare('INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)').run(chatId, role, String(content).slice(0, 4000), nowISO());
 
-function newChat(org, session, campaign, channel, contact) {
+async function newChat(org, session, campaign, channel, contact) {
   const now = nowISO();
-  const id = db.prepare('INSERT INTO chats (org_id, session, campaign, channel, contact, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(org.id, session, campaignOf(campaign), channel, contact, now, now).lastInsertRowid;
-  const chat = db.prepare('SELECT * FROM chats WHERE id = ?').get(id);
-  A.logActivity(org.id, null, 'sales', `Nouvelle conversation${{ whatsapp: ' WhatsApp', messenger: ' Messenger', instagram: ' Instagram' }[channel] || ''}${chat.campaign ? ` (campagne ${chat.campaign})` : ''}`);
+  const id = (await db.prepare('INSERT INTO chats (org_id, session, campaign, channel, contact, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(org.id, session, campaignOf(campaign), channel, contact, now, now)).lastInsertRowid;
+  const chat = await db.prepare('SELECT * FROM chats WHERE id = ?').get(id);
+  await A.logActivity(org.id, null, 'sales', `Nouvelle conversation${{ whatsapp: ' WhatsApp', messenger: ' Messenger', instagram: ' Instagram' }[channel] || ''}${chat.campaign ? ` (campagne ${chat.campaign})` : ''}`);
   return chat;
 }
 
 /** Conversation sur la page web (chat.html). */
 async function converse(org, sessionId, campaign, text, viaVoice) {
-  let chat = /^[a-f0-9]{32}$/.test(String(sessionId || '')) ? db.prepare("SELECT * FROM chats WHERE session = ? AND org_id = ? AND channel = 'web'").get(sessionId, org.id) : null;
-  if (!chat) chat = newChat(org, crypto.randomBytes(16).toString('hex'), campaign, 'web', '');
-  return run(org, chat, text, viaVoice);
+  let chat = /^[a-f0-9]{32}$/.test(String(sessionId || '')) ? await db.prepare("SELECT * FROM chats WHERE session = ? AND org_id = ? AND channel = 'web'").get(sessionId, org.id) : null;
+  if (!chat) chat = await newChat(org, crypto.randomBytes(16).toString('hex'), campaign, 'web', '');
+  return await run(org, chat, text, viaVoice);
 }
 
 /** Conversation sur un canal de messagerie de l'organisation (WhatsApp, Messenger, Instagram) : une conversation par personne. */
 const SESSION_PREFIX = { whatsapp: 'wa', messenger: 'ms', instagram: 'ig' };
-function ensureChat(org, channel, contact, campaign) {
+async function ensureChat(org, channel, contact, campaign) {
   const session = `${SESSION_PREFIX[channel]}-${org.id}-${contact}`;
-  let chat = db.prepare('SELECT * FROM chats WHERE session = ? AND org_id = ?').get(session, org.id);
-  if (!chat) chat = newChat(org, session, campaign, channel, contact);
-  else if (!chat.campaign && campaignOf(campaign)) { db.prepare('UPDATE chats SET campaign = ? WHERE id = ?').run(campaignOf(campaign), chat.id); chat.campaign = campaignOf(campaign); }
+  let chat = await db.prepare('SELECT * FROM chats WHERE session = ? AND org_id = ?').get(session, org.id);
+  if (!chat) chat = await newChat(org, session, campaign, channel, contact);
+  else if (!chat.campaign && campaignOf(campaign)) { await db.prepare('UPDATE chats SET campaign = ? WHERE id = ?').run(campaignOf(campaign), chat.id); chat.campaign = campaignOf(campaign); }
   return chat;
 }
 async function converseChannel(org, channel, contact, campaign, text, viaVoice, attachment) {
-  return run(org, ensureChat(org, channel, contact, campaign), text, viaVoice, attachment);
+  return await run(org, await ensureChat(org, channel, contact, campaign), text, viaVoice, attachment);
 }
-const converseWhatsApp = (org, phone, campaign, text, viaVoice, attachment) => converseChannel(org, 'whatsapp', phone, campaign, text, viaVoice, attachment);
+const converseWhatsApp = async (org, phone, campaign, text, viaVoice, attachment) => await converseChannel(org, 'whatsapp', phone, campaign, text, viaVoice, attachment);
 
 // Pièce jointe d'un prospect : image (JPEG, PNG, WebP) ou PDF de 5 Mo au plus ; 30 par conversation. Le type est reconnu d'après le contenu du fichier, jamais d'après son nom.
 const MAX_MEDIA_PER_CHAT = 30;
@@ -141,51 +163,51 @@ function sniffMime(buf) {
   if (buf.slice(0, 5).toString('latin1') === '%PDF-') return 'application/pdf';
   return null;
 }
-function storeMedia(org, chat, buf) {
+async function storeMedia(org, chat, buf) {
   const mime = sniffMime(buf);
   if (!mime || buf.length > 5 * 1024 * 1024) return null;
-  if (db.prepare('SELECT COUNT(*) c FROM chat_media WHERE chat_id = ?').get(chat.id).c >= MAX_MEDIA_PER_CHAT) return null;
-  const id = db.prepare('INSERT INTO chat_media (chat_id, org_id, mime, size, data, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(chat.id, org.id, mime, buf.length, buf, nowISO()).lastInsertRowid;
+  if ((await db.prepare('SELECT COUNT(*) c FROM chat_media WHERE chat_id = ?').get(chat.id)).c >= MAX_MEDIA_PER_CHAT) return null;
+  const id = (await db.prepare('INSERT INTO chat_media (chat_id, org_id, mime, size, data, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(chat.id, org.id, mime, buf.length, buf, nowISO())).lastInsertRowid;
   return { id: Number(id), mime, buf };
 }
 
 const FILE_TEXT = "Je ne peux lire que les photos (JPEG, PNG, WebP) et les PDF de 5 Mo au plus. Pouvez-vous réessayer ou m'écrire votre demande ?";
 /** Enregistre le message du client (et sa pièce jointe) dans la conversation. Ne répond pas. */
-function ingest(org, chat, text, viaVoice, attachment) {
-  const media = attachment ? storeMedia(org, chat, attachment) : null;
-  if (attachment && !media) { saveMsg(chat.id, 'user', '[fichier non pris en charge]'); db.prepare('UPDATE chats SET updated_at = ? WHERE id = ?').run(nowISO(), chat.id); return { bad: true }; }
-  saveMsg(chat.id, 'user', media ? `[${media.mime === 'application/pdf' ? 'document' : 'image'} #${media.id}] ${text}`.trim() : viaVoice ? `[message vocal] ${text}` : text);
-  db.prepare('UPDATE chats SET updated_at = ? WHERE id = ?').run(nowISO(), chat.id);
+async function ingest(org, chat, text, viaVoice, attachment) {
+  const media = attachment ? await storeMedia(org, chat, attachment) : null;
+  if (attachment && !media) { await saveMsg(chat.id, 'user', '[fichier non pris en charge]'); await db.prepare('UPDATE chats SET updated_at = ? WHERE id = ?').run(nowISO(), chat.id); return { bad: true }; }
+  await saveMsg(chat.id, 'user', media ? `[${media.mime === 'application/pdf' ? 'document' : 'image'} #${media.id}] ${text}`.trim() : viaVoice ? `[message vocal] ${text}` : text);
+  await db.prepare('UPDATE chats SET updated_at = ? WHERE id = ?').run(nowISO(), chat.id);
   return { media };
 }
-const mediaById = (chatId, id) => { const m = id ? db.prepare('SELECT id, mime, data FROM chat_media WHERE id = ? AND chat_id = ?').get(id, chatId) : null; return m ? { id: m.id, mime: m.mime, buf: m.data } : null; };
+const mediaById = async (chatId, id) => { const m = id ? await db.prepare('SELECT id, mime, data FROM chat_media WHERE id = ? AND chat_id = ?').get(id, chatId) : null; return m ? { id: m.id, mime: m.mime, buf: m.data } : null; };
 
 async function run(org, chat, text, viaVoice, attachment) {
-  const ing = ingest(org, chat, text, viaVoice, attachment);
-  if (ing.bad) { const o = { sessionId: chat.session, reply: FILE_TEXT }; saveMsg(chat.id, 'assistant', o.reply); return o; }
-  return respond(org, chat, { text, viaVoice, media: ing.media });
+  const ing = await ingest(org, chat, text, viaVoice, attachment);
+  if (ing.bad) { const o = { sessionId: chat.session, reply: FILE_TEXT }; await saveMsg(chat.id, 'assistant', o.reply); return o; }
+  return await respond(org, chat, { text, viaVoice, media: ing.media });
 }
 
 /** Fait répondre l'IA au dernier message (déjà enregistré). Renvoie { reply, spoken, media, ... }. */
 async function respond(org, chat, { text = '', viaVoice = false, media = null } = {}) {
-  chat = db.prepare('SELECT * FROM chats WHERE id = ?').get(chat.id) || chat;
+  chat = await db.prepare('SELECT * FROM chats WHERE id = ?').get(chat.id) || chat;
   const out = { sessionId: chat.session, chatId: chat.id, reply: '', transcript: viaVoice ? text : undefined };
 
   if (chat.status === 'handoff') {
     out.handoff = true;
     if (chat.channel !== 'web') { out.silent = true; return out; } // un conseiller a repris la conversation : l'IA se tait
-    out.reply = HANDOFF_TEXT; saveMsg(chat.id, 'assistant', out.reply); return out;
+    out.reply = HANDOFF_TEXT; await saveMsg(chat.id, 'assistant', out.reply); return out;
   }
 
-  const used = A.aiUsed(org);
-  const limit = A.limitsFor(A.ownerPlan(org)).aiMonth;
+  const used = await A.aiUsed(org);
+  const limit = A.limitsFor(await A.ownerPlan(org)).aiMonth;
   if (!claude.isConfigured() || used >= limit) {
-    handoff(org, chat, claude.isConfigured() ? "quota d'IA atteint" : 'IA non activée');
-    out.reply = HANDOFF_TEXT; out.handoff = true; saveMsg(chat.id, 'assistant', out.reply); return out;
+    await handoff(org, chat, claude.isConfigured() ? "quota d'IA atteint" : 'IA non activée');
+    out.reply = HANDOFF_TEXT; out.handoff = true; await saveMsg(chat.id, 'assistant', out.reply); return out;
   }
 
-  const customer = chat.customer_id ? db.prepare('SELECT name, phone FROM customers WHERE id = ?').get(chat.customer_id) : null;
-  const history = db.prepare("SELECT role, content FROM chat_messages WHERE chat_id = ? AND role IN ('user','assistant') ORDER BY id DESC LIMIT 16").all(chat.id).reverse();
+  const customer = chat.customer_id ? await db.prepare('SELECT id, name, phone, default_discount FROM customers WHERE id = ?').get(chat.customer_id) : null;
+  const history = (await db.prepare("SELECT role, content FROM chat_messages WHERE chat_id = ? AND role IN ('user','assistant') ORDER BY id DESC LIMIT 16").all(chat.id)).reverse();
   while (history.length && history[0].role !== 'user') history.shift();
   const messages = history.map((m) => ({ role: m.role, content: m.content.replace(/^\[message vocal\] /, '').replace(/^\[(image|document) #\d+\]\s*/, '[Le client a envoyé une pièce jointe] ') }));
   if (media) { // la dernière pièce jointe est transmise à l'IA (les précédentes ne sont que mentionnées)
@@ -194,57 +216,73 @@ async function respond(org, chat, { text = '', viaVoice = false, media = null } 
   }
 
   let res;
+  const catalogNow = await catalogOf(org.id);
+  const negSettings = await N.settingsOf(org.id);
   try {
-    const raw = await claude.ask({ stable: agent.stable(), system: agent.dataBlock({ org, catalog: catalogOf(org.id), chat, customer, today: nowISO().slice(0, 10), weekday: ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'][new Date(Date.now() + 3600000).getUTCDay()], busy: appt.busyText(org.id) }), messages, maxTokens: 600, tier: 'fast' });
-    db.prepare('INSERT INTO ai_usage (org_id, user_id, created_at) VALUES (?, 0, ?)').run(org.id, nowISO());
+    const negotiation = await N.contextFor(org, chat, customer, catalogNow, history.slice(-6).map((m) => m.content));
+    const raw = await claude.ask({ stable: agent.stable(), system: agent.dataBlock({ org, catalog: catalogNow, negotiation, chat, customer, today: nowISO().slice(0, 10), weekday: ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'][new Date(Date.now() + 3600000).getUTCDay()], busy: await appt.busyText(org.id) }), messages, maxTokens: 600, tier: 'fast' });
+    await db.prepare('INSERT INTO ai_usage (org_id, user_id, created_at) VALUES (?, 0, ?)').run(org.id, nowISO());
     res = agent.parse(raw);
     out.spoken = res.reply;
   } catch (e) {
     log.warn('Assistant commercial : appel IA échoué :', oneLine(e.message, 200));
-    handoff(org, chat, 'erreur technique');
-    out.reply = TECH_TEXT; out.handoff = true; saveMsg(chat.id, 'assistant', out.reply); return out;
+    await handoff(org, chat, 'erreur technique');
+    out.reply = TECH_TEXT; out.handoff = true; await saveMsg(chat.id, 'assistant', out.reply); return out;
   }
 
-  L.mergeLead(chat, res.lead, null);
+  await L.mergeLead(chat, res.lead, null);
   let reply = res.reply;
   const a = res.action || {};
   let toHuman = '';                 // raison du passage automatique à l'équipe (commande ou rendez-vous enregistré)
   if (a.type === 'register' || a.type === 'order') {
-    const cid = upsertCustomer(org, chat, a) || chat.customer_id;
+    const cid = await upsertCustomer(org, chat, a) || chat.customer_id;
     if (a.type === 'register') {
       out.registered = Boolean(cid);
-      if (cid) L.mergeLead(chat, null, 'tiede');
+      if (cid) await L.mergeLead(chat, null, 'tiede');
       if (!cid) reply += '\n\n(Pour vous enregistrer, j\'ai besoin de votre nom et de votre numéro de téléphone.)';
     } else if (!cid) {
       reply += '\n\nPour enregistrer votre commande, j\'ai besoin de votre nom et de votre numéro de téléphone.';
     } else {
-      const r = createOrder(org, cid, a.items, a.note, chat.id);
-      if (r.order) {
+      const r = await createOrder(org, cid, a.items, a.note, chat.id, chat);
+      if (r.refused) {
+        // Prix annoncé sous le minimum autorisé : refusé par le serveur, un conseiller reprend la main.
+        reply = N.handoffText(negSettings);
+        await handoff(org, chat, 'prix demandé sous le minimum autorisé');
+        out.handoff = true;
+      } else if (r.order) {
         out.order = r.order; out.registered = true;
-        L.mergeLead(chat, null, 'chaud');
-        if (org.handoff_order) toHuman = `commande ${r.order.number} enregistrée`;
-        reply += `\n\nVotre commande ${r.order.number} est enregistrée :\n${r.order.lines.map((l) => `• ${l.label} × ${l.quantity}`).join('\n')}\nTotal : ${r.order.total.toLocaleString('fr-FR')} ${org.currency}.\nL'équipe va la confirmer et vous contacter très bientôt.`;
+        await L.mergeLead(chat, null, 'chaud');
+        out.negotiated = r.order.negotiated;
+        reply += `\n\nVotre commande ${r.order.number} est enregistrée :\n${r.order.lines.map((l) => `• ${l.label} × ${l.quantity}${l.negotiated ? ' à ' + N.money(l.price, org) + ' l\'unité' : ''}`).join('\n')}\nTotal : ${r.order.total.toLocaleString('fr-FR')} ${org.currency}.\n${r.order.needsApproval ? 'Cette commande avec remise doit d\'abord être validée par un responsable ; il vous contactera très bientôt.' : 'L\'équipe va la confirmer et vous contacter très bientôt.'}`;
+        if (r.notes && r.notes.length) reply += `\n(${r.notes.join(' ; ')}.)`;
         if (r.unknown.length) reply += `\n(Non trouvé dans notre catalogue : ${r.unknown.join(', ')}.)`;
       } else {
         reply += `\n\nJe n'ai pas retrouvé ces articles dans notre catalogue${r.unknown.length ? ` (${r.unknown.join(', ')})` : ''}. Pouvez-vous me préciser lesquels vous souhaitez ?`;
       }
     }
+  } else if (a.type === 'negotiate') {
+    const nr = await N.negotiate(org, chat, customer, a, catalogNow);
+    if (nr) {
+      reply = nr.replace ? nr.text : `${reply}\n\n${nr.text}`;
+      if (nr.decision === 'accept') await L.mergeLead(chat, null, 'chaud');
+      if (nr.handoff) { await handoff(org, chat, 'négociation : passage de relais'); out.handoff = true; }
+      out.negotiation = { decision: nr.decision, price: nr.price || null };
+    } else reply += "\n\n(Je n'ai pas retrouvé cet article dans notre catalogue : pouvez-vous me le préciser ?)";
   } else if (a.type === 'appointment') {
-    const cid = upsertCustomer(org, chat, a) || chat.customer_id;
+    const cid = await upsertCustomer(org, chat, a) || chat.customer_id;
     if (!cid) reply += "\n\nPour fixer le rendez-vous, j'ai besoin de votre nom et de votre numéro de téléphone.";
     else {
-      const r = appt.create(org, chat, a, cid);
+      const r = await appt.create(org, chat, a, cid);
       if (r.appt) {
         out.appointment = r.appt; out.registered = true;
-        L.mergeLead(chat, null, 'chaud');
+        await L.mergeLead(chat, null, 'chaud');
         reply += `\n\nVotre demande de rendez-vous est enregistrée : ${r.appt.label}${r.appt.purpose ? ' (' + r.appt.purpose + ')' : ''}. L'équipe va la confirmer très bientôt.`;
-        if (org.handoff_appt) toHuman = `rendez-vous demandé : ${r.appt.label}`;
       } else reply += `\n\n(${r.error} Proposez-moi un autre jour ou une autre heure.)`;
     }
   } else if (a.type === 'send_media') {
     // Photos et vidéos du catalogue : envoyées par WhatsApp après la réponse écrite (voir whatsapp.js).
     const kind = ['image', 'video'].includes(a.kind) ? a.kind : 'all';
-    const cat = catalogOf(org.id);
+    const cat = await catalogOf(org.id);
     const picks = [];
     for (const nm of (Array.isArray(a.items) ? a.items : []).slice(0, 3)) {
       const want = norm(nm); const hit = want && cat.find((c) => norm(c.name) === want);
@@ -253,30 +291,55 @@ async function respond(org, chat, { text = '', viaVoice = false, media = null } 
     if (chat.channel !== 'web' && picks.length) { out.media = picks; out.chatId = chat.id; }
     else reply += chat.channel !== 'web' ? "\n\n(Je n'ai pas de " + (kind === 'video' ? 'vidéo' : kind === 'image' ? 'photo' : 'photo ni de vidéo') + " de cet article pour le moment : un conseiller peut vous en envoyer.)" : "\n\n(Je ne peux envoyer les photos et vidéos que sur WhatsApp, Messenger et Instagram : un conseiller pourra vous les envoyer.)";
   } else if (a.type === 'handoff') {
-    handoff(org, chat, oneLine(a.reason, 120));
+    await handoff(org, chat, oneLine(a.reason, 120));
     out.handoff = true;
   }
+  // Critères de passation (handoff-kind.js) : selon le type d'entreprise, la main n'est passée que lorsque la fiche est complète ; sinon l'IA demande ce qui manque.
+  if (!out.handoff) {
+    const intentNow = a.type === 'order' && out.order ? 'commande' : a.type === 'appointment' && out.appointment ? 'rendez-vous' : a.type === 'register' && out.registered ? ({ order: 'commande', service: 'service', prospect: 'prospect' }[await HK.kindOf(org)]) : '';
+    if (intentNow) await L.mergeLead(chat, { intent: intentNow }, null);
+    const fresh = await db.prepare('SELECT * FROM chats WHERE id = ?').get(chat.id);
+    const st = L.cleanLead(JSON.parse(fresh.lead || '{}')).intent ? await HK.status(org, fresh) : null;
+    const wanted = st && (st.intent === 'rendez-vous' ? org.handoff_appt : org.handoff_order);
+    if (st && wanted && (intentNow || toHuman || fresh.status !== 'handoff')) {
+      if (HK.ready(st)) {
+        toHuman = `${HK.titleOf(st)}${st.have.order ? ' ' + st.have.order.number : ''}`;
+      } else {
+        await L.mergeLead(chat, { asks: st.asks + 1 }, null);
+        reply += `\n\n${HK.askFor(st)}`;
+        toHuman = '';
+      }
+    }
+  }
   if (toHuman) {
-    // Commande ou rendez-vous enregistré : un conseiller prend le relais (attribution automatique si elle est activée), et l'IA interne prépare son dossier.
+    // Fiche complète : un conseiller prend le relais (attribution automatique si elle est activée), et l'IA interne prépare son dossier.
     reply += "\n\nUn conseiller de l'équipe va prendre le relais pour finaliser avec vous.";
-    handoff(org, chat, toHuman);
+    await handoff(org, chat, toHuman);
     out.handoff = true; out.toHuman = true;
-    setImmediate(() => { briefAI.build(org, chat.id).catch(() => {}); });
+    setImmediate(async () => { briefAI.build(org, chat.id).catch(() => {}); });
+  }
+  // Garde-fou : un prix cité par l'IA sous le minimum autorisé ne part jamais chez le client ; un conseiller reprend la main.
+  const cited = await N.guardReply(org, chat, customer, res.reply, catalogNow, negSettings);
+  if (cited) {
+    await N.log(org.id, { chatId: chat.id, itemId: cited.id, label: cited.name, actor: 'assistant', kind: 'refused', note: 'prix cité dans le message sous le minimum autorisé : message remplacé' });
+    reply = reply.startsWith(res.reply) ? reply.slice(res.reply.length).trim() : reply;
+    reply = `${N.handoffText(negSettings)}${reply ? '\n\n' + reply : ''}`;
+    if (!out.handoff) { await handoff(org, chat, 'prix cité sous le minimum autorisé'); out.handoff = true; }
   }
   out.reply = reply;
-  saveMsg(chat.id, 'assistant', reply);
+  await saveMsg(chat.id, 'assistant', reply);
   return out;
 }
 
 // ---------- Routes publiques ----------
-router.get('/:token/info', chatLimit, (req, res) => {
-  const org = orgOf(req.params.token);
-  res.json({ name: org.name, enabled: enabled(org), voice: stt.isConfigured(), currency: org.currency, welcome: `Bonjour, bienvenue chez ${org.name}. Comment puis-je vous aider ?` });
+router.get('/:token/info', chatLimit, async (req, res) => {
+  const org = await orgOf(req.params.token);
+  res.json({ name: org.name, enabled: await enabled(org), voice: stt.isConfigured(), currency: org.currency, welcome: `Bonjour, bienvenue chez ${org.name}. Comment puis-je vous aider ?` });
 });
 
 router.post('/:token/message', chatLimit, asyncHandler(async (req, res) => {
-  const org = orgOf(req.params.token);
-  if (!enabled(org)) throw new HttpError(403, "Ce service n'est pas disponible pour le moment.");
+  const org = await orgOf(req.params.token);
+  if (!await enabled(org)) throw new HttpError(403, "Ce service n'est pas disponible pour le moment.");
   const b = req.body || {};
   const text = cleanText(b.message, 1000);
   if (!text) throw new HttpError(400, 'Écrivez votre message.');
@@ -285,8 +348,8 @@ router.post('/:token/message', chatLimit, asyncHandler(async (req, res) => {
 
 // Message vocal : audio en base64 (3 Mo au plus) → texte → même conversation.
 router.post('/:token/voice', voiceLimit, express.json({ limit: '3.5mb' }), asyncHandler(async (req, res) => {
-  const org = orgOf(req.params.token);
-  if (!enabled(org)) throw new HttpError(403, "Ce service n'est pas disponible pour le moment.");
+  const org = await orgOf(req.params.token);
+  if (!await enabled(org)) throw new HttpError(403, "Ce service n'est pas disponible pour le moment.");
   if (!stt.isConfigured()) throw new HttpError(503, "Les messages vocaux ne sont pas activés. Écrivez votre message.");
   const b = req.body || {};
   const buf = Buffer.from(String(b.audio || ''), 'base64');
