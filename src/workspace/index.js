@@ -238,6 +238,7 @@ orgRouter.use('/dashboard', require('./dashboard'));
 orgRouter.use('/decisions', require('./decisions'));
 orgRouter.use('/support', require('./support'));
 orgRouter.use('/projects', require('./projects'));
+orgRouter.use('/share', require('./share'));
 orgRouter.use('/budget', require('./budget'));
 orgRouter.use('/stock', require('./stock'));
 orgRouter.use('/crm', require('./crm'));

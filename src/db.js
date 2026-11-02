@@ -2383,6 +2383,31 @@ const MIGRATIONS = [
   CREATE UNIQUE INDEX uq_project_costs_source ON project_costs(source, source_id) WHERE source <> 'manual' AND source_id IS NOT NULL;
   ALTER TABLE purchase_orders ADD COLUMN project_id BIGINT;
   `,
+  // Documents PDF partagés : instantané chiffré (dans legal_files, parent « share »), destinataires et date d'ouverture.
+  `
+  CREATE TABLE doc_shares (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT '',
+    source_id BIGINT,
+    message TEXT NOT NULL DEFAULT '',
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_doc_shares_org ON doc_shares(org_id, id);
+  CREATE TABLE doc_share_recipients (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    share_id BIGINT NOT NULL REFERENCES doc_shares(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL,
+    opened_at TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE (share_id, user_id)
+  );
+  CREATE INDEX idx_doc_share_rec_user ON doc_share_recipients(org_id, user_id);
+  `,
 ];
 
 
