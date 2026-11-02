@@ -243,11 +243,11 @@ router.put('/items/:id/prices', A.need('manager'), async (req, res) => {
 // ---------- Commandes (achats) ----------
 const isLateOrder = (o) => Boolean(o.promised_date) && (['ordered', 'partial'].includes(o.status) ? o.promised_date < today() : o.status === 'received' && o.received_at && o.received_at.slice(0, 10) > o.promised_date);
 const orderView = (o) => ({ id: o.id, itemId: o.item_id, item: o.item, unit: o.unit, supplierId: o.supplier_id, supplier: o.supplier, quantity: o.quantity, unitPrice: o.unit_price, total: Math.round(o.quantity * o.unit_price), status: o.status,
-  receivedQty: o.received_qty, remaining: Math.max(Math.round((o.quantity - o.received_qty) * 1000) / 1000, 0), promisedDate: o.promised_date, receivedAt: o.received_at, late: isLateOrder(o), tracking: o.tracking, requestedBy: o.requested_by, at: o.created_at });
+  receivedQty: o.received_qty, remaining: Math.max(Math.round((o.quantity - o.received_qty) * 1000) / 1000, 0), promisedDate: o.promised_date, receivedAt: o.received_at, late: isLateOrder(o), tracking: o.tracking, requestedBy: o.requested_by, at: o.created_at, projectId: o.project_id || null, project: o.project || null });
 
 router.get('/orders', async (req, res) => {
   const sc = A.scope(req, 'i.branch_id');
-  const rows = await db.prepare(`SELECT o.*, i.name AS item, i.unit, i.tracking, s.name AS supplier FROM purchase_orders o JOIN stock_items i ON i.id = o.item_id LEFT JOIN suppliers s ON s.id = o.supplier_id WHERE o.org_id = ?${sc.sql} ORDER BY CASE o.status WHEN 'pending' THEN 0 WHEN 'ordered' THEN 1 WHEN 'partial' THEN 1 ELSE 2 END, o.id DESC LIMIT 60`).all(req.org.id, ...sc.args);
+  const rows = await db.prepare(`SELECT o.*, i.name AS item, i.unit, i.tracking, s.name AS supplier, pr.name AS project FROM purchase_orders o JOIN stock_items i ON i.id = o.item_id LEFT JOIN suppliers s ON s.id = o.supplier_id LEFT JOIN projects pr ON pr.id = o.project_id WHERE o.org_id = ?${sc.sql} ORDER BY CASE o.status WHEN 'pending' THEN 0 WHEN 'ordered' THEN 1 WHEN 'partial' THEN 1 ELSE 2 END, o.id DESC LIMIT 60`).all(req.org.id, ...sc.args);
   res.json({ orders: rows.map(orderView) });
 });
 
