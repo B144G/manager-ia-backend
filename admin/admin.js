@@ -103,7 +103,7 @@
     const badges = { payments: todo.payments, contacts: todo.leads };
     const btn = (k, l) => h('button', { type: 'button', class: S.view === k ? 'on' : '', 'aria-current': S.view === k ? 'page' : null, onclick: () => go(k) }, icon(k), h('span', { class: 'nl' }, l), badges[k] ? h('span', { class: 'nb' }, String(badges[k])) : null);
     $('side').replaceChildren(
-      h('div', { class: 'brand' }, h('a', { class: 'logo', href: '/admin' }, 'MANAGER', h('b', {}, '-IA')), h('span', { class: 'tag' }, 'ADMIN')),
+      h('div', { class: 'brand' }, h('a', { class: 'logo', href: '/admin' }, 'BRIJ', h('b', {}, '-IA')), h('span', { class: 'tag' }, 'ADMIN')),
       h('div', { class: 'org' }, icon('shield'), h('div', {}, h('b', {}, 'Administration'), h('small', {}, 'Plateforme Brij-IA'))),
       h('div', { class: 'lab' }, 'GESTION'),
       h('nav', { class: 'nav', 'aria-label': 'Administration' }, NAV.map(([k, l]) => btn(k, l)), h('hr'), btn('settings', 'Paramètres')),
@@ -211,10 +211,11 @@
     const run = async () => {
       try {
         const { users } = await api('/users?q=' + encodeURIComponent(q.value) + '&plan=' + encodeURIComponent(plan.value));
-        box.replaceChildren(users.length ? h('div', { class: 'wrap' }, h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, ['Nom', 'Contact', 'Offre', 'Expire', 'Inscrit', 'Changer l’offre', 'Mot de passe'].map((t) => h('th', {}, t)))),
+        box.replaceChildren(users.length ? h('div', { class: 'wrap' }, h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, ['Nom', 'Contact', 'Offre', 'Expire', 'Inscrit', 'Changer l’offre', 'Mot de passe', 'Connexions'].map((t) => h('th', {}, t)))),
           h('tbody', {}, users.map((u) => { const sel = h('select', { class: 'sel', 'aria-label': 'Offre de ' + u.name }, PLANS.map((p) => h('option', { value: p, selected: p === u.plan ? '' : null }, p)));
             return h('tr', {}, h('td', {}, h('b', {}, u.name)), h('td', { class: 'mu' }, u.contact), h('td', {}, planPill(u.plan)), h('td', { class: 'mu' }, fmtDate(u.planExpires)), h('td', { class: 'mu' }, fmtDate(u.created)),
-              h('td', {}, sel, ' ', h('button', { class: 'bt solid sm', type: 'button', onclick: async () => { try { await api('/users/' + u.id + '/plan', { method: 'POST', body: { plan: sel.value } }); toast('Offre mise à jour.'); run(); } catch (e) { fail(e); } } }, 'Appliquer')), h('td', {}, h('button', { class: 'bt sm', type: 'button', onclick: async () => { try { const r = await api('/users/' + u.id + '/reset-link', { method: 'POST', body: {} }); try { await navigator.clipboard.writeText(r.link); toast('Lien copié (valable 1 h). Envoyez-le à ' + u.name + ' après avoir vérifié son identité.'); } catch { window.prompt('Copiez ce lien (valable 1 h) et envoyez-le à ' + u.name + ' :', r.link); } } catch (e) { fail(e); } } }, 'Lien de réinitialisation'))); })))) : h('p', { class: 'empty' }, 'Aucun utilisateur trouvé.'));
+              h('td', {}, sel, ' ', h('button', { class: 'bt solid sm', type: 'button', onclick: async () => { try { await api('/users/' + u.id + '/plan', { method: 'POST', body: { plan: sel.value } }); toast('Offre mise à jour.'); run(); } catch (e) { fail(e); } } }, 'Appliquer')), h('td', {}, h('button', { class: 'bt sm', type: 'button', onclick: async () => { try { const r = await api('/users/' + u.id + '/reset-link', { method: 'POST', body: {} }); try { await navigator.clipboard.writeText(r.link); toast('Lien copié (valable 1 h). Envoyez-le à ' + u.name + ' après avoir vérifié son identité.'); } catch { window.prompt('Copiez ce lien (valable 1 h) et envoyez-le à ' + u.name + ' :', r.link); } } catch (e) { fail(e); } } }, 'Lien de réinitialisation')),
+              h('td', {}, h('button', { class: 'bt out sm', type: 'button', onclick: async () => { if (!window.confirm('Déconnecter ' + u.name + ' de tous ses appareils ? Il devra se reconnecter avec son mot de passe.')) return; try { const r = await api('/security/users/' + u.id + '/revoke-sessions', { method: 'POST', body: {} }); toast(r.closed ? r.closed + ' connexion(s) fermée(s) : ' + u.name + ' est déconnecté.' : u.name + ' n’avait aucune connexion ouverte.'); } catch (e) { fail(e); } } }, 'Déconnecter'))); })))) : h('p', { class: 'empty' }, 'Aucun utilisateur trouvé.'));
       } catch (e) { fail(e); }
     };
     q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 250); }); plan.addEventListener('change', run);
@@ -373,7 +374,7 @@
       const sess = card('Sessions administrateur', h('span', { class: 'mu' }, o.activeUserSessions + ' session(s) utilisateur active(s)'),
         o.sessions.map((s) => h('div', { class: 'setrow' }, h('b', {}, s.device + (s.current ? ' (cette session)' : '')), h('span', {}, s.ip + ' · active ' + ago(s.lastSeen)), s.current ? null : h('button', { class: 'bt out sm', type: 'button', onclick: async () => { try { await api('/security/sessions/' + s.id, { method: 'DELETE' }); reload(); } catch (e) { fail(e); } } }, 'Fermer'))),
         o.sessions.length > 1 ? h('p', {}, h('button', { class: 'bt out sm', type: 'button', onclick: async () => { try { const r = await api('/security/sessions/revoke-others', { method: 'POST', body: {} }); toast(r.closed + ' session(s) fermée(s).'); reload(); } catch (e) { fail(e); } } }, 'Fermer toutes les autres sessions')) : null,
-        h('p', { class: 'mu' }, 'Compte utilisateur suspect : ouvrez « Utilisateurs », ou appelez POST /api/admin/security/users/<id>/revoke-sessions pour déconnecter tous ses appareils.'));
+        h('p', { class: 'mu' }, 'Compte utilisateur suspect : ouvrez « Utilisateurs » et cliquez sur « Déconnecter » en face de son nom pour fermer tous ses appareils.'));
       box.replaceChildren(
         h('div', { class: 'g4' }, kpi('Alertes 24 h (graves)', o.last24h.high + o.last24h.critical, o.last24h.critical + ' critique(s)', o.last24h.high + o.last24h.critical ? 'bad' : ''), kpi('À surveiller 24 h', o.last24h.warn, 'événements « attention »'), kpi('Adresses bloquées', o.blocks.length, 'actuellement'), kpi('Lignes d’audit', o.auditRows, 'chaîne SHA-256')),
         h('div', { class: 'g3' }, cfg, card('Double authentification de l’administrateur', null, tfaBox), blocks), sess, audit);
