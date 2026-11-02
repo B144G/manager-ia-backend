@@ -220,7 +220,7 @@ async function respond(org, chat, { text = '', viaVoice = false, media = null } 
   const negSettings = await N.settingsOf(org.id);
   try {
     const negotiation = await N.contextFor(org, chat, customer, catalogNow, history.slice(-6).map((m) => m.content));
-    const raw = await claude.ask({ stable: agent.stable(), system: agent.dataBlock({ org, catalog: catalogNow, negotiation, chat, customer, today: nowISO().slice(0, 10), weekday: ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'][new Date(Date.now() + 3600000).getUTCDay()], busy: await appt.busyText(org.id) }), messages, maxTokens: 600, tier: 'fast' });
+    const raw = await claude.ask({ stable: agent.stable(), system: agent.dataBlock({ org, catalog: catalogNow, negotiation, profile: await require('./profile').contextText(org.id, true), chat, customer, today: nowISO().slice(0, 10), weekday: ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'][new Date(Date.now() + 3600000).getUTCDay()], busy: await appt.busyText(org.id) }), messages, maxTokens: 600, tier: 'fast' });
     await db.prepare('INSERT INTO ai_usage (org_id, user_id, created_at) VALUES (?, 0, ?)').run(org.id, nowISO());
     res = agent.parse(raw);
     out.spoken = res.reply;

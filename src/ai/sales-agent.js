@@ -35,9 +35,10 @@ const stable = () => {
   return k ? `${RULES}\n\nÉducation (fournie par Brij-IA) :\n${k}` : RULES;
 };
 
-function dataBlock({ org, catalog, chat, customer, today, busy, weekday, negotiation }) {
+function dataBlock({ org, catalog, chat, customer, today, busy, weekday, negotiation, profile }) {
   const lines = [`Organisation : ${org.name}${org.sector ? ` (secteur : ${org.sector})` : ''}. Monnaie : ${org.currency}.`];
   if (org.description) lines.push(`Présentation : ${oneLine(org.description, 600)}`);
+  if (profile) lines.push(profile);
   if (org.sales_info) lines.push(`Informations pratiques (horaires, livraison, paiement, conditions) :\n${String(org.sales_info).slice(0, 2500)}`);
   lines.push('Catalogue (ce sont les SEULS prix valables) :');
   lines.push(catalog.length ? catalog.map((c) => `- ${oneLine(c.name, 100)} : ${Number(c.price).toLocaleString('fr-FR')} ${org.currency}${c.unit ? ` / ${oneLine(c.unit, 30)}` : ''}${c.description ? ` — ${oneLine(c.description, 160)}` : ''}${(c.n_img || c.n_vid) ? ` [fichiers disponibles : ${c.n_img ? c.n_img + ' photo(s)' : ''}${c.n_img && c.n_vid ? ', ' : ''}${c.n_vid ? c.n_vid + ' vidéo(s)' : ''}]` : ''}`).join('\n') : '(catalogue vide : renseigne seulement avec les informations pratiques et passe la main à un conseiller pour les prix)');

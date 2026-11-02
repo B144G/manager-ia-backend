@@ -30,6 +30,7 @@ async function ctxOrg(req) {
     `Équipe : ${mem} personne(s). Antennes : ${branches.length ? branches.map((b) => b.name + (b.location ? ` (${b.location})` : '')).join(' ; ') : 'aucune (activité centrale)'}.`,
     `Personne qui te parle : ${req.user.name}, rôle « ${A.ROLE_LABEL[req.member.role]} »${req.member.title ? `, poste « ${req.member.title} »` : ''}.`,
     `Date du jour : ${nowISO().slice(0, 10)}.`,
+    await require('./profile').contextText(o.id),
   ].filter(Boolean).join('\n');
 }
 

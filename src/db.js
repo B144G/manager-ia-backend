@@ -2365,6 +2365,15 @@ const MIGRATIONS = [
   `
   ALTER TABLE orgs ADD COLUMN handoff_kind TEXT NOT NULL DEFAULT 'auto';
   `,
+  // Profil de l'entreprise : réponses du dirigeant (un bouton à la fois), questions passées, utilisées par l'IA de chaque module.
+  `
+  CREATE TABLE org_profile (
+    org_id BIGINT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    answers TEXT NOT NULL DEFAULT '{}',
+    skipped TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+  );
+  `,
 ];
 
 
