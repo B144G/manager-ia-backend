@@ -83,6 +83,7 @@ async function urgentEvents(req, st, date) {
     const days = Math.round((Date.parse(`${date}T00:00:00Z`) - Date.parse(`${d.due}T00:00:00Z`)) / 86400000);
     if (days > st.invoice_late_days) out.push({ key: `inv:${d.id}`, text: `Facture ${d.number} (${oneLine(d.customer, 40)}) impayée depuis ${days} jours : reste ${fmtMoney(d.total - d.credited - d.paid, o.currency)}` });
   }
+  for (const p of await require('./projects-w6').overBudget(o.id)) out.push({ key: `projbud:${p.id}`, text: `Budget dépassé sur le projet « ${oneLine(p.name, 60)} »` });
   const cut = new Date(Date.now() - st.handoff_hours * 3600000).toISOString();
   for (const c of await db.prepare("SELECT id, updated_at FROM chats WHERE org_id = ? AND status = 'handoff' AND updated_at < ? ORDER BY updated_at LIMIT 30").all(o.id, cut)) {
     const h = Math.round((Date.now() - Date.parse(c.updated_at)) / 3600000);

@@ -18,6 +18,8 @@ const DEFAULTS = {
   alert_contract_days: 30,     // contrats, visites médicales, habilitations : préavis en jours
   goal_revenue_month: 0, goal_new_customers_month: 0, goal_csat: 0,   // objectifs (0 = aucun)
   project_hourly_cost: 0,      // coût horaire moyen d'une heure de travail sur un projet
+  project_auto_shift: 0,       // 1 = les tâches qui suivent une tâche en retard sont décalées automatiquement
+  project_budget_alert_pct: 80, // alerte quand le coût atteint ce pourcentage du budget (0 = seulement au dépassement)
   mkt_day_quota: 100,          // envois groupés par jour (e-mail + WhatsApp)
 };
 async function settings(orgId) {

@@ -2374,6 +2374,15 @@ const MIGRATIONS = [
     updated_at TEXT NOT NULL
   );
   `,
+  // Projets : planning (date de début), alerte de budget, coûts venus automatiquement des achats et du stock.
+  `
+  ALTER TABLE tasks ADD COLUMN start_date TEXT;
+  ALTER TABLE projects ADD COLUMN budget_alert BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE project_costs ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';
+  ALTER TABLE project_costs ADD COLUMN source_id BIGINT;
+  CREATE UNIQUE INDEX uq_project_costs_source ON project_costs(source, source_id) WHERE source <> 'manual' AND source_id IS NOT NULL;
+  ALTER TABLE purchase_orders ADD COLUMN project_id BIGINT;
+  `,
 ];
 
 

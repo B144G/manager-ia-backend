@@ -12,7 +12,7 @@ const TSTATUS = ['todo', 'doing', 'done'];
 const PRIORITY = ['low', 'normal', 'high'];
 
 const projectRow = (p) => ({ id: p.id, name: p.name, description: p.description, status: p.status, due: p.due, branchId: p.branch_id, tasks: p.tasks, done: p.done, overdue: p.overdue });
-const taskRow = (t) => ({ id: t.id, projectId: t.project_id, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeId: t.assignee_id, assignee: t.assignee || null, due: t.due, branchId: t.branch_id, project: t.project || null, estimateHours: t.estimate_hours, dependsOn: t.depends_on, recurrence: t.recurrence, recurNext: t.recur_next });
+const taskRow = (t) => ({ id: t.id, projectId: t.project_id, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeId: t.assignee_id, assignee: t.assignee || null, due: t.due, branchId: t.branch_id, project: t.project || null, estimateHours: t.estimate_hours, dependsOn: t.depends_on, recurrence: t.recurrence, recurNext: t.recur_next, start: t.start_date || null });
 
 async function getProject(req, id) {
   const p = await db.prepare('SELECT * FROM projects WHERE id = ? AND org_id = ?').get(A.id(id), req.org.id);
@@ -100,8 +100,10 @@ router.put('/tasks/:id', async (req, res) => {
     assignee: b.assigneeId === undefined ? t.assignee_id : await A.memberOf(req, b.assigneeId),
     due: b.due === undefined ? t.due : A.date(b.due),
   } : { title: t.title, description: t.description, priority: t.priority, assignee: t.assignee_id, due: t.due };
-  await db.prepare('UPDATE tasks SET title = ?, description = ?, status = ?, priority = ?, assignee_id = ?, due = ? WHERE id = ?').run(n.title, n.description, status, n.priority, n.assignee, n.due, t.id);
+  const startDate = n.due !== t.due && t.start_date && n.due && t.start_date > n.due ? n.due : t.start_date;
+  await db.prepare('UPDATE tasks SET title = ?, description = ?, status = ?, priority = ?, assignee_id = ?, due = ?, start_date = ? WHERE id = ?').run(n.title, n.description, status, n.priority, n.assignee, n.due, startDate, t.id);
   if (status === 'done' && t.status !== 'done') await A.logActivity(req.org.id, req.user.id, 'projects', `Tâche terminée : ${t.title}`);
+  if (t.project_id && (n.due !== t.due || status !== t.status)) await require('./projects-w6').autoReplan(req.org.id, t.project_id);
   res.json({ ok: true });
 });
 

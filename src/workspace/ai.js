@@ -51,9 +51,17 @@ async function ctxProjects(req) {
   const sct = A.scope(req, 't.branch_id');
   const ts = await db.prepare(`SELECT t.title, t.status, t.priority, t.due, u.name AS who, p.name AS pname FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id LEFT JOIN projects p ON p.id = t.project_id
     WHERE t.org_id = ? AND t.status != 'done'${sct.sql} ORDER BY t.due IS NULL, t.due LIMIT 25`).all(req.org.id, ...sct.args);
+  const extra = [];
+  for (const p of ps.filter((x) => x.status === 'active').slice(0, 5)) {
+    try {
+      const r = await require('./projects-w6').insight(req.org.id, await db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id));
+      extra.push(`- « ${oneLine(p.name, 60)} » : fiabilité des données ${r.quality.score}/100 (${r.quality.level === 'good' ? 'bonne' : r.quality.level === 'medium' ? 'moyenne' : 'faible'})${r.quality.gaps.length ? ', manques : ' + r.quality.gaps.map((g) => g.text).join(' ; ') : ''}${r.forecast.endDate ? `, fin prévue ${r.forecast.endDate}${r.forecast.lateDays ? ` (${r.forecast.lateDays} j après l'échéance)` : ''}` : ''}`);
+    } catch { /* l'analyse est facultative */ }
+  }
   return 'PROJETS :\n' + (ps.map((p) => `- ${oneLine(p.name, 80)} [${p.status}] ${p.d}/${p.n} tâches faites${p.due ? `, échéance ${p.due}` : ''}`).join('\n') || '(aucun)') +
     '\nTâches ouvertes (échéances proches d\'abord) :\n' +
-    (ts.map((t) => `- ${oneLine(t.title, 100)} [${t.status}/${t.priority}]${t.pname ? ` projet « ${oneLine(t.pname, 60)} »` : ''}${t.who ? `, assignée à ${t.who}` : ', non assignée'}${t.due ? `, échéance ${t.due}${t.due < today ? ' (EN RETARD)' : ''}` : ''}`).join('\n') || '(aucune)');
+    (ts.map((t) => `- ${oneLine(t.title, 100)} [${t.status}/${t.priority}]${t.pname ? ` projet « ${oneLine(t.pname, 60)} »` : ''}${t.who ? `, assignée à ${t.who}` : ', non assignée'}${t.due ? `, échéance ${t.due}${t.due < today ? ' (EN RETARD)' : ''}` : ''}`).join('\n') || '(aucune)') +
+    (extra.length ? '\nFIABILITÉ DES DONNÉES ET PRÉVISION (calculées par le serveur ; si les données sont faibles, dis-le et ne présente pas la prévision comme certaine) :\n' + extra.join('\n') : '');
 }
 
 async function ctxBudget(req) {

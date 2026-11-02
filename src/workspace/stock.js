@@ -9,6 +9,7 @@ const { db, nowISO } = require('../db');
 const A = require('./access');
 const L = require('./stock-lib');
 const { amap, afilter, HttpError } = require('../util');
+const P6 = require('./projects-w6');
 
 const router = express.Router({ mergeParams: true });
 const today = () => nowISO().slice(0, 10);
@@ -171,9 +172,15 @@ router.post('/items/:id/move', async (req, res) => {
   const serials = it.tracking === 'serial' ? L.parseSerials(b.serials) : undefined;
   const q = it.tracking === 'serial' && (b.quantity === undefined || b.quantity === '') ? serials.length : A.qty(b.quantity);
   if (kind === 'in' && b.unitCost !== undefined && b.unitCost !== '' && !A.can(req, 'manager')) throw new HttpError(403, "Seul un responsable peut valoriser une entrée.");
+  const projectId = kind === 'out' ? await P6.linkableProject(req, b.projectId) : null;
   const r = await L.adjust(req, it, kind === 'in' ? q : -q, A.text(b.reason, 150) || (kind === 'in' ? 'Entrée' : 'Sortie'),
-    { strict: true, lotNo: A.text(b.lotNo, 40), expiry: A.date(b.expiry) || undefined, serials, unitCost: kind === 'in' && b.unitCost !== undefined && b.unitCost !== '' ? A.amount(b.unitCost) : undefined });
-  res.json({ quantity: r.quantity, lots: r.allocations.map((a) => ({ lotNo: a.lotNo, expiry: a.expiry, quantity: a.quantity })) });
+    { refKind: projectId ? 'project' : undefined, refId: projectId || undefined, strict: true, lotNo: A.text(b.lotNo, 40), expiry: A.date(b.expiry) || undefined, serials, unitCost: kind === 'in' && b.unitCost !== undefined && b.unitCost !== '' ? A.amount(b.unitCost) : undefined });
+  let project = null;
+  if (projectId) {
+    const mv = await db.prepare("SELECT id FROM stock_moves WHERE item_id = ? AND ref_kind = 'project' AND ref_id = ? ORDER BY id DESC LIMIT 1").get(it.id, projectId);
+    if (mv && await P6.costFromStockOut(req, projectId, it, q, L.unitValue(it), mv.id)) project = { id: projectId, ...(await P6.checkBudget(req.org.id, projectId) || {}) };
+  }
+  res.json({ quantity: r.quantity, lots: r.allocations.map((a) => ({ lotNo: a.lotNo, expiry: a.expiry, quantity: a.quantity })), addedToProject: project ? project.id : null });
 });
 
 router.get('/items/:id/moves', async (req, res) => {
@@ -257,8 +264,9 @@ async function createOrders(req, list) {
       const best = !sup ? await bestPrice(it.id) : null;
       const price = x.unitPrice !== undefined && x.unitPrice !== '' && x.unitPrice !== null ? A.amount(x.unitPrice) : priceRow ? priceRow.unit_price : best ? best.unitPrice : it.unit_cost;
       const now = nowISO();
-      await db.prepare("INSERT INTO purchase_orders (org_id, item_id, supplier_id, quantity, unit_price, status, requested_by, created_at, updated_at, promised_date) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)")
-        .run(req.org.id, it.id, sup ? sup.id : best ? best.supplierId : null, A.qty(x.quantity), price, req.user.id, now, now, A.date(x.promisedDate));
+      const projectId = await P6.linkableProject(req, x.projectId);
+      await db.prepare("INSERT INTO purchase_orders (org_id, item_id, supplier_id, quantity, unit_price, status, requested_by, created_at, updated_at, promised_date, project_id) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)")
+        .run(req.org.id, it.id, sup ? sup.id : best ? best.supplierId : null, A.qty(x.quantity), price, req.user.id, now, now, A.date(x.promisedDate), projectId);
       n++;
     }
   })();
@@ -280,9 +288,13 @@ const orderOf = async (req, id) => {
 // Date promise par le fournisseur (sert au calcul du taux de retard).
 router.put('/orders/:id', A.need('manager'), async (req, res) => {
   const o = await orderOf(req, req.params.id);
-  await itemOf(req, o.item_id);
+  const it = await itemOf(req, o.item_id);
+  const b = req.body || {};
+  // Rattacher une commande à un projet reste possible après réception : le coût déjà payé arrive alors dans le projet.
+  if (b.projectId !== undefined) await P6.attachOrder(req, o, it, await P6.linkableProject(req, b.projectId));
+  if (b.promisedDate === undefined && b.projectId !== undefined) return res.json({ ok: true });
   if (['received', 'cancelled'].includes(o.status)) throw new HttpError(400, 'Cette commande est terminée.');
-  await db.prepare('UPDATE purchase_orders SET promised_date = ?, updated_at = ? WHERE id = ?').run((req.body || {}).promisedDate === undefined ? o.promised_date : A.date(req.body.promisedDate), nowISO(), o.id);
+  await db.prepare('UPDATE purchase_orders SET promised_date = ?, updated_at = ? WHERE id = ?').run(b.promisedDate === undefined ? o.promised_date : A.date(b.promisedDate), nowISO(), o.id);
   res.json({ ok: true });
 });
 
@@ -299,6 +311,7 @@ async function receive(req, o, it, qtyIn, opts = {}) {
       { unitCost: price > 0 ? price : undefined, lotNo: opts.lotNo || `CMD-${o.id}`, expiry: opts.expiry, serials: opts.serials, strict: opts.strict, refKind: 'order', refId: o.id });
     const receiptId = Number((await db.prepare('INSERT INTO purchase_receipts (org_id, order_id, quantity, unit_price, lot_no, expiry, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, o.id, q, price, opts.lotNo || '', opts.expiry || null, A.text(opts.note, 200), req.user.id, nowISO())).lastInsertRowid);
     await db.prepare('UPDATE purchase_orders SET status = ?, received_qty = ?, received_at = ?, decided_by = COALESCE(decided_by, ?), updated_at = ? WHERE id = ?').run(complete ? 'received' : 'partial', done, nowISO(), req.user.id, nowISO(), o.id);
+    await P6.costFromReceipt(req, o, it, receiptId, q, price);
     if (price > 0) {
       await db.prepare('UPDATE stock_items SET unit_cost = ? WHERE id = ?').run(price, it.id);
       // La dépense est aussi inscrite au budget (catégorie « Achats »), pour que les chiffres restent d'accord.
@@ -307,6 +320,7 @@ async function receive(req, o, it, qtyIn, opts = {}) {
         .run(req.org.id, it.branch_id, `Commande #${o.id} : ${it.name}${complete ? '' : ' (réception partielle)'}`, Math.max(Math.round(q * price), 1), today(), req.user.id, nowISO(), receiptId);
     }
   })();
+  if (o.project_id) await P6.checkBudget(req.org.id, o.project_id);
   return { received: q, receivedQty: done, status: complete ? 'received' : 'partial' };
 }
 

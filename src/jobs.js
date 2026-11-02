@@ -37,7 +37,7 @@ async function runOnce() {
   await db.prepare('DELETE FROM webhook_deliveries WHERE created_at < ?').run(addDays(new Date(), -30).toISOString());
 
   // 4) Vague 3 : tâches récurrentes à créer, rappels des décisions en attente (chacun isolé : un échec n'arrête pas les autres)
-  for (const [name, fn] of [['tâches récurrentes', () => require('./workspace/projects-w3').runRecurring()], ['rappels de décisions', () => require('./workspace/decisions').remindAll()]]) {
+  for (const [name, fn] of [['tâches récurrentes', () => require('./workspace/projects-w3').runRecurring()], ['rappels de décisions', () => require('./workspace/decisions').remindAll()], ['projets (budget et retards)', () => require('./workspace/projects-w6').watchAll()]]) {
     try { await fn(); } catch (e) { log.warn(`Tâches automatiques (${name}) :`, oneLine(e.message, 160)); }
   }
 }

@@ -233,7 +233,7 @@ orgRouter.get('/activity', async (req, res) => {
 
 // ---------- Sous-applications ----------
 // Vague 3 : routes plus précises déclarées AVANT celles des sous-applications existantes (qui gardent leur comportement).
-for (const [p, f] of [['', 'team-w3'], ['/hr', 'hr-w3'], ['/projects', 'projects-w3'], ['/legal', 'legal-w3'], ['/support', 'support-w3'], ['/marketing', 'marketing-w3'], ['/dashboard', 'dashboard-w3'], ['/data', 'data-w3'], ['/agents', 'agents-w3']]) orgRouter.use(p || '/', require('./' + f));
+for (const [p, f] of [['', 'team-w3'], ['/hr', 'hr-w3'], ['/projects', 'projects-w6'], ['/projects', 'projects-w3'], ['/legal', 'legal-w3'], ['/support', 'support-w3'], ['/marketing', 'marketing-w3'], ['/dashboard', 'dashboard-w3'], ['/data', 'data-w3'], ['/agents', 'agents-w3']]) orgRouter.use(p || '/', require('./' + f));
 orgRouter.use('/dashboard', require('./dashboard'));
 orgRouter.use('/decisions', require('./decisions'));
 orgRouter.use('/support', require('./support'));
