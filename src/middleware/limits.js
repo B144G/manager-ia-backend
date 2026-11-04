@@ -31,6 +31,8 @@ module.exports = {
   login: make(15 * MIN, 20, 'Trop de tentatives de connexion. Réessayez dans 15 minutes.', { shared: true, prefix: 'login' }),
   twofa: make(15 * MIN, 15, 'Trop de tentatives de code. Réessayez dans 15 minutes.', { shared: true, prefix: 'twofa' }),
   contact: make(10 * MIN, 5, 'Vous avez envoyé trop de messages. Réessayez dans quelques minutes.', { shared: true, prefix: 'contact' }),
+  visit: make(MIN, 40, 'Trop de requêtes.'),
+  unsubscribe: make(10 * MIN, 30, 'Trop de requêtes. Réessayez dans quelques minutes.'),
   assistantMinute: make(MIN, AI_PER_MINUTE, 'Vous écrivez trop vite. Patientez une minute puis réessayez.'),
   paymentsInit: make(10 * MIN, 10, 'Trop de demandes de paiement. Réessayez dans quelques minutes.', { shared: true, prefix: 'payinit' }),
   adminLogin: make(15 * MIN, 10, 'Trop de tentatives. Réessayez dans 15 minutes.', { shared: true, prefix: 'adminlogin' }),

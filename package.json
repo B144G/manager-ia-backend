@@ -34,6 +34,7 @@
     "test:wave1": "node scripts/test-wave1-billing.js && node scripts/test-wave1-stock.js && node scripts/test-wave1-fleet.js",
     "test:wave2": "node scripts/test-wave2-payroll.js && node scripts/test-wave2-accounting.js && node scripts/test-wave2-budget.js",
     "test:digest-email": "node scripts/test-digest-email.js",
+    "test:prospects": "node scripts/test-prospects.js",
     "test:wave7": "node scripts/test-wave7-share.js",
     "test:wave6": "node scripts/test-wave6-projects.js",
     "test:wave4": "node scripts/test-wave4-negotiation.js && node scripts/test-wave4-followups.js && node scripts/test-wave4-relay.js",

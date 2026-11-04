@@ -45,6 +45,7 @@ async function runOnce() {
 async function safeRun() {
   try {
     await runOnce();
+    require('./services/prospects').sendDueFollowups().catch((e) => log.warn('Relances de prospects :', oneLine(e.message, 160)));
     require('./workspace/followups').tickAll().catch((e) => log.warn('Relances :', oneLine(e.message, 160)));
     require('./workspace/wa-out').runAllAuto().catch(() => {});
   } catch (e) {

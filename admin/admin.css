@@ -148,3 +148,6 @@ svg.ic{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.8;str
   .filters input{min-width:0;width:100%}.filters select{flex:1}
   .sel{font-size:16px}
 }
+
+.vb{position:relative;display:grid;grid-template-columns:minmax(70px,1fr) 2fr auto;align-items:center;gap:8px;font-size:12px;margin:5px 0}.vb i{display:block;height:8px;border-radius:4px;background:var(--ac)}.vb b{font-size:12px}
+.it select,.it input[type=text]{font:inherit;font-size:13px;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--sf,#fff);color:inherit}

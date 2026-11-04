@@ -2408,6 +2408,27 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_doc_share_rec_user ON doc_share_recipients(org_id, user_id);
   `,
+  // Prospection avec consentement : coordonnées laissées volontairement, statut de suivi, relances par e-mail (3 messages) et statistiques de visites anonymes (aucune donnée personnelle).
+  `
+  ALTER TABLE leads ADD COLUMN email TEXT;
+  ALTER TABLE leads ADD COLUMN phone TEXT;
+  ALTER TABLE leads ADD COLUMN source TEXT NOT NULL DEFAULT '';
+  ALTER TABLE leads ADD COLUMN consent BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE leads ADD COLUMN status TEXT NOT NULL DEFAULT 'new';
+  ALTER TABLE leads ADD COLUMN notes TEXT NOT NULL DEFAULT '';
+  ALTER TABLE leads ADD COLUMN follow_stage BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE leads ADD COLUMN next_follow_at TEXT;
+  ALTER TABLE leads ADD COLUMN unsub_token TEXT;
+  ALTER TABLE leads ADD COLUMN unsubscribed BIGINT NOT NULL DEFAULT 0;
+  CREATE TABLE site_visits (
+    day TEXT NOT NULL,
+    path TEXT NOT NULL,
+    source TEXT NOT NULL,
+    device TEXT NOT NULL,
+    n BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, path, source, device)
+  );
+  `,
 ];
 
 

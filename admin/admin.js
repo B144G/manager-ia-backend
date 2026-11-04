@@ -263,13 +263,31 @@
     if (digits(c).length >= 8) return h('a', { class: 'bt out sm', target: '_blank', rel: 'noopener', href: 'https://wa.me/' + digits(c) + '?text=' + encodeURIComponent(text) }, 'WhatsApp');
     return null;
   }
+  const LEAD_STATUS = [['new', 'Nouveau'], ['contacted', 'Contacté'], ['trial', 'En essai'], ['client', 'Client'], ['lost', 'Perdu']];
+  // Statistiques de visites : anonymes (aucune adresse, aucun cookie) ; barres simples en HTML.
+  function visitsCard(v) {
+    const bars = (rows, key) => (rows.length ? rows.map((r) => h('div', { class: 'vb' }, h('span', {}, r[key] === '/' ? 'Accueil' : r[key]), h('i', { style: 'width:' + Math.max(4, Math.round(100 * r.n / rows[0].n)) + '%' }), h('b', {}, r.n))) : h('p', { class: 'empty' }, 'Pas encore de visite.'));
+    return h('section', { class: 'dc' }, h('div', { class: 'ch' }, h('h2', {}, 'Visites du site (' + v.days + ' jours)'), h('em', {}, v.total + (v.total > 1 ? ' pages vues' : ' page vue'))),
+      h('p', { class: 'muted', style: 'font-size:12px' }, 'Comptage anonyme : ni adresse, ni cookie, ni identifiant. On sait combien de pages sont lues et d\'où viennent les gens, jamais qui ils sont.'),
+      h('div', { class: 'g3' }, h('div', {}, h('h3', {}, 'Origines'), bars(v.sources, 'source')), h('div', {}, h('h3', {}, 'Pages lues'), bars(v.pages, 'path')), h('div', {}, h('h3', {}, 'Appareils'), bars(v.devices, 'device'))));
+  }
   async function contactsView(main) {
-    main.append(head('Contacts reçus', 'Demandes envoyées depuis le formulaire de contact du site.'));
+    main.append(head('Contacts reçus', 'Personnes qui ont laissé leurs coordonnées (formulaire, essai gratuit) : suivez chacune jusqu\'au client.'));
     try {
-      const { leads } = await api('/leads');
-      main.append(h('div', { class: 'dc' }, leads.length ? h('div', { class: 'mini' }, leads.map((l) => h('div', { class: 'it ' + (l.handled ? '' : 'red') },
-        h('b', {}, l.name + (l.what ? ' · ' + l.what : '')), h('span', {}, l.message || ''), h('span', {}, (l.contact || 'Sans contact') + ' · ' + fmtDateTime(l.created)),
-        h('div', { class: 'row' }, contactLinks(l.contact, 'Bonjour ' + l.name + ', merci pour votre message.'), h('button', { class: 'bt ' + (l.handled ? 'out' : 'solid') + ' sm', type: 'button', onclick: async () => { try { await api('/leads/' + l.id + '/handled', { method: 'POST', body: { handled: !l.handled } }); await load(); } catch (e) { fail(e); } } }, l.handled ? 'Rouvrir' : 'Marquer comme traitée'))))) : h('p', { class: 'empty' }, 'Aucune demande de contact.')));
+      const [{ leads }, vis] = await Promise.all([api('/leads'), api('/visits')]);
+      main.append(visitsCard(vis));
+      const counts = LEAD_STATUS.map(([k, t]) => t + ' : ' + leads.filter((l) => l.status === k).length).join(' · ');
+      main.append(h('p', { class: 'muted' }, leads.length ? counts : ''));
+      main.append(h('div', { class: 'dc' }, leads.length ? h('div', { class: 'mini' }, leads.map((l) => {
+        const sel = h('select', { 'aria-label': 'Étape de suivi' }, LEAD_STATUS.map(([k, t]) => h('option', { value: k, selected: l.status === k ? 'selected' : false }, t)));
+        const notes = h('input', { type: 'text', maxlength: '1000', placeholder: 'Notes (ex. appelé le lundi, veut une démo)', value: l.notes || '', style: 'flex:1;min-width:160px' });
+        const follow = !l.consent ? 'Pas de consentement : aucune relance automatique' : l.unsubscribed ? 'Désinscrit des relances' : !l.email ? 'Pas d\'e-mail : pas de relance automatique' : l.status === 'client' || l.status === 'lost' || l.status === 'trial' ? 'Relances arrêtées (suivi manuel)' : l.followStage >= 3 ? 'Les 3 relances ont été envoyées' : 'Relances envoyées : ' + l.followStage + '/3' + (l.nextFollow ? ' · prochaine ' + fmtDateTime(l.nextFollow) : '');
+        return h('div', { class: 'it ' + (l.status === 'new' ? 'red' : l.status === 'client' ? '' : 'amber') },
+          h('b', {}, l.name + (l.what ? ' · ' + l.what : '')), h('span', {}, l.message || ''),
+          h('span', {}, (l.contact || 'Sans contact') + (l.source ? ' · via ' + l.source : '') + ' · ' + fmtDateTime(l.created)), h('span', {}, follow),
+          h('div', { class: 'row' }, contactLinks(l.contact, 'Bonjour ' + l.name + ', merci pour votre message.'), sel, notes,
+            h('button', { class: 'bt solid sm', type: 'button', onclick: async () => { try { await api('/leads/' + l.id + '/status', { method: 'POST', body: { status: sel.value, notes: notes.value } }); toast('Suivi enregistré.'); await load(); } catch (e) { fail(e); } } }, 'Enregistrer')));
+      })) : h('p', { class: 'empty' }, 'Aucune demande de contact.')));
     } catch (e) { fail(e); }
   }
 

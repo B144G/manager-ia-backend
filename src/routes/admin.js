@@ -10,6 +10,7 @@ const sec = require('../services/security');
 const { notify } = require('../services/notify');
 const { HttpError, safeEqual, cleanText, addDays, parseJSON } = require('../util');
 const central = require('../security');
+const prospects = require('../services/prospects');
 
 const fs = require('fs');
 const router = express.Router();
@@ -209,7 +210,24 @@ router.post('/users/:id/reset-link', async (req, res) => {
 
 router.get('/leads', async (req, res) => {
   const rows = await db.prepare('SELECT * FROM leads ORDER BY handled, id DESC LIMIT 500').all();
-  res.json({ leads: rows.map((r) => ({ id: r.id, name: r.name, what: r.what, message: r.message, contact: r.contact, created: r.created_at, handled: !!r.handled })) });
+  res.json({ leads: rows.map((r) => ({ id: r.id, name: r.name, what: r.what, message: r.message, contact: r.contact, created: r.created_at, handled: !!r.handled, email: r.email || '', phone: r.phone || '', source: r.source || '', consent: !!r.consent, status: r.status || 'new', notes: r.notes || '', followStage: Number(r.follow_stage) || 0, nextFollow: r.next_follow_at || null, unsubscribed: !!r.unsubscribed })) });
+});
+
+// Suivi d'un prospect : étape (nouveau, contacté, en essai, client, perdu) et notes. Un prospect devenu client ou perdu ne reçoit plus de relances.
+router.post('/leads/:id/status', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const b = req.body || {};
+  const status = prospects.STATUSES.includes(b.status) ? b.status : null;
+  if (!Number.isInteger(id) || !status) throw new HttpError(400, 'Étape de suivi invalide.');
+  const r = await db.prepare('UPDATE leads SET status = ?, notes = ?, handled = ? WHERE id = ?').run(status, cleanText(b.notes, 1000), status === 'new' ? 0 : 1, id);
+  if (!r.changes) throw new HttpError(404, 'Demande introuvable.');
+  res.json({ ok: true });
+});
+
+// Statistiques de visites anonymes (30 jours par défaut)
+router.get('/visits', async (req, res) => {
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 365);
+  res.json(await prospects.visitStats(days));
 });
 
 router.post('/leads/:id/handled', async (req, res) => {
