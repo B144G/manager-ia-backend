@@ -44,6 +44,10 @@ async function main() {
     check('une semaine : minimum 2 500 FCFA (10 000 / mois ramené à 7 jours)', C.quote(2500, 'week').days === 7 && C.quote(2500, 'week').limits.aiMonth <= 100);
     const wk = C.quote(10000, 'week');
     check('une semaine : le quota IA est celui de la semaine (7/30 du quota mensuel du palier)', wk.limits.aiMonth < C.capacityAt(wk.equivalentMonth).aiMonth && wk.limits.aiMonth >= 20, [wk.limits.aiMonth, C.capacityAt(wk.equivalentMonth).aiMonth]);
+    const sm = C.quote(60000, 'semester');
+    check('six mois : minimum 60 000 FCFA, 183 jours, mêmes capacités que 10 000 FCFA par mois', sm.days === 183 && sm.equivalentMonth === 10000 && sm.limits.aiMonth === 300 && C.label(sm.plan) === 'Sur mesure (60 000 FCFA / 6 mois)', sm);
+    let e6 = null; try { C.quote(50000, 'semester'); } catch (e) { e6 = e; }
+    check('six mois : sous le minimum refusé, message en clair', e6 && /six mois/.test(e6.message) && /60 000/.test(e6.message), e6 && e6.message);
     check('un an : minimum 120 000 FCFA, 365 jours, quota mensuel du forfait minimum', C.quote(120000, 'year').days === 365 && C.quote(120000, 'year').limits.aiMonth === 300 && C.quote(120000, 'year').equivalentMonth === 10000);
     for (const [a, p, why] of [[9500, 'month', 'sous le minimum'], [10250, 'month', 'pas un multiple de 500'], [200000, 'month', 'au-delà du forfait illimité'], [1500, 'week', 'sous le minimum (semaine)'], [100000, 'year', 'sous le minimum (an)'], [10000, 'jour', 'durée inconnue'], ['abc', 'month', 'pas un nombre'], [-5000, 'month', 'négative']]) {
       let err = null; try { C.quote(a, p); } catch (e) { err = e; }
@@ -60,7 +64,7 @@ async function main() {
     r = await web('GET', '/api/plans/custom/quote?amount=5000&period=month');
     check('aperçu refusé sous le minimum, avec un message clair', r.status === 400 && /minimum/.test(r.json.error), r.json);
     r = await web('GET', '/api/plans');
-    check('/plans publie les durées et les minimums', r.json.custom && r.json.custom.periods.length === 3 && r.json.custom.periods.find((x) => x.id === 'month').min === 10000, r.json.custom);
+    check('/plans publie les durées et les minimums', r.json.custom && r.json.custom.periods.length === 4 && r.json.custom.periods.find((x) => x.id === 'month').min === 10000, r.json.custom);
 
     console.log('Paiement et activation');
     const mail = 'client-' + Date.now() + '@exemple.com';

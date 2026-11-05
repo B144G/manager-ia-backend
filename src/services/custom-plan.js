@@ -1,5 +1,5 @@
 'use strict';
-// Forfait sur mesure : l'utilisateur choisit une somme et une durée (semaine, mois ou an) ; les capacités du forfait se déduisent de la somme.
+// Forfait sur mesure : l'utilisateur choisit une somme et une durée (semaine, mois, six mois ou an) ; les capacités du forfait se déduisent de la somme.
 // Règle : on ramène la somme à un équivalent MENSUEL (somme ÷ nombre de mois de la durée), puis on lit les capacités sur une échelle qui passe par les offres existantes :
 //   10 000 FCFA/mois (forfait minimum) -> Pro 50 000 -> Pro Max 75 000 -> Méga Pro 100 000 -> Illimité 150 000 ; entre deux points, on interpole ; au-delà d'Illimité rien de plus n'est donné.
 // Le forfait est mémorisé dans le NOM de l'offre de l'abonné (« Sur mesure|15000|7 » = 15 000 FCFA pour 7 jours) : aucune nouvelle colonne, et les limites se recalculent à la demande.
@@ -15,6 +15,7 @@ const AI_BOOST = Math.min(Math.max(parseFloat(process.env.CUSTOM_AI_BOOST) || 1.
 const PERIODS = {
   week: { id: 'week', label: 'semaine', days: 7, months: 7 / 30 },
   month: { id: 'month', label: 'mois', days: config.durationDays, months: 1 },
+  semester: { id: 'semester', label: '6 mois', days: 183, months: 6 },
   year: { id: 'year', label: 'an', days: 365, months: 12 },
 };
 const ceilStep = (n) => Math.ceil(n / STEP) * STEP;
@@ -61,11 +62,11 @@ const isCustom = (name) => String(name || '').startsWith(PREFIX);
 function check(amount, periodId) {
   const bad = (msg) => { const e = new Error(msg); e.status = 400; return e; };
   const period = Object.prototype.hasOwnProperty.call(PERIODS, periodId) ? PERIODS[periodId] : null;
-  if (!period) throw bad('Choisissez la durée : une semaine, un mois ou un an.');
+  if (!period) throw bad('Choisissez la durée : une semaine, un mois, six mois ou un an.');
   const a = Number(amount);
   if (!Number.isInteger(a) || a <= 0) throw bad('Indiquez une somme en FCFA (nombre entier).');
   if (a % STEP) throw bad(`La somme doit être un multiple de ${STEP} FCFA (exemple : 15 000).`);
-  if (a < minFor(period)) throw bad(`Le forfait minimum pour ${period.id === 'week' ? 'une semaine' : period.id === 'month' ? 'un mois' : 'un an'} est de ${minFor(period).toLocaleString('fr-FR').replace(/[  ]/g, ' ')} FCFA.`);
+  if (a < minFor(period)) throw bad(`Le forfait minimum pour ${{ week: 'une semaine', month: 'un mois', semester: 'six mois', year: 'un an' }[period.id]} est de ${minFor(period).toLocaleString('fr-FR').replace(/[  ]/g, ' ')} FCFA.`);
   if (a > maxFor(period)) throw bad(`Au-delà de ${maxFor(period).toLocaleString('fr-FR').replace(/[  ]/g, ' ')} FCFA, le forfait n'apporte plus rien de plus (il est déjà illimité). Choisissez une somme plus basse.`);
   return { period, amount: a };
 }
