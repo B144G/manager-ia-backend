@@ -89,7 +89,7 @@ async function memberOf(req, v) {
 
 // ---------- Offres ----------
 const ownerPlan = async (org) => (await getUserFresh(org.owner_id) || {}).plan || 'Gratuit';
-const limitsFor = (plan) => config.workspaceLimits[plan] || config.workspaceLimits.Gratuit;
+const limitsFor = (plan) => config.workspaceLimits[plan] || require('../services/custom-plan').limitsOf(plan) || config.workspaceLimits.Gratuit; // offres habituelles, ou forfait sur mesure (« Sur mesure|somme|jours »)
 
 /**
  * Période du quota de messages IA d'une organisation.
@@ -102,7 +102,7 @@ async function quotaWindow(org) {
   const now = Date.now();
   const exp = u.plan && u.plan !== 'Gratuit' && u.plan_expires ? Date.parse(u.plan_expires) : 0;
   if (exp > now) {
-    const len = config.durationDays * 86400000;
+    const len = require('../services/custom-plan').quotaDays(u.plan) * 86400000; // une semaine pour un forfait d'une semaine, sinon la durée habituelle
     const end = exp - (Math.ceil((exp - now) / len) - 1) * len;
     return { start: new Date(end - len).toISOString(), end: new Date(end).toISOString() };
   }

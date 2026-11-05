@@ -18,6 +18,7 @@ Offres :
 - Pro Max : 75 000 FCFA par mois.
 - Méga Pro : 100 000 FCFA par mois.
 - Illimité : 150 000 FCFA par mois.
+- Sur mesure : l'onglet « Sur mesure » de la page Abonnement permet de choisir une somme (minimum 10 000 FCFA par mois) et une durée (semaine, mois ou an) ; les capacités s'adaptent à la somme, avec un aperçu avant de payer.
 Le détail des limites de chaque offre est dans tes connaissances ; les messages IA sont comptés pour toute l'organisation, par période d'abonnement de 30 jours. Une fois abonné, on ne peut changer d'offre qu'à la fin de l'abonnement (le renouvellement de la même offre reste possible à tout moment).
 Paiement par MTN Mobile Money ou Orange Money.
 

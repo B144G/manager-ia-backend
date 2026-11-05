@@ -72,7 +72,7 @@ router.post('/orgs', async (req, res) => {
   const name = A.text(b.name, 100, { required: true, msg: "Indiquez le nom de l'organisation." });
   const lim = A.limitsFor(req.user.plan);
   const owned = (await db.prepare('SELECT COUNT(*) c FROM orgs WHERE owner_id = ?').get(req.user.id)).c;
-  if (owned >= lim.orgs) throw new HttpError(403, `Votre offre ${req.user.plan} permet ${lim.orgs} organisation(s). Passez à une offre supérieure pour en créer d'autres.`);
+  if (owned >= lim.orgs) throw new HttpError(403, `Votre offre ${require('../services/custom-plan').label(req.user.plan)} permet ${lim.orgs} organisation(s). Passez à une offre supérieure pour en créer d'autres.`);
   const now = nowISO();
   const id = await db.transaction(async () => {
     const oid = (await db.prepare('INSERT INTO orgs (name, sector, description, currency, owner_id, intake_token, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
@@ -142,7 +142,7 @@ orgRouter.post('/branches', A.need('admin'), async (req, res) => {
   const name = A.text(b.name, 100, { required: true, msg: "Indiquez le nom de l'antenne." });
   const n = (await db.prepare('SELECT COUNT(*) c FROM branches WHERE org_id = ?').get(req.org.id)).c;
   const lim = A.limitsFor(await A.ownerPlan(req.org)).branches;
-  if (n >= lim) throw new HttpError(403, `L'offre ${await A.ownerPlan(req.org)} permet ${lim} antenne(s). Passez à une offre supérieure pour en ajouter.`);
+  if (n >= lim) throw new HttpError(403, `L'offre ${require('../services/custom-plan').label(await A.ownerPlan(req.org))} permet ${lim} antenne(s). Passez à une offre supérieure pour en ajouter.`);
   const id = (await db.prepare('INSERT INTO branches (org_id, name, location, created_at) VALUES (?, ?, ?, ?)').run(req.org.id, name, A.text(b.location, 200), nowISO())).lastInsertRowid;
   await A.logActivity(req.org.id, req.user.id, 'team', `Antenne « ${name} » ajoutée`);
   res.status(201).json({ id: Number(id) });

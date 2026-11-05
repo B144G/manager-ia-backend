@@ -22,9 +22,9 @@ async function runOnce() {
     mailUser(
       u.contact,
       'Votre offre Brij-IA expire bientôt',
-      `Bonjour ${u.name},\n\nVotre offre ${u.plan} expire le ${fmtDate(u.plan_expires)}. Pour continuer sans interruption, pensez à la renouveler depuis votre compte.\n\nL'équipe Brij-IA`
+      `Bonjour ${u.name},\n\nVotre offre ${require('./services/custom-plan').label(u.plan)} expire le ${fmtDate(u.plan_expires)}. Pour continuer sans interruption, pensez à la renouveler depuis votre compte.\n\nL'équipe Brij-IA`
     );
-    notify('rappel', `Offre ${u.plan} de ${u.name} (${u.contact}) expire le ${fmtDate(u.plan_expires)}.`);
+    notify('rappel', `Offre ${require('./services/custom-plan').label(u.plan)} de ${u.name} (${u.contact}) expire le ${fmtDate(u.plan_expires)}.`);
   }
 
   // 3) Nettoyage des vieilles données techniques

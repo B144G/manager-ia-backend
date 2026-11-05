@@ -6,7 +6,8 @@ const { db, nowISO, getUserFresh } = require('../db');
 const limits = require('../middleware/limits');
 const { requireUser } = require('../middleware/auth');
 const campay = require('../services/campay');
-const { markPaid, planConflict } = require('../services/payments');
+const { markPaid, planConflict, planOf } = require('../services/payments');
+const custom = require('../services/custom-plan');
 const { notify } = require('../services/notify');
 const A = require('../workspace/access');
 const { amap, afilter, asyncHandler, HttpError, cleanText, genReference, log, oneLine } = require('../util');
@@ -18,9 +19,16 @@ router.get('/plans', (req, res) => {
   res.json({
     plans: Object.values(config.plans).map((p) => ({ id: p.id, name: p.name, priceXAF: p.priceXAF })),
     durationDays: config.durationDays,
+    custom: custom.info(),
     manual: { mtn: config.payment.mtn, orange: config.payment.orange, holder: config.payment.holder },
     automatic: config.campay.enabled,
   });
+});
+
+// Aperçu d'un forfait sur mesure : ce que donne une somme pour une durée (semaine, mois ou an). Public : aucune donnée personnelle.
+router.get('/plans/custom/quote', (req, res) => {
+  try { res.json({ quote: custom.quote(Number(req.query.amount), String(req.query.period || '')) }); }
+  catch (e) { throw new HttpError(e.status || 400, e.message); }
 });
 
 // Page « Abonnement » : offre actuelle, quotas, offres disponibles (avec la raison si un changement est refusé) et historique.
@@ -35,9 +43,9 @@ router.get('/billing', requireUser, async (req, res) => {
   });
   const orgs = await amap(await db.prepare('SELECT * FROM orgs WHERE owner_id = ? ORDER BY id').all(u.id), async (o) => ({ id: o.id, name: o.name, aiUsed: await A.aiUsed(o), aiMax: A.limitsFor(u.plan).aiMonth, periodEnd: (await A.quotaWindow(o)).end }));
   const history = (await db.prepare('SELECT reference, plan, operator, amount_xaf, mode, status, created_at, paid_at FROM payments WHERE user_id = ? ORDER BY id DESC LIMIT 20').all(u.id))
-    .map((p) => ({ reference: p.reference, plan: (config.plans[p.plan] || {}).name || p.plan, operator: p.operator, amountXAF: p.amount_xaf, mode: p.mode, status: p.status, createdAt: p.created_at, paidAt: p.paid_at }));
+    .map((p) => ({ reference: p.reference, plan: custom.label((planOf(p.plan) || {}).name || p.plan), planKey: custom.isCustom(p.plan) ? p.plan : '', operator: p.operator, amountXAF: p.amount_xaf, mode: p.mode, status: p.status, createdAt: p.created_at, paidAt: p.paid_at }));
   res.json({
-    plan: active ? u.plan : 'Gratuit', expiresAt: active ? u.plan_expires : null, daysLeft: active ? Math.ceil((exp - Date.now()) / 86400000) : 0,
+    plan: active ? u.plan : 'Gratuit', planLabel: active ? custom.label(u.plan) : 'Gratuit', currentLimits: lim(active ? u.plan : 'Gratuit'), custom: custom.info(), expiresAt: active ? u.plan_expires : null, daysLeft: active ? Math.ceil((exp - Date.now()) / 86400000) : 0,
     freeLimits: lim('Gratuit'), plans, orgs, history, durationDays: config.durationDays, automatic: config.campay.enabled,
   });
 });
@@ -71,7 +79,11 @@ async function syncPush(p) {
 router.post('/payments/initiate', requireUser, limits.paymentsInit, asyncHandler(async (req, res) => {
   const b = req.body || {};
   const planId = typeof b.plan === 'string' ? b.plan : '';
-  const plan = Object.prototype.hasOwnProperty.call(config.plans, planId) ? config.plans[planId] : null;
+  let plan = Object.prototype.hasOwnProperty.call(config.plans, planId) ? config.plans[planId] : null;
+  if (!plan && b.custom && typeof b.custom === 'object') { // forfait sur mesure : la somme et la durée sont vérifiées par le serveur
+    let q; try { q = custom.quote(Number(b.custom.amount), String(b.custom.period || '')); } catch (e) { throw new HttpError(e.status || 400, e.message); }
+    plan = { id: q.plan, name: q.plan, priceXAF: q.amount };
+  }
   if (!plan) throw new HttpError(400, 'Offre inconnue. Choisissez une des offres proposées.');
   const conflict = planConflict(await getUserFresh(req.user.id), plan.name);
   if (conflict) throw new HttpError(409, conflict);
@@ -94,7 +106,7 @@ router.post('/payments/initiate', requireUser, limits.paymentsInit, asyncHandler
     try {
       const c = await campay.collect({
         amount, from: phone, externalReference: reference,
-        description: `Brij-IA offre ${plan.name} (${reference})`,
+        description: `Brij-IA offre ${custom.label(plan.name)} (${reference})`,
       });
       providerRef = c.reference;
     } catch (e) {
@@ -102,13 +114,13 @@ router.post('/payments/initiate', requireUser, limits.paymentsInit, asyncHandler
       throw new HttpError(502, "Le paiement mobile n'a pas pu démarrer. Réessayez dans un instant ou contactez-nous sur WhatsApp.");
     }
     instructions = `Une demande de paiement de ${amount} FCFA a été envoyée au ${phone} (${OP_NAMES[operator]}). ` +
-      `Confirmez-la sur votre téléphone avec votre code secret. Votre offre ${plan.name} s'activera automatiquement dès la confirmation. Référence : ${reference}.`;
+      `Confirmez-la sur votre téléphone avec votre code secret. Votre offre ${custom.label(plan.name)} s'activera automatiquement dès la confirmation. Référence : ${reference}.`;
   } else {
     const number = config.payment[operator];
     const holder = config.payment.holder;
     instructions = number
       ? `Envoyez ${amount} FCFA par ${OP_NAMES[operator]} au ${number}${holder ? ' (au nom de ' + holder + ')' : ''}. ` +
-        `Dans le motif du transfert, écrivez la référence ${reference}. Ensuite, saisissez ici l'ID de transaction reçu par SMS : nous validons votre paiement et activons votre offre ${plan.name}.`
+        `Dans le motif du transfert, écrivez la référence ${reference}. Ensuite, saisissez ici l'ID de transaction reçu par SMS : nous validons votre paiement et activons votre offre ${custom.label(plan.name)}.`
       : `Le numéro de paiement n'est pas encore disponible. Contactez-nous sur WhatsApp (+237 653 62 13 88) en indiquant la référence ${reference}.`;
   }
 
@@ -131,8 +143,8 @@ router.post('/payments/confirm-manual', requireUser, async (req, res) => {
   if (p.status === 'paid') throw new HttpError(409, 'Ce paiement est déjà validé.');
 
   await db.prepare("UPDATE payments SET transaction_id = ?, status = 'awaiting_validation' WHERE id = ? AND status != 'paid'").run(transactionId, p.id);
-  const plan = config.plans[p.plan];
-  notify('paiement_a_valider', `Paiement à valider : ${req.user.name} (${req.user.contact}) - ${plan ? plan.name : p.plan} - ${p.amount_xaf} FCFA - ${p.operator} - ID transaction ${transactionId} - réf. ${p.reference}`);
+  const plan = planOf(p.plan);
+  notify('paiement_a_valider', `Paiement à valider : ${req.user.name} (${req.user.contact}) - ${plan ? custom.label(plan.name) : p.plan} - ${p.amount_xaf} FCFA - ${p.operator} - ID transaction ${transactionId} - réf. ${p.reference}`);
   res.json({ ok: true, status: 'awaiting_validation' });
 });
 

@@ -5,12 +5,13 @@ const config = require('../config');
 const { db, nowISO, publicUser } = require('../db');
 const limits = require('../middleware/limits');
 const { setAdminCookie, clearAdminCookie, requireAdmin, sessionIdOf, ADMIN_COOKIE } = require('../middleware/auth');
-const { markPaid, planConflict } = require('../services/payments');
+const { markPaid, planConflict, planOf } = require('../services/payments');
 const sec = require('../services/security');
 const { notify } = require('../services/notify');
 const { HttpError, safeEqual, cleanText, addDays, parseJSON } = require('../util');
 const central = require('../security');
 const prospects = require('../services/prospects');
+const custom = require('../services/custom-plan');
 
 const fs = require('fs');
 const router = express.Router();
@@ -86,7 +87,7 @@ router.get('/security-log', async (req, res) => {
 router.get('/stats', async (req, res) => {
   const total = (await db.prepare('SELECT COUNT(*) AS n FROM users').get()).n;
   const byPlan = Object.fromEntries(PLAN_NAMES.map((n) => [n, 0]));
-  for (const r of await db.prepare('SELECT plan, COUNT(*) AS n FROM users GROUP BY plan').all()) byPlan[r.plan] = r.n;
+  for (const r of await db.prepare('SELECT plan, COUNT(*) AS n FROM users GROUP BY plan').all()) { const k = custom.isCustom(r.plan) ? 'Sur mesure' : r.plan; byPlan[k] = (byPlan[k] || 0) + Number(r.n); }
 
   const byInterest = {};
   for (const r of await db.prepare('SELECT interests FROM users').all()) {
@@ -131,7 +132,7 @@ const mapPayment = (r) => ({
   reference: r.reference,
   user: { id: r.user_id, name: r.user_name, contact: r.user_contact },
   plan: r.plan,
-  planName: (config.plans[r.plan] || {}).name || r.plan,
+  planName: custom.label((config.plans[r.plan] || {}).name || r.plan),
   operator: r.operator,
   phone: r.phone,
   amountXAF: r.amount_xaf,
@@ -167,7 +168,7 @@ router.post('/payments/:id/validate', async (req, res) => {
   const p = await findPayment(req);
   if (p.status === 'paid') throw new HttpError(409, 'Ce paiement est déjà validé.');
   const owner = await db.prepare('SELECT * FROM users WHERE id = ?').get(p.user_id);
-  const plan = config.plans[p.plan];
+  const plan = planOf(p.plan);
   const conflict = owner && plan ? planConflict(owner, plan.name) : null;
   if (conflict) throw new HttpError(409, `${conflict} Refusez ce paiement (remboursement) ou changez l'offre à la main depuis la fiche de l'abonné.`);
   const r = await markPaid(p.id);
@@ -283,7 +284,7 @@ router.get('/overview', async (req, res) => {
 
   const nowIso = iso(now);
   const payers = {};
-  for (const r of await db.prepare(`SELECT plan, COUNT(*) n FROM users WHERE ${notExpired} GROUP BY plan`).all(nowIso)) payers[r.plan] = r.n;
+  for (const r of await db.prepare(`SELECT plan, COUNT(*) n FROM users WHERE ${notExpired} GROUP BY plan`).all(nowIso)) { const k = custom.isCustom(r.plan) ? 'Sur mesure' : r.plan; payers[k] = (payers[k] || 0) + Number(r.n); }
   const free = users - Object.values(payers).reduce((a, b) => a + b, 0);
 
   const dayStart = (t) => iso(Date.UTC(new Date(t).getUTCFullYear(), new Date(t).getUTCMonth(), new Date(t).getUTCDate()));
@@ -306,7 +307,7 @@ router.get('/overview', async (req, res) => {
     plans: { Gratuit: free, ...Object.fromEntries(PAID.map((n) => [n, payers[n] || 0])), prices: Object.fromEntries(Object.values(config.plans).map((p) => [p.name, p.priceXAF])) },
     series,
     todo: { payments: pendingCount, leads: leadsOpen, expiring },
-    payments: pendingPays.map((p) => ({ id: p.id, reference: p.reference, user: p.user_name, planName: (config.plans[p.plan] || {}).name || p.plan, operator: p.operator, amountXAF: p.amount_xaf, created: p.created_at })),
+    payments: pendingPays.map((p) => ({ id: p.id, reference: p.reference, user: p.user_name, planName: custom.label((planOf(p.plan) || {}).name || p.plan), operator: p.operator, amountXAF: p.amount_xaf, created: p.created_at })),
     leads: (await db.prepare('SELECT id, name, what, message, created_at FROM leads WHERE handled = 0 ORDER BY id DESC LIMIT 3').all()).map((l) => ({ id: l.id, name: l.name, text: l.message || l.what || '', created: l.created_at })),
     latestUsers: (await db.prepare('SELECT * FROM users ORDER BY id DESC LIMIT 4').all()).map(publicUser),
     activity: (await db.prepare('SELECT type, text, created_at FROM notifications ORDER BY id DESC LIMIT 4').all()).map((n) => ({ type: n.type, text: n.text, created: n.created_at })),
