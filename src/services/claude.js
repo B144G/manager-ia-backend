@@ -14,12 +14,9 @@ Pour commencer : le bouton « Commencer gratuitement » mène à la connexion ; 
 
 Offres :
 - Gratuit : pour découvrir la plateforme.
-- Pro : 50 000 FCFA par mois.
-- Pro Max : 75 000 FCFA par mois.
-- Méga Pro : 100 000 FCFA par mois.
-- Illimité : 150 000 FCFA par mois.
-- Sur mesure : l'onglet « Sur mesure » de la page Abonnement permet de choisir une somme (minimum 10 000 FCFA par mois) et une durée (semaine, mois, six mois ou an) ; les capacités s'adaptent à la somme, avec un aperçu avant de payer.
-Le détail des limites de chaque offre est dans tes connaissances ; les messages IA sont comptés pour toute l'organisation, par période d'abonnement de 30 jours. Une fois abonné, on ne peut changer d'offre qu'à la fin de l'abonnement (le renouvellement de la même offre reste possible à tout moment).
+- Illimité, au choix : une semaine 40 000 FCFA, un mois 150 000 FCFA, un trimestre 420 000 FCFA, un semestre 800 000 FCFA, un an 1 500 000 FCFA (plus la durée est longue, plus le prix par mois baisse).
+- Sur mesure : l'onglet « Sur mesure » de la page Abonnement permet de choisir une somme (minimum 10 000 FCFA) et un temps d'utilisation (semaine, mois, trimestre, semestre ou an) ; à somme égale, une durée plus courte donne plus d'accès ; un bloc montre les accès avant de payer.
+Le détail des limites de chaque offre est dans tes connaissances ; les messages IA sont comptés pour toute l'organisation, par période d'abonnement de 30 jours. Une fois abonné, on ne peut changer d'offre qu'à la fin de l'abonnement (on peut prolonger la même offre à tout moment).
 Paiement par MTN Mobile Money ou Orange Money.
 
 Contact humain : WhatsApp +237 653 62 13 88 ou +237 697 83 67 96 ; e-mail tendabrandon9@gmail.com.

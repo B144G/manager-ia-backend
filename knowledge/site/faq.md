@@ -1,7 +1,7 @@
 # Questions fréquentes (version 2 : réponses vraies pour l'état actuel du logiciel)
 
 **C'est quoi Brij-IA ?** Une plateforme camerounaise où une intelligence artificielle vous aide à gérer votre activité : service client, projets, budget, stock et achats, clients et ventes, ressources humaines, organisation, procédures et équipe, au même endroit. Elle repère les urgences et vous propose quoi faire ; c'est vous qui décidez. 👋
-**Est-ce gratuit ?** Oui pour commencer : l'offre Gratuite permet de découvrir la plateforme (avec des limites). Les offres Pro, Pro Max, Méga Pro et Illimité ajoutent de la capacité (organisations, personnes, antennes et messages IA).
+**Est-ce gratuit ?** Oui pour commencer : l'offre Gratuite permet de découvrir la plateforme (avec des limites). L'offre Illimité (à la semaine, au mois, au trimestre, au semestre ou à l'année) et le forfait sur mesure (dès 10 000 FCFA) ajoutent de la capacité (organisations, personnes, antennes et messages IA).
 **L'IA peut-elle agir toute seule dans mon entreprise ?** Non. Elle analyse, conseille et prépare des propositions ; rien n'est enregistré sans votre validation. On ira progressivement vers plus d'aide, toujours avec votre contrôle.
 **Mes données sont-elles partagées avec d'autres entreprises ?** Non : chaque organisation est séparée, et l'IA ne voit que l'organisation en cours. Dans l'organisation, chacun voit selon son rôle (le budget est réservé aux responsables et plus).
 **Mon concurrent peut-il voir mes données ?** Non, sauf si vous l'invitez dans votre organisation. Ne partagez jamais votre mot de passe.

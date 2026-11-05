@@ -15,7 +15,7 @@ const custom = require('../services/custom-plan');
 
 const fs = require('fs');
 const router = express.Router();
-const PAID = Object.values(config.plans).map((p) => p.name); // Pro, Pro Max, Méga Pro, Illimité
+const PAID = [...new Set([...Object.values(config.plans), ...Object.values(config.legacyPlans)].map((p) => p.name))]; // Illimité, et les anciennes offres que des abonnés ont encore (Pro, Pro Max, Méga Pro)
 const PLAN_NAMES = ['Gratuit', ...PAID];
 const STATUSES = ['pending', 'awaiting_validation', 'paid', 'failed'];
 
@@ -132,7 +132,7 @@ const mapPayment = (r) => ({
   reference: r.reference,
   user: { id: r.user_id, name: r.user_name, contact: r.user_contact },
   plan: r.plan,
-  planName: custom.label((config.plans[r.plan] || {}).name || r.plan),
+  planName: custom.label(r.plan),
   operator: r.operator,
   phone: r.phone,
   amountXAF: r.amount_xaf,
@@ -188,7 +188,7 @@ router.post('/users/:id/plan', async (req, res) => {
   const u = Number.isInteger(id) ? await db.prepare('SELECT * FROM users WHERE id = ?').get(id) : null;
   if (!u) throw new HttpError(404, 'Inscrit introuvable.');
   const b = req.body || {};
-  const alias = { gratuit: 'Gratuit', ...Object.fromEntries(Object.values(config.plans).flatMap((p) => [[p.id, p.name], [p.name.toLowerCase(), p.name]])) };
+  const alias = { gratuit: 'Gratuit', ...Object.fromEntries([...Object.values(config.plans), ...Object.values(config.legacyPlans)].flatMap((p) => [[p.id, p.name], [p.name.toLowerCase(), p.name]])) };
   const plan = alias[String(b.plan || '').toLowerCase()] || (PLAN_NAMES.includes(b.plan) ? b.plan : null);
   if (!plan) throw new HttpError(400, `Offre inconnue (${PLAN_NAMES.join(', ')}).`);
 
@@ -304,7 +304,7 @@ router.get('/overview', async (req, res) => {
       users, newUsers, orgs, activeOrgs, payers: Object.values(payers).reduce((a, b) => a + b, 0), payersByPlan: Object.fromEntries(PAID.map((n) => [n, payers[n] || 0])),
       aiToday, aiYesterday,
     },
-    plans: { Gratuit: free, ...Object.fromEntries(PAID.map((n) => [n, payers[n] || 0])), prices: Object.fromEntries(Object.values(config.plans).map((p) => [p.name, p.priceXAF])) },
+    plans: { Gratuit: free, ...Object.fromEntries(PAID.map((n) => [n, payers[n] || 0])), prices: Object.fromEntries(Object.values(config.legacyPlans).map((p) => [p.name, p.priceXAF])), unlimited: Object.fromEntries(Object.values(config.plans).map((p) => [p.period, p.priceXAF])) },
     series,
     todo: { payments: pendingCount, leads: leadsOpen, expiring },
     payments: pendingPays.map((p) => ({ id: p.id, reference: p.reference, user: p.user_name, planName: custom.label((planOf(p.plan) || {}).name || p.plan), operator: p.operator, amountXAF: p.amount_xaf, created: p.created_at })),
@@ -336,7 +336,7 @@ router.get('/ai-usage', async (req, res) => {
 });
 
 router.get('/settings', async (req, res) => {
-  res.json({ system: await systemStatus(), plans: { ...Object.fromEntries(Object.values(config.plans).map((p) => [p.name, p.priceXAF])), durationDays: config.durationDays }, workspaceLimits: config.workspaceLimits, adminEmail: config.admin.email });
+  res.json({ system: await systemStatus(), plans: { ...Object.fromEntries(Object.values(config.plans).map((p) => ['Illimité / ' + p.period, p.priceXAF])), durationDays: config.durationDays }, workspaceLimits: config.workspaceLimits, adminEmail: config.admin.email });
 });
 
 router.get('/notifications', async (req, res) => {

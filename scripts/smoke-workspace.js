@@ -1681,12 +1681,12 @@ async function main() {
     r = await owner('GET', `/api/ws/orgs/${org}`);
     check('renouvellement anticipé (échéance dans 50 jours) : la période en cours se termine dans 20 jours', Math.abs(Date.parse(r.json.limits.aiResetAt) - Date.parse(at(20))) < 60000 && r.json.limits.aiUsed === 1, r.json.limits);
     await raw.prepare("UPDATE users SET plan_expires = ? WHERE id = ?").run(at(10), ownerId);
-    r = await owner('POST', '/api/payments/initiate', { plan: 'promax', operator: 'mtn', phone: '677000111' });
+    r = await owner('POST', '/api/payments/initiate', { plan: 'unl_month', operator: 'mtn', phone: '677000111' });
     check('changer d\'offre en cours d\'abonnement -> 409 avec la date', r.status === 409 && /changement d'offre/.test(r.json.error) && /Pro/.test(r.json.error), r.json);
     r = await owner('POST', '/api/payments/initiate', { plan: 'pro', operator: 'mtn', phone: '677000111' });
-    check('renouveler la MÊME offre reste possible', r.status < 300, r.json);
+    check('les anciennes offres (Pro…) ne se vendent plus', r.status === 400, r.json);
     await raw.prepare("UPDATE users SET plan = 'Gratuit', plan_expires = NULL WHERE id = ?").run(ownerId);
-    r = await owner('POST', '/api/payments/initiate', { plan: 'promax', operator: 'mtn', phone: '677000111' });
+    r = await owner('POST', '/api/payments/initiate', { plan: 'unl_month', operator: 'mtn', phone: '677000111' });
     check('une fois l\'abonnement terminé (offre Gratuite), on peut choisir une autre offre', r.status < 300, r.json);
 
     await raw.close();

@@ -9,7 +9,8 @@ const custom = require('./custom-plan');
 
 /** Offre d'un paiement : offre habituelle (clé « pro »…) ou forfait sur mesure (« Sur mesure|somme|jours »). Renvoie { name, days } ou null. */
 function planOf(key) {
-  if (Object.prototype.hasOwnProperty.call(config.plans, key)) return { name: config.plans[key].name, days: config.durationDays };
+  if (Object.prototype.hasOwnProperty.call(config.plans, key)) return { name: config.plans[key].name, days: config.plans[key].days };
+  if (Object.prototype.hasOwnProperty.call(config.legacyPlans, key)) return { name: config.legacyPlans[key].name, days: config.durationDays }; // anciennes offres : paiements déjà créés
   const c = custom.parse(key);
   return c ? { name: c.name, days: c.days } : null;
 }

@@ -17,7 +17,7 @@ const OP_NAMES = { mtn: 'MTN Mobile Money', orange: 'Orange Money' };
 
 router.get('/plans', (req, res) => {
   res.json({
-    plans: Object.values(config.plans).map((p) => ({ id: p.id, name: p.name, priceXAF: p.priceXAF })),
+    plans: Object.values(config.plans).map((p) => ({ id: p.id, name: p.name, period: p.period, days: p.days, priceXAF: p.priceXAF })),
     durationDays: config.durationDays,
     custom: custom.info(),
     manual: { mtn: config.payment.mtn, orange: config.payment.orange, holder: config.payment.holder },
@@ -39,7 +39,7 @@ router.get('/billing', requireUser, async (req, res) => {
   const lim = (name) => { const l = A.limitsFor(name); return { orgs: l.orgs, members: l.members, branches: l.branches, aiMonth: l.aiMonth, emailDay: l.emailDay }; };
   const plans = Object.values(config.plans).map((p) => {
     const reason = planConflict(u, p.name);
-    return { id: p.id, name: p.name, priceXAF: p.priceXAF, limits: lim(p.name), current: active && u.plan === p.name, available: !reason, reason: reason || '' };
+    return { id: p.id, name: p.name, period: p.period, days: p.days, priceXAF: p.priceXAF, limits: lim(p.name), current: active && u.plan === p.name, available: !reason, reason: reason || '' };
   });
   const orgs = await amap(await db.prepare('SELECT * FROM orgs WHERE owner_id = ? ORDER BY id').all(u.id), async (o) => ({ id: o.id, name: o.name, aiUsed: await A.aiUsed(o), aiMax: A.limitsFor(u.plan).aiMonth, periodEnd: (await A.quotaWindow(o)).end }));
   const history = (await db.prepare('SELECT reference, plan, operator, amount_xaf, mode, status, created_at, paid_at FROM payments WHERE user_id = ? ORDER BY id DESC LIMIT 20').all(u.id))

@@ -141,20 +141,20 @@ async function main() {
     r = await anon('POST', '/api/contact', { name: '', message: '' });
     check('contact invalide -> 400', r.status === 400);
     r = await anon('GET', '/api/plans');
-    check('plans', r.status === 200 && r.json.plans.length === 4 && r.json.plans[0].id === 'pro' && r.json.plans[0].priceXAF === 50000 && r.json.plans[1].priceXAF === 75000 && r.json.durationDays === 30 && r.json.automatic === false && r.json.manual.mtn === '670000001' && r.json.manual.holder === 'Titulaire Test', r.json);
+    check('plans', r.status === 200 && r.json.plans.length === 5 && r.json.plans[0].id === 'unl_week' && r.json.plans[0].priceXAF === 40000 && r.json.plans[1].id === 'unl_month' && r.json.plans[1].priceXAF === 150000 && r.json.plans[4].priceXAF === 1500000 && r.json.plans.every((x) => x.name === 'Illimité') && r.json.durationDays === 30 && r.json.automatic === false && r.json.manual.mtn === '670000001' && r.json.manual.holder === 'Titulaire Test', r.json);
     r = await anon('POST', '/api/assistant', { messages: [{ role: 'user', content: 'Bonjour' }] });
     check('assistant sans clé -> 503', r.status === 503 && r.json.error === 'Assistant indisponible', r.json);
 
     console.log('Paiement manuel');
-    r = await client(base)('POST', '/api/payments/initiate', { plan: 'pro', operator: 'mtn', phone: '670000010' });
+    r = await client(base)('POST', '/api/payments/initiate', { plan: 'unl_month', operator: 'mtn', phone: '670000010' });
     check('initiate sans connexion -> 401', r.status === 401, r.status);
     r = await user('POST', '/api/payments/initiate', { plan: 'gold', operator: 'mtn', phone: '670000010' });
     check('offre inconnue -> 400', r.status === 400);
-    r = await user('POST', '/api/payments/initiate', { plan: 'pro', operator: 'mtn', phone: '670000010' });
+    r = await user('POST', '/api/payments/initiate', { plan: 'unl_month', operator: 'mtn', phone: '670000010' });
     const pay = r.json;
-    check('initiate manuel', r.status === 200 && pay.mode === 'manual' && pay.status === 'pending' && pay.amountXAF === 50000 && /^MI-[A-Z0-9]{6}$/.test(pay.reference) && pay.instructions.includes(pay.reference) && pay.instructions.includes('670000001') && pay.instructions.includes('Titulaire Test'), r.json);
+    check('initiate manuel', r.status === 200 && pay.mode === 'manual' && pay.status === 'pending' && pay.amountXAF === 150000 && /^MI-[A-Z0-9]{6}$/.test(pay.reference) && pay.instructions.includes(pay.reference) && pay.instructions.includes('670000001') && pay.instructions.includes('Titulaire Test'), r.json);
     r = await user('GET', '/api/payments/' + pay.reference);
-    check('statut pending', r.status === 200 && r.json.status === 'pending' && r.json.plan === 'pro', r.json);
+    check('statut pending', r.status === 200 && r.json.status === 'pending' && r.json.plan === 'unl_month', r.json);
     r = await client(base)('POST', '/api/payments/confirm-manual', { reference: pay.reference, transactionId: 'XXXX' });
     check('confirm-manual sans connexion -> 401', r.status === 401, r.json);
     r = await user('POST', '/api/payments/confirm-manual', { reference: pay.reference, transactionId: 'MP240101.1234.A56789' });
@@ -182,25 +182,25 @@ async function main() {
 
     r = await user('GET', '/api/me');
     const days = r.json.user.planExpires ? (new Date(r.json.user.planExpires) - Date.now()) / 86400000 : -1;
-    check('utilisateur passé Pro, expiration ~30 jours', r.json.user.plan === 'Pro' && days > 29.9 && days < 30.1, { plan: r.json.user.plan, days });
+    check('utilisateur passé Illimité, expiration ~30 jours', r.json.user.plan === 'Illimité' && days > 29.9 && days < 30.1, { plan: r.json.user.plan, days });
     r = await user('GET', '/api/payments/' + pay.reference);
     check('statut paid', r.json.status === 'paid');
     r = await client(base)('GET', '/api/billing');
     check('abonnement sans connexion -> 401', r.status === 401);
     r = await user('GET', '/api/billing');
     const bl = r.json;
-    check('abonnement : offre Pro active ~30 jours', r.status === 200 && bl.plan === 'Pro' && bl.daysLeft >= 29 && bl.daysLeft <= 30 && bl.plans.length === 4, bl);
-    check('abonnement : renouveler Pro possible, changer d\'offre refusé avec raison', bl.plans.find((p) => p.id === 'pro').available === true && bl.plans.find((p) => p.id === 'pro').current === true && bl.plans.find((p) => p.id === 'megapro').available === false && /fin de l'abonnement/.test(bl.plans.find((p) => p.id === 'megapro').reason), bl.plans);
-    check('abonnement : historique avec le paiement', bl.history.length >= 1 && bl.history[0].status === 'paid' && bl.history[0].plan === 'Pro', bl.history);
+    check('abonnement : offre Illimité active ~30 jours', r.status === 200 && bl.plan === 'Illimité' && bl.daysLeft >= 29 && bl.daysLeft <= 30 && bl.plans.length === 5, bl);
+    check('abonnement : on peut prolonger avec n\'importe quelle durée d\'Illimité (même offre)', bl.plans.every((x) => x.available === true && x.current === true), bl.plans);
+    check('abonnement : historique avec le paiement', bl.history.length >= 1 && bl.history[0].status === 'paid' && bl.history[0].plan === 'Illimité', bl.history);
     r = await user('PUT', '/api/me/state', { interests: ['ia', 'web', 'trading', 'stat'], progress: {}, project: {} });
     check('Pro : plus de limite de domaines', r.status === 200 && r.json.user.interests.length === 4, r.json);
 
     r = await adm('GET', '/api/admin/stats');
     const s = r.json;
-    check('stats', r.status === 200 && s.users >= 2 && s.byPlan.Pro === 1 && s.revenueMonthXAF === 50000 && s.leads === 1 && s.byInterest.ia >= 1 && s.pendingPayments >= 0, s);
+    check('stats', r.status === 200 && s.users >= 2 && s.byPlan['Illimité'] === 1 && s.revenueMonthXAF === 150000 && s.leads === 1 && s.byInterest.ia >= 1 && s.pendingPayments >= 0, s);
     r = await adm('GET', '/api/admin/users?q=' + encodeURIComponent('awa'));
     check('recherche inscrits', r.status === 200 && r.json.users.length === 1 && r.json.users[0].name === 'Awa Test' && !('pass_hash' in r.json.users[0]), r.json);
-    r = await adm('GET', '/api/admin/users?plan=Pro');
+    r = await adm('GET', '/api/admin/users?plan=Illimit%C3%A9');
     check('filtre par offre', r.json.users.length === 1);
     r = await adm('POST', `/api/admin/users/${u.id}/plan`, { plan: 'Pro Max', days: 10 });
     const d2 = (new Date(r.json.user.planExpires) - Date.now()) / 86400000;
