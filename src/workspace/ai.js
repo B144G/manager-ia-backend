@@ -259,14 +259,39 @@ router.delete('/history', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Pièces jointes : images (lues par l'IA), PDF (lus par Anthropic) et fichiers texte (insérés dans la question). Rien n'est conservé : seul le nom du fichier reste dans l'historique.
+const ATT_MAX = 4; const ATT_BYTES = 8 * 1024 * 1024;
+const IMG_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const TXT_MIME = new Set(['text/plain', 'text/csv', 'text/markdown', 'application/json']);
+function attachmentParts(list) {
+  if (list === undefined || list === null) return { parts: [], names: [] };
+  if (!Array.isArray(list) || list.length > ATT_MAX) throw new HttpError(400, `Au plus ${ATT_MAX} pièces jointes par message.`);
+  let total = 0; const parts = []; const names = [];
+  for (const a of list) {
+    const mime = String((a && a.mime) || '').toLowerCase(); const data = String((a && a.data) || '');
+    const name = String((a && a.name) || 'pièce jointe').replace(/[\r\n<>]/g, ' ').slice(0, 80);
+    if (!/^[A-Za-z0-9+/=]+$/.test(data) || !data.length) throw new HttpError(400, `Le fichier « ${name} » est illisible.`);
+    const bytes = Math.floor(data.length * 3 / 4); total += bytes;
+    if (total > ATT_BYTES) throw new HttpError(413, 'Les pièces jointes dépassent 8 Mo au total.');
+    if (IMG_MIME.has(mime)) parts.push({ type: 'image', mime, data });
+    else if (mime === 'application/pdf') parts.push({ type: 'document', mime, data });
+    else if (TXT_MIME.has(mime)) parts.push({ type: 'text', text: `[Contenu du fichier « ${name} »]\n${Buffer.from(data, 'base64').toString('utf8').slice(0, 12000)}` });
+    else throw new HttpError(400, `Le type du fichier « ${name} » n'est pas accepté (images, PDF et fichiers texte).`);
+    names.push(name);
+  }
+  return { parts, names };
+}
+
 router.post('/chat', limits.assistantMinute, asyncHandler(async (req, res) => {
   const b = req.body || {};
   const module = moduleOf(b.module || 'general', req);
   const message = A.text(b.message, 2000, { required: true, msg: 'Écrivez votre message.' });
+  const att = attachmentParts(b.attachments);
   await checkQuota(req);
   const past = await history(req, module);
-  const text = await ask(req, await buildParts(req, module), [...past, { role: 'user', content: message }], 700);
-  await saveMsg(req, module, 'user', message);
+  const content = att.parts.length ? [{ type: 'text', text: message }, ...att.parts] : message;
+  const text = await ask(req, await buildParts(req, module), [...past, { role: 'user', content }], 700);
+  await saveMsg(req, module, 'user', att.names.length ? `${message}\n[Pièces jointes : ${att.names.join(', ')}]` : message);
   await saveMsg(req, module, 'assistant', text);
   res.json({ text, remaining: await remaining(req) });
 }));
@@ -376,4 +401,4 @@ async function dataFor(req, mods, perModule = 3500) {
 /** Compte un message IA dans le quota de l'organisation (sans écrire dans l'historique de discussion). */
 const countUsage = async (req) => { await db.prepare('INSERT INTO ai_usage (org_id, user_id, created_at) VALUES (?, ?, ?)').run(req.org.id, req.user.id, nowISO()); };
 
-module.exports = { router, buildSystem, buildData, extractJSON, dataFor, countUsage, checkQuota, remaining, ask, MODULE_MIN, hasBuilder: (m) => Boolean(BUILDERS[m]) };
+module.exports = { router, attachmentParts, buildSystem, buildData, extractJSON, dataFor, countUsage, checkQuota, remaining, ask, MODULE_MIN, hasBuilder: (m) => Boolean(BUILDERS[m]) };

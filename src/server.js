@@ -61,8 +61,10 @@ app.use('/webhooks', require('./routes/webhooks'));
 app.use('/api/webhooks/whatsapp', require('./routes/waShared')); // webhook commun (connexion en un clic)
 
 const jsonSmall = express.json({ limit: '100kb' });
+const jsonFiles = express.json({ limit: '9mb' }); // pièces jointes à l'assistant IA (images, PDF, texte) : 4 pièces, 8 Mo au plus en tout
 const jsonStatement = express.json({ limit: '2mb' }); // relevé bancaire CSV (Comptabilité > rapprochement) : seule route à corps plus gros
 // Les fichiers joints (images, PDF) arrivent en base64 : cette seule route a une limite plus large (elle la règle elle-même, après connexion).
+app.use((req, res, next) => (/^\/api\/ws\/orgs\/\d+\/ai\/chat$/.test(req.path) && req.method === 'POST' ? jsonFiles(req, res, next) : next()));
 app.use((req, res, next) => (/^\/api\/ws\/orgs\/\d+\/(accounting\/bank\/\d+\/import|data\/import\/(customers|stock))$/.test(req.path) && req.method === 'POST' ? jsonStatement(req, res, next) : ((/^\/api\/ws\/orgs\/\d+\/mail\/files$/.test(req.path) || /^\/api\/ws\/public\/chat\/[A-Za-z0-9]+\/voice$/.test(req.path) || /^\/api\/ws\/public\/(whatsapp|meta)\/[A-Za-z0-9]+$/.test(req.path)) && req.method === 'POST' ? next() : jsonSmall(req, res, next))));
 
 // Protection contre les requêtes venant d'un autre site (CSRF) : l'en-tête Origin doit être connu.
