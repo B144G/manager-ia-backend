@@ -9,6 +9,8 @@ const PREFIX = 'Sur mesure|';
 const STEP = 500; // la somme est un multiple de 500 FCFA
 const int = (k, d) => { const n = parseInt(process.env[k], 10); return Number.isFinite(n) && n > 0 ? n : d; };
 const MIN_MONTH = int('CUSTOM_MIN_MONTH', 10000); // forfait minimum, ramené à un mois
+// Messages IA d'un forfait sur mesure : l'échelle des offres habituelles multipliée par ce coefficient (1,5 = 50 % de messages en plus). CUSTOM_AI_BOOST le règle (1 à 5).
+const AI_BOOST = Math.min(Math.max(parseFloat(process.env.CUSTOM_AI_BOOST) || 1.5, 1), 5);
 
 const PERIODS = {
   week: { id: 'week', label: 'semaine', days: 7, months: 7 / 30 },
@@ -40,7 +42,7 @@ function capacityAt(E) {
   const [x0, c0] = a[i], [x1, c1] = a[i + 1];
   const t = x1 === x0 ? 0 : (e - x0) / (x1 - x0);
   const lerp = (k) => c0[k] + (c1[k] - c0[k]) * t;
-  return { orgs: Math.round(lerp('orgs')), members: Math.round(lerp('members')), branches: Math.round(lerp('branches')), aiMonth: round(lerp('aiMonth'), 10), emailDay: round(lerp('emailDay'), 5) };
+  return { orgs: Math.round(lerp('orgs')), members: Math.round(lerp('members')), branches: Math.round(lerp('branches')), aiMonth: round(lerp('aiMonth') * AI_BOOST, 10), emailDay: round(lerp('emailDay'), 5) };
 }
 
 const periodOfDays = (days) => Object.values(PERIODS).find((p) => p.days === days) || null;
@@ -79,7 +81,14 @@ function quote(amount, periodId) {
     limits: { orgs: cap.orgs, members: cap.members, branches: cap.branches, aiMonth: aiPeriod, emailDay: cap.emailDay },
     aiPerLabel: period.id === 'week' ? 'sur la semaine' : 'par mois',
     rank: rankOfEquivalent(eq),
+    features: featuresAt(rankOfEquivalent(eq)),
   };
+}
+
+/** Accès : pour chaque fonction réservée à une offre, indique si ce forfait la contient (selon son niveau). */
+function featuresAt(rank) {
+  const F = require('../workspace/features');
+  return Object.entries(F.FEATURES).map(([key, [minPlan, label]]) => ({ key, label, minPlan, included: (F.PLAN_RANK[minPlan] || 0) <= rank }));
 }
 
 /** Niveau de fonctions : tout forfait sur mesure ouvre au moins les fonctions « Pro » ; au-dessus, il suit les paliers des offres (Pro Max à 75 000/mois, etc.). */
@@ -107,4 +116,4 @@ function info() {
   return { step: STEP, minMonth: MIN_MONTH, periods: Object.values(PERIODS).map((p) => ({ id: p.id, label: p.label, days: p.days, min: minFor(p), max: maxFor(p) })) };
 }
 
-module.exports = { PERIODS, parse, isCustom, check, quote, limitsOf, rankOf, label, quotaDays, nameOf, info, capacityAt };
+module.exports = { AI_BOOST, PERIODS, parse, isCustom, check, quote, limitsOf, rankOf, label, quotaDays, nameOf, info, capacityAt };

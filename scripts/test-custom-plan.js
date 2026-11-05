@@ -34,22 +34,23 @@ async function main() {
   try {
     console.log('Calcul du forfait');
     let q = C.quote(10000, 'month');
-    check('10 000 FCFA / mois = le forfait minimum', q.limits.aiMonth === 200 && q.limits.members === 5 && q.limits.orgs === 1 && q.equivalentMonth === 10000, q);
+    check('10 000 FCFA / mois = le forfait minimum', q.limits.aiMonth === 300 && q.limits.members === 5 && q.limits.orgs === 1 && q.equivalentMonth === 10000, q);
     q = C.quote(15000, 'month');
-    check('15 000 FCFA / mois : plus que le minimum, moins que Pro', q.limits.aiMonth > 200 && q.limits.aiMonth < 1000 && q.limits.members > 5 && q.limits.members < 15, q.limits);
-    check('50 000 FCFA / mois = les capacités de Pro', JSON.stringify(C.quote(50000, 'month').limits) === JSON.stringify({ orgs: 3, members: 15, branches: 5, aiMonth: 1000, emailDay: 50 }), C.quote(50000, 'month').limits);
-    check('150 000 FCFA / mois = Illimité', C.quote(150000, 'month').limits.aiMonth === 6000 && C.quote(150000, 'month').limits.members === 9999);
+    check('15 000 FCFA / mois : plus que le minimum, moins que Pro', q.limits.aiMonth > 300 && q.limits.aiMonth < 1500 && q.limits.members > 5 && q.limits.members < 15, q.limits);
+    check('50 000 FCFA / mois = les capacités de Pro, avec 50 % de messages IA en plus', JSON.stringify(C.quote(50000, 'month').limits) === JSON.stringify({ orgs: 3, members: 15, branches: 5, aiMonth: 1500, emailDay: 50 }), C.quote(50000, 'month').limits);
+    check('150 000 FCFA / mois = Illimité', C.quote(150000, 'month').limits.aiMonth === 9000 && C.quote(150000, 'month').limits.members === 9999);
     const ai = [10000, 15000, 20000, 30000, 40000, 50000, 75000, 100000, 150000].map((a) => C.quote(a, 'month').limits.aiMonth);
     check('plus la somme est haute, plus le quota IA est grand (jamais à la baisse)', ai.every((v, i) => i === 0 || v >= ai[i - 1]), ai);
     check('une semaine : minimum 2 500 FCFA (10 000 / mois ramené à 7 jours)', C.quote(2500, 'week').days === 7 && C.quote(2500, 'week').limits.aiMonth <= 100);
     const wk = C.quote(10000, 'week');
     check('une semaine : le quota IA est celui de la semaine (7/30 du quota mensuel du palier)', wk.limits.aiMonth < C.capacityAt(wk.equivalentMonth).aiMonth && wk.limits.aiMonth >= 20, [wk.limits.aiMonth, C.capacityAt(wk.equivalentMonth).aiMonth]);
-    check('un an : minimum 120 000 FCFA, 365 jours, quota mensuel du forfait minimum', C.quote(120000, 'year').days === 365 && C.quote(120000, 'year').limits.aiMonth === 200 && C.quote(120000, 'year').equivalentMonth === 10000);
+    check('un an : minimum 120 000 FCFA, 365 jours, quota mensuel du forfait minimum', C.quote(120000, 'year').days === 365 && C.quote(120000, 'year').limits.aiMonth === 300 && C.quote(120000, 'year').equivalentMonth === 10000);
     for (const [a, p, why] of [[9500, 'month', 'sous le minimum'], [10250, 'month', 'pas un multiple de 500'], [200000, 'month', 'au-delà du forfait illimité'], [1500, 'week', 'sous le minimum (semaine)'], [100000, 'year', 'sous le minimum (an)'], [10000, 'jour', 'durée inconnue'], ['abc', 'month', 'pas un nombre'], [-5000, 'month', 'négative']]) {
       let err = null; try { C.quote(a, p); } catch (e) { err = e; }
       check('refusé : ' + why, err && err.status === 400 && err.message.length > 10, err && err.message);
     }
     check('niveau de fonctions : au moins « Pro » (même à 10 000), Pro Max à 75 000, Illimité à 150 000', C.quote(10000, 'month').rank === 1 && C.quote(75000, 'month').rank === 2 && C.quote(150000, 'month').rank === 4);
+    check('accès : le forfait minimum ouvre les fonctions Pro, pas Pro Max ; 150 000 ouvre tout', (() => { const f = (a) => Object.fromEntries(C.quote(a, 'month').features.map((x) => [x.key, x.included])); return f(10000).assistant === true && f(10000).handoff === false && f(75000).handoff === true && f(75000).multisite === false && Object.values(f(150000)).every(Boolean); })());
     check('nom lisible', C.label('Sur mesure|15000|7') === 'Sur mesure (15 000 FCFA / semaine)' && C.label('Pro') === 'Pro');
     check('un nom falsifié n\'est pas reconnu', C.parse('Sur mesure|999999999999|7') === null && C.parse('Sur mesure|15000|9') === null && C.parse('Pro') === null);
 
