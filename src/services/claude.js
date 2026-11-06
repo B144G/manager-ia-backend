@@ -73,16 +73,23 @@ async function ask({ system = '', stable = '', messages, maxTokens = 600, tier }
   let text;
   if (c.provider === 'openai') {
     const sys = [stable, system].filter(Boolean).join('\n\n');
-    const r = await fetchJson(`${c.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { ...(c.authHeader ? { [c.authHeader]: c.key } : { authorization: `Bearer ${c.key}` }), ...(/openrouter\.ai/.test(c.baseUrl) ? { 'HTTP-Referer': config.siteUrl || 'https://brij-ia.vercel.app', 'X-Title': 'Brij-IA' } : {}) },
-      body: { model, max_tokens: maxTokens, ...(c.reasoning ? { reasoning_effort: c.reasoning } : {}), messages: [...(sys ? [{ role: 'system', content: sys }] : []), ...messages.map((m) => ({ ...m, content: convertParts(m.content, 'openai') }))] },
-      timeout: c.timeoutMs || 45000,
-    });
-    if (!r.ok) throw failure(r, 'IA');
-    const u = (r.data && r.data.usage) || {};
-    counters.calls++; counters.input += u.prompt_tokens || 0; counters.output += u.completion_tokens || 0;
-    text = String((((r.data && r.data.choices) || [])[0] || {}).message?.content || '').trim();
+    // Les services passerelles (OpenRouter…) refusent ou renvoient parfois une réponse vide : on réessaie jusqu'à 3 fois.
+    let lastErr;
+    for (let attempt = 0; attempt < 3 && !text; attempt++) {
+      if (attempt) await new Promise((ok) => setTimeout(ok, 500 * attempt));
+      const r = await fetchJson(`${c.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { ...(c.authHeader ? { [c.authHeader]: c.key } : { authorization: `Bearer ${c.key}` }), ...(/openrouter\.ai/.test(c.baseUrl) ? { 'HTTP-Referer': config.siteUrl || 'https://brij-ia.vercel.app', 'X-Title': 'Brij-IA' } : {}) },
+        body: { model, max_tokens: maxTokens, ...(c.reasoning ? { reasoning_effort: c.reasoning } : {}), messages: [...(sys ? [{ role: 'system', content: sys }] : []), ...messages.map((m) => ({ ...m, content: convertParts(m.content, 'openai') }))] },
+        timeout: c.timeoutMs || 45000,
+      });
+      if (!r.ok) { lastErr = failure(r, 'IA'); if (r.status === 401 || r.status === 402 || r.status === 403) break; continue; }
+      const u = (r.data && r.data.usage) || {};
+      counters.calls++; counters.input += u.prompt_tokens || 0; counters.output += u.completion_tokens || 0;
+      text = String((((r.data && r.data.choices) || [])[0] || {}).message?.content || '').trim();
+      if (!text) lastErr = new Error('IA : réponse vide');
+    }
+    if (!text && lastErr) throw lastErr;
   } else {
     const blocks = [];
     if (stable) blocks.push({ type: 'text', text: stable, ...(c.cache ? { cache_control: { type: 'ephemeral' } } : {}) });
