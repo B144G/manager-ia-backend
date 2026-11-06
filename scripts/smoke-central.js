@@ -196,6 +196,10 @@ async function main() {
     const oa = r.json.events.map((e) => e.action);
     check('création de clé d\'API au journal (gravité haute)', r.json.events.some((e) => e.action === 'apikey.create' && e.severity === 'high' && e.actorType === 'user'), oa);
     check('modification de l\'organisation au journal', oa.includes('org.update'), oa);
+    r = await adm('GET', '/api/admin/orgs');
+    check('liste des organisations : état WhatsApp présent', r.status === 200 && r.json.orgs.some((x) => x.id === org) && r.json.orgs.every((x) => x.wa && typeof x.wa.status === 'string'), r.json);
+    r = await adm('POST', `/api/admin/security/orgs/${org}/wa-disconnect`, {});
+    check('déconnexion WhatsApp d\'une organisation par l\'administrateur', r.status === 200 && r.json.ok === true, r.json);
     r = await o('DELETE', `/api/ws/orgs/${org}`, { confirm: 'Boutique Audit 2' });
     r = await adm('GET', '/api/admin/security/audit?action=org.delete');
     check('suppression d\'organisation au journal (critique)', r.json.events.length === 1 && r.json.events[0].severity === 'critical', r.json.events);
@@ -235,6 +239,8 @@ async function main() {
     check('compte suspect : tous ses appareils sont déconnectés', r.status === 200 && r.json.closed >= 1, r.json);
     r = await victim('GET', '/api/me');
     check('… et plus rien ne passe pour lui', r.status === 401, r.json);
+    r = await adm2('POST', '/api/admin/security/orgs/999999/wa-disconnect', {});
+    check('organisation inconnue : refus', r.status === 404, r.json);
     r = await adm2('POST', '/api/admin/security/2fa/disable', { password: 'mot-de-passe-admin-test', code: arec[0] });
     check('désactivation (mot de passe + code de secours)', r.status === 200, r.json);
     r = await client(base)('POST', '/api/admin/login', { username: 'admin-test', password: 'mot-de-passe-admin-test' });

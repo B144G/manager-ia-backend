@@ -7,7 +7,7 @@ const A = require('./access');
 const PLAN_RANK = { Gratuit: 0, Pro: 1, 'Pro Max': 2, 'Méga Pro': 3, 'Illimité': 4 };
 // key: [offre minimale, libellé simple, questions du profil nécessaires pour bien automatiser]
 const FEATURES = {
-  assistant: ['Pro', 'Assistant commercial sur WhatsApp et le site', ['kind', 'channels']],
+  assistant: ['Gratuit', 'Assistant commercial sur WhatsApp et le site', ['kind', 'channels']],
   followups: ['Pro', 'Relances automatiques des clients', ['payment', 'channels']],
   negotiation: ['Pro', 'Négociation de prix dans les limites fixées', ['kind']],
   handoff: ['Pro Max', 'Passation à un humain selon le type d\'entreprise', ['kind']],

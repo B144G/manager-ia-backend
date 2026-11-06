@@ -109,4 +109,17 @@ router.post('/users/:id/revoke-sessions', async (req, res) => {
   res.json({ ok: true, closed: n });
 });
 
+// Déconnecte le WhatsApp (QR code) d'une organisation : ferme la session et efface ses données d'authentification.
+router.post('/orgs/:id/wa-disconnect', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) throw new HttpError(400, 'Identifiant invalide.');
+  const org = await db.prepare('SELECT id, name FROM orgs WHERE id = ?').get(id);
+  if (!org) throw new HttpError(404, 'Organisation introuvable.');
+  const waWeb = require('../services/waWeb');
+  const before = waWeb.status(id).status;
+  await waWeb.stop(id);
+  await central.audit.record(req, 'admin.wa_disconnect', { target: `org:${id}`, severity: 'high', detail: `état avant : ${before}` });
+  res.json({ ok: true, was: before });
+});
+
 module.exports = router;

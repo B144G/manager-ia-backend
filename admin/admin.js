@@ -222,12 +222,18 @@
     S.q = ''; run();
   }
 
+  const WA_LABEL = { open: 'Connecté', qr: 'QR en attente', connecting: 'Connexion…', disconnected: 'Non connecté' };
+  function waCell(o) {
+    const st = (o.wa && o.wa.status) || 'disconnected';
+    if (st === 'disconnected') return h('span', { class: 'mu' }, WA_LABEL.disconnected);
+    return h('div', {}, h('span', {}, WA_LABEL[st] || st), o.wa.number ? h('div', { class: 'mu' }, '+' + o.wa.number.replace(/\D/g, '')) : '', h('button', { class: 'bt out sm', type: 'button', onclick: async () => { if (!window.confirm('Déconnecter le WhatsApp de « ' + o.name + ' » ? La session sera fermée et le client devra rescanner le QR code.')) return; try { await api('/security/orgs/' + o.id + '/wa-disconnect', { method: 'POST', body: {} }); toast('WhatsApp de ' + o.name + ' déconnecté.'); go('orgs'); } catch (e) { fail(e); } } }, 'Déconnecter'));
+  }
   async function orgsView(main) {
     main.append(head('Organisations', 'Les entreprises créées par vos utilisateurs.'));
     try {
       const { orgs } = await api('/orgs');
-      main.append(h('div', { class: 'dc' }, orgs.length ? h('div', { class: 'wrap' }, h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, ['Organisation', 'Secteur', 'Propriétaire', 'Offre', 'Équipe', 'Antennes', 'Dernière activité', 'Créée'].map((t) => h('th', {}, t)))),
-        h('tbody', {}, orgs.map((o) => h('tr', {}, h('td', {}, h('b', {}, o.name)), h('td', { class: 'mu' }, o.sector || '—'), h('td', {}, o.owner, h('br'), h('span', { class: 'mu' }, o.ownerContact)), h('td', {}, planPill(o.plan)), h('td', { class: 'num' }, String(o.members)), h('td', { class: 'num' }, String(o.branches)), h('td', { class: 'mu' }, o.lastActivity ? ago(o.lastActivity) : '—'), h('td', { class: 'mu' }, fmtDate(o.created))))))) : h('p', { class: 'empty' }, 'Aucune organisation pour l’instant.')));
+      main.append(h('div', { class: 'dc' }, orgs.length ? h('div', { class: 'wrap' }, h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, ['Organisation', 'Secteur', 'Propriétaire', 'Offre', 'Équipe', 'Antennes', 'WhatsApp', 'Dernière activité', 'Créée'].map((t) => h('th', {}, t)))),
+        h('tbody', {}, orgs.map((o) => h('tr', {}, h('td', {}, h('b', {}, o.name)), h('td', { class: 'mu' }, o.sector || '—'), h('td', {}, o.owner, h('br'), h('span', { class: 'mu' }, o.ownerContact)), h('td', {}, planPill(o.plan)), h('td', { class: 'num' }, String(o.members)), h('td', { class: 'num' }, String(o.branches)), h('td', {}, waCell(o)), h('td', { class: 'mu' }, o.lastActivity ? ago(o.lastActivity) : '—'), h('td', { class: 'mu' }, fmtDate(o.created))))))) : h('p', { class: 'empty' }, 'Aucune organisation pour l’instant.')));
     } catch (e) { fail(e); }
   }
 

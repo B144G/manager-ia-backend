@@ -123,7 +123,7 @@ async function main() {
 
     console.log('Fonctions par offre');
     const gratuit = r.json.features;
-    check('offre Gratuit : l\'assistant commercial n\'est pas inclus, mais rien n\'est bloqué (contrôle inactif)', gratuit.find((f) => f.key === 'assistant').included === false && r.json.gating === false);
+    check('offre Gratuit : les relances automatiques ne sont pas incluses, mais rien n\'est bloqué (contrôle inactif)', gratuit.find((f) => f.key === 'followups').included === false && r.json.gating === false);
     check('chaque fonction indique ce qu\'il manque au profil', gratuit.find((f) => f.key === 'approvals').missing.length === 0 && gratuit.find((f) => f.key === 'reports').missing.length === 1, gratuit.map((f) => [f.key, f.missing.length]));
     const ownerId = (await db.prepare('SELECT owner_id FROM orgs WHERE id = ?').get(org)).owner_id;
     const fakeReq = { org: { id: org, owner_id: ownerId } };

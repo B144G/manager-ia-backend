@@ -323,7 +323,8 @@ router.get('/orgs', async (req, res) => {
       (SELECT COUNT(*) FROM branches b WHERE b.org_id = o.id) AS branches,
       (SELECT MAX(created_at) FROM activity a WHERE a.org_id = o.id) AS last_activity
     FROM orgs o JOIN users u ON u.id = o.owner_id ORDER BY o.id DESC LIMIT 500`).all();
-  res.json({ orgs: rows.map((r) => ({ id: r.id, name: r.name, sector: r.sector, owner: r.owner, ownerContact: r.owner_contact, plan: r.plan, members: r.members, branches: r.branches, created: r.created_at, lastActivity: r.last_activity })) });
+  const waWeb = require('../services/waWeb');
+  res.json({ orgs: rows.map((r) => { const w = waWeb.status(r.id); return { id: r.id, name: r.name, sector: r.sector, owner: r.owner, ownerContact: r.owner_contact, plan: r.plan, members: r.members, branches: r.branches, created: r.created_at, lastActivity: r.last_activity, wa: { status: w.status, number: w.number || '' } }; }) });
 });
 
 router.get('/ai-usage', async (req, res) => {
