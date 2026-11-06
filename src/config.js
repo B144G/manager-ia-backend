@@ -215,4 +215,12 @@ const config = {
   },
 };
 
+// Garde-fou de rentabilité : le quota de messages IA de chaque offre vendue ne dépasse jamais ce que sa somme permet de servir
+// (voir services/plan-economics.js : AI_COST_PER_MSG_XAF, PAYMENT_FEE_PCT, PLAN_TARGET_MARGIN). Les quotas plus bas déjà prévus sont conservés.
+{
+  const econ = require('./services/plan-economics');
+  const price = { Pro: config.legacyPlans.pro.priceXAF, 'Pro Max': config.legacyPlans.promax.priceXAF, 'Méga Pro': config.legacyPlans.megapro.priceXAF, 'Illimité': config.plans.unl_month.priceXAF };
+  for (const [name, p] of Object.entries(price)) config.workspaceLimits[name].aiMonth = Math.min(config.workspaceLimits[name].aiMonth, econ.targetCap(p, 1));
+}
+
 module.exports = config;

@@ -263,23 +263,25 @@ router.delete('/history', async (req, res) => {
 const ATT_MAX = 4; const ATT_BYTES = 8 * 1024 * 1024;
 const IMG_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const TXT_MIME = new Set(['text/plain', 'text/csv', 'text/markdown', 'application/json']);
+// Une pièce jointe coûte plus qu'une simple question : elle consomme des messages en plus du message lui-même (une image ou un fichier texte : 1 ; un PDF : 8, car il peut peser très lourd côté IA).
+const ATT_UNITS = { image: 1, text: 1, pdf: 8 };
 function attachmentParts(list) {
-  if (list === undefined || list === null) return { parts: [], names: [] };
+  if (list === undefined || list === null) return { parts: [], names: [], extra: 0 };
   if (!Array.isArray(list) || list.length > ATT_MAX) throw new HttpError(400, `Au plus ${ATT_MAX} pièces jointes par message.`);
-  let total = 0; const parts = []; const names = [];
+  let total = 0; let extra = 0; const parts = []; const names = [];
   for (const a of list) {
     const mime = String((a && a.mime) || '').toLowerCase(); const data = String((a && a.data) || '');
     const name = String((a && a.name) || 'pièce jointe').replace(/[\r\n<>]/g, ' ').slice(0, 80);
     if (!/^[A-Za-z0-9+/=]+$/.test(data) || !data.length) throw new HttpError(400, `Le fichier « ${name} » est illisible.`);
     const bytes = Math.floor(data.length * 3 / 4); total += bytes;
     if (total > ATT_BYTES) throw new HttpError(413, 'Les pièces jointes dépassent 8 Mo au total.');
-    if (IMG_MIME.has(mime)) parts.push({ type: 'image', mime, data });
-    else if (mime === 'application/pdf') parts.push({ type: 'document', mime, data });
-    else if (TXT_MIME.has(mime)) parts.push({ type: 'text', text: `[Contenu du fichier « ${name} »]\n${Buffer.from(data, 'base64').toString('utf8').slice(0, 12000)}` });
+    if (IMG_MIME.has(mime)) { parts.push({ type: 'image', mime, data }); extra += ATT_UNITS.image; }
+    else if (mime === 'application/pdf') { parts.push({ type: 'document', mime, data }); extra += ATT_UNITS.pdf; }
+    else if (TXT_MIME.has(mime)) { extra += ATT_UNITS.text; parts.push({ type: 'text', text: `[Contenu du fichier « ${name} »]\n${Buffer.from(data, 'base64').toString('utf8').slice(0, 12000)}` }); }
     else throw new HttpError(400, `Le type du fichier « ${name} » n'est pas accepté (images, PDF et fichiers texte).`);
     names.push(name);
   }
-  return { parts, names };
+  return { parts, names, extra };
 }
 
 router.post('/chat', limits.assistantMinute, asyncHandler(async (req, res) => {
@@ -288,11 +290,13 @@ router.post('/chat', limits.assistantMinute, asyncHandler(async (req, res) => {
   const message = A.text(b.message, 2000, { required: true, msg: 'Écrivez votre message.' });
   const att = attachmentParts(b.attachments);
   await checkQuota(req);
+  if (att.extra && await remaining(req) < 1 + att.extra) throw new HttpError(429, `Ces pièces jointes comptent pour ${att.extra} message(s) de plus que votre question (un PDF en compte 8, une image 1). Il vous reste ${await remaining(req)} message(s) sur la période : joignez moins de fichiers ou attendez le renouvellement.`);
   const past = await history(req, module);
   const content = att.parts.length ? [{ type: 'text', text: message }, ...att.parts] : message;
   const text = await ask(req, await buildParts(req, module), [...past, { role: 'user', content }], 700);
   await saveMsg(req, module, 'user', att.names.length ? `${message}\n[Pièces jointes : ${att.names.join(', ')}]` : message);
   await saveMsg(req, module, 'assistant', text);
+  for (let i = 0; i < att.extra; i++) await countUsage(req); // les pièces jointes consomment des messages en plus
   res.json({ text, remaining: await remaining(req) });
 }));
 

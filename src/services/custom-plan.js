@@ -5,8 +5,11 @@
 // Puis les capacités se lisent sur une échelle qui passe par les offres de référence :
 //   0 -> niveau de l'offre Gratuite ; 10 000 (forfait minimum) ; 50 000 (Pro) ; 75 000 (Pro Max) ; 100 000 (Méga Pro) ; 150 000 (Illimité).
 // Conséquence voulue : pour la MÊME somme, plus la durée est courte, plus le forfait est élevé (10 000 FCFA pour 7 jours > pour 1 mois > pour 3 mois > pour 6 mois > pour 1 an).
+// RENTABILITÉ : le quota de messages IA est aussi borné par ce que la somme permet de servir (services/plan-economics.js) : à somme égale, plus la durée est longue,
+// moins il y a de messages par mois (la somme est répartie sur plus de périodes de quota). Jamais moins que l'offre Gratuite tant que la marge reste au-dessus du plancher.
 // Le forfait est mémorisé dans le NOM de l'offre de l'abonné (« Sur mesure|15000|7 » = 15 000 FCFA pour 7 jours) : aucune nouvelle colonne, et les limites se recalculent à la demande.
 const config = require('../config');
+const econ = require('./plan-economics');
 
 const PREFIX = 'Sur mesure|';
 const STEP = 500; // la somme est un multiple de 500 FCFA
@@ -23,7 +26,7 @@ const PERIODS = {
   semester: { id: 'semester', label: 'semestre', plan: 'unl_semester' },
   year: { id: 'year', label: 'an', plan: 'unl_year' },
 };
-for (const p of Object.values(PERIODS)) { p.days = config.plans[p.plan].days; p.months = p.days / 30; p.unlimited = config.plans[p.plan].priceXAF; }
+for (const p of Object.values(PERIODS)) { p.days = config.plans[p.plan].days; p.months = p.days / 30; p.unlimited = config.plans[p.plan].priceXAF; p.blocks = econ.blocksOf(p.days, config.durationDays); p.blockDays = p.days / p.blocks; } // blocks : périodes de quota dans la durée (semaine 1, mois 1, trimestre 3, semestre 6, an 12)
 
 const floorStep = (n) => Math.floor(n / STEP) * STEP;
 const minFor = () => MIN_AMOUNT;
@@ -81,7 +84,13 @@ function check(amount, periodId) {
   return { period, amount: a };
 }
 
-const aiFor = (cap, period) => (period.id === 'week' ? Math.max(20, round(cap.aiMonth * period.months, 5)) : cap.aiMonth);
+/** Messages IA par période de quota : la valeur de l'échelle, bornée par la marge visée (jamais sous l'offre Gratuite, sauf si le plancher de marge l'impose). */
+function aiFor(cap, period, amount) {
+  const scale = (v) => (period.id === 'week' ? Math.max(20, round(v * period.months, 5)) : v);
+  const base = scale(cap.aiMonth);
+  const free = scale(config.workspaceLimits.Gratuit.aiMonth);
+  return Math.min(econ.floorCap(amount, period.blocks), Math.max(free, Math.min(base, econ.targetCap(amount, period.blocks))));
+}
 const perDay = (aiPeriod, period) => Math.round((aiPeriod / (period.id === 'week' ? 7 : 30)) * 10) / 10;
 
 /** Niveau de fonctions : sous le forfait minimum, rien de réservé ; à partir du minimum, les fonctions « Pro » ; au-dessus, les paliers des offres de référence. */
@@ -100,7 +109,7 @@ function quote(amount, periodId) {
   const { period, amount: a } = check(amount, periodId);
   const level = levelOf(a, period);
   const cap = capacityAt(level);
-  const aiPeriod = aiFor(cap, period);
+  const aiPeriod = aiFor(cap, period, a);
   return {
     plan: nameOf(a, period.days), amount: a, period: period.id, periodLabel: period.label, days: period.days, level,
     sharePct: Math.round((a / period.unlimited) * 1000) / 10, unlimitedPrice: period.unlimited,
@@ -116,16 +125,21 @@ function limitsOf(name) {
   const p = parse(name);
   if (!p) return null;
   const cap = capacityAt(p.level);
-  return { orgs: cap.orgs, members: cap.members, branches: cap.branches, aiMonth: aiFor(cap, p.period), emailDay: cap.emailDay };
+  return { orgs: cap.orgs, members: cap.members, branches: cap.branches, aiMonth: aiFor(cap, p.period, p.amount), emailDay: cap.emailDay };
 }
 const rankOf = (name) => { const p = parse(name); return p ? rankOfLevel(p.level) : null; };
 /** Nom lisible d'une offre (les offres habituelles gardent leur nom). */
-const label = (name) => { const p = parse(name); return p ? `Sur mesure (${fmt(p.amount)} FCFA / ${p.period.label})` : String(name || ''); };
+const label = (name) => { const p = parse(name); return p ? (p.amount >= maxFor(p.period) ? `Illimité (${p.period.label})` : `Sur mesure (${fmt(p.amount)} FCFA / ${p.period.label})`) : String(name || ''); };
+/** Nom enregistré pour l'offre Illimité d'une durée : « Illimité » pour le mois (comme avant), sinon le forfait sur mesure au prix d'Illimité de la durée
+ *  (même moteur de quota : chaque durée a son quota, calculé d'après la somme payée). */
+const illimiteName = (key) => { const p = config.plans[key]; const per = p && PERIODS[p.period]; return !p || !per || per.id === 'month' ? (p ? p.name : 'Illimité') : nameOf(p.priceXAF, p.days); };
+/** Limites d'une offre : offres habituelles (quota IA plafonné par la rentabilité, voir config.js), forfait sur mesure, ou Gratuit. */
+const limitsFor = (name) => config.workspaceLimits[name] || limitsOf(name) || config.workspaceLimits.Gratuit;
 /** Durée du bloc de quota IA : une semaine pour un forfait d'une semaine, sinon la durée habituelle de l'abonnement. */
-const quotaDays = (name) => { const p = parse(name); return p && p.period.id === 'week' ? 7 : config.durationDays; };
+const quotaDays = (name) => { const p = parse(name); return p ? p.period.blockDays : config.durationDays; };
 
 function info() {
   return { step: STEP, minAmount: MIN_AMOUNT, periods: Object.values(PERIODS).map((p) => ({ id: p.id, label: p.label, days: p.days, min: minFor(), max: maxFor(p), unlimited: p.unlimited })) };
 }
 
-module.exports = { AI_BOOST, PERIODS, parse, isCustom, check, quote, limitsOf, rankOf, label, quotaDays, nameOf, info, capacityAt, levelOf };
+module.exports = { AI_BOOST, PERIODS, parse, isCustom, check, quote, limitsOf, limitsFor, rankOf, label, quotaDays, nameOf, illimiteName, info, capacityAt, levelOf };

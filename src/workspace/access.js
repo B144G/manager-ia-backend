@@ -89,7 +89,7 @@ async function memberOf(req, v) {
 
 // ---------- Offres ----------
 const ownerPlan = async (org) => (await getUserFresh(org.owner_id) || {}).plan || 'Gratuit';
-const limitsFor = (plan) => config.workspaceLimits[plan] || require('../services/custom-plan').limitsOf(plan) || config.workspaceLimits.Gratuit; // offres habituelles, ou forfait sur mesure (« Sur mesure|somme|jours »)
+const limitsFor = (plan) => require('../services/custom-plan').limitsFor(plan); // offres habituelles, ou forfait sur mesure (« Sur mesure|somme|jours »)
 
 /**
  * Période du quota de messages IA d'une organisation.

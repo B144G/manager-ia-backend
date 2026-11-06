@@ -60,7 +60,7 @@ async function main() {
       check('refusé : ' + why, err && err.status === 400 && err.message.length > 10, err && err.message);
     }
     check('10 000 FCFA est accepté pour toutes les durées', P5.every((p) => { try { C.quote(10000, p); return true; } catch { return false; } }));
-    check('accès : le forfait minimum ouvre les fonctions Pro, pas Pro Max ; Illimité ouvre tout', (() => { const f = (a, p) => Object.fromEntries(C.quote(a, p).features.map((x) => [x.key, x.included])); return f(10000, 'month').assistant === true && f(10000, 'month').handoff === false && f(75000, 'month').handoff === true && f(75000, 'month').multisite === false && Object.values(f(150000, 'month')).every(Boolean) && f(10000, 'year').assistant === false; })());
+    check('accès : le forfait minimum ouvre les fonctions Pro, pas Pro Max ; Illimité ouvre tout', (() => { const f = (a, p) => Object.fromEntries(C.quote(a, p).features.map((x) => [x.key, x.included])); return f(10000, 'month').assistant === true && f(10000, 'month').followups === true && f(10000, 'month').handoff === false && f(75000, 'month').handoff === true && f(75000, 'month').multisite === false && Object.values(f(150000, 'month')).every(Boolean) && f(10000, 'year').assistant === true && f(10000, 'year').followups === false; })());
     check('nom lisible', C.label('Sur mesure|15000|7') === 'Sur mesure (15 000 FCFA / semaine)' && C.label('Sur mesure|60000|183') === 'Sur mesure (60 000 FCFA / semestre)' && C.label('Pro') === 'Pro');
     check('un nom falsifié n\'est pas reconnu', C.parse('Sur mesure|999999999999|7') === null && C.parse('Sur mesure|15000|9') === null && C.parse('Pro') === null);
 
@@ -137,7 +137,7 @@ async function main() {
       await adm('POST', '/api/admin/payments/' + pr.id + '/validate', {});
       const uu = await db.prepare('SELECT * FROM users WHERE id = ?').get(u.id);
       const d = (Date.parse(uu.plan_expires) - Date.now()) / 86400000;
-      check(`Illimité (${id}) : activé pour ${days} jours, limites Illimité`, uu.plan === 'Illimité' && Math.abs(d - days) < 0.1 && A.limitsFor(uu.plan).members === 9999, [uu.plan, d]);
+      check(`Illimité (${id}) : activé pour ${days} jours, limites Illimité, quota IA propre à la durée`, uu.plan === C.illimiteName(id) && C.label(uu.plan).startsWith('Illimité') && Math.abs(d - days) < 0.1 && A.limitsFor(uu.plan).members === 9999 && A.limitsFor(uu.plan).aiMonth === C.quote(price, id.replace('unl_', '')).limits.aiMonth, [uu.plan, d, A.limitsFor(uu.plan).aiMonth]);
       await db.prepare("UPDATE users SET plan = 'Gratuit', plan_expires = NULL WHERE id = ?").run(u.id);
     }
   } catch (e) { failed++; console.log('  ECHEC exception', e && e.stack || e); }

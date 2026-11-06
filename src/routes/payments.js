@@ -38,8 +38,9 @@ router.get('/billing', requireUser, async (req, res) => {
   const active = exp > Date.now();
   const lim = (name) => { const l = A.limitsFor(name); return { orgs: l.orgs, members: l.members, branches: l.branches, aiMonth: l.aiMonth, emailDay: l.emailDay }; };
   const plans = Object.values(config.plans).map((p) => {
-    const reason = planConflict(u, p.name);
-    return { id: p.id, name: p.name, period: p.period, days: p.days, priceXAF: p.priceXAF, limits: lim(p.name), current: active && u.plan === p.name, available: !reason, reason: reason || '' };
+    const stored = planOf(p.id).name; // nom enregistré pour cette offre (Illimité d'un mois : « Illimité » ; autres durées : forfait au prix d'Illimité)
+    const reason = planConflict(u, stored);
+    return { id: p.id, name: p.name, period: p.period, days: p.days, priceXAF: p.priceXAF, limits: lim(stored), current: active && u.plan === stored, available: !reason, reason: reason || '' };
   });
   const orgs = await amap(await db.prepare('SELECT * FROM orgs WHERE owner_id = ? ORDER BY id').all(u.id), async (o) => ({ id: o.id, name: o.name, aiUsed: await A.aiUsed(o), aiMax: A.limitsFor(u.plan).aiMonth, periodEnd: (await A.quotaWindow(o)).end }));
   const history = (await db.prepare('SELECT reference, plan, operator, amount_xaf, mode, status, created_at, paid_at FROM payments WHERE user_id = ? ORDER BY id DESC LIMIT 20').all(u.id))

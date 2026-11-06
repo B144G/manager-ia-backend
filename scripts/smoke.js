@@ -190,7 +190,7 @@ async function main() {
     r = await user('GET', '/api/billing');
     const bl = r.json;
     check('abonnement : offre Illimité active ~30 jours', r.status === 200 && bl.plan === 'Illimité' && bl.daysLeft >= 29 && bl.daysLeft <= 30 && bl.plans.length === 5, bl);
-    check('abonnement : on peut prolonger avec n\'importe quelle durée d\'Illimité (même offre)', bl.plans.every((x) => x.available === true && x.current === true), bl.plans);
+    check('abonnement : on peut prolonger la même offre (Illimité d\'un mois) ; une autre durée attend la fin de l\'abonnement (son quota de messages IA est propre à la durée)', bl.plans.filter((x) => x.period === 'month').every((x) => x.available === true && x.current === true) && bl.plans.filter((x) => x.period !== 'month').every((x) => x.available === false && x.current === false && /fin de l'abonnement/.test(x.reason)), bl.plans);
     check('abonnement : historique avec le paiement', bl.history.length >= 1 && bl.history[0].status === 'paid' && bl.history[0].plan === 'Illimité', bl.history);
     r = await user('PUT', '/api/me/state', { interests: ['ia', 'web', 'trading', 'stat'], progress: {}, project: {} });
     check('Pro : plus de limite de domaines', r.status === 200 && r.json.user.interests.length === 4, r.json);
