@@ -256,7 +256,7 @@ router.post('/chat', limits.assistantMinute, asyncHandler(async (req, res) => {
   const message = A.text(b.message, 2000, { required: true, msg: 'Écrivez votre message.' });
   await checkQuota(req);
   const past = await history(req, module);
-  const text = await ask(req, await buildParts(req, module), [...past, { role: 'user', content: message }], 700);
+  const text = await ask(req, await buildParts(req, module), [...past, { role: 'user', content: message }], 2000);
   await saveMsg(req, module, 'user', message);
   await saveMsg(req, module, 'assistant', text);
   res.json({ text, remaining: await remaining(req) });
