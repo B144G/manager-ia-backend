@@ -216,7 +216,7 @@ async function ask(req, parts, messages, maxTokens) {
     return await claude.ask({ stable: parts.stable, system: parts.system, messages, maxTokens });
   } catch (e) {
     if (e instanceof HttpError) throw e;
-    log.warn('IA espace de travail : appel échoué :', oneLine(e.message, 200));
+    log.warn('IA espace de travail : appel échoué :', oneLine(e.message, 800));
     throw new HttpError(502, "L'IA n'a pas pu répondre. Réessayez dans un instant.");
   }
 }
@@ -293,7 +293,7 @@ router.post('/chat', limits.assistantMinute, asyncHandler(async (req, res) => {
   if (att.extra && await remaining(req) < 1 + att.extra) throw new HttpError(429, `Ces pièces jointes comptent pour ${att.extra} message(s) de plus que votre question (un PDF en compte 8, une image 1). Il vous reste ${await remaining(req)} message(s) sur la période : joignez moins de fichiers ou attendez le renouvellement.`);
   const past = await history(req, module);
   const content = att.parts.length ? [{ type: 'text', text: message }, ...att.parts] : message;
-  const text = await ask(req, await buildParts(req, module), [...past, { role: 'user', content }], 700);
+  const text = await ask(req, await buildParts(req, module), [...past, { role: 'user', content }], 2000);
   await saveMsg(req, module, 'user', att.names.length ? `${message}\n[Pièces jointes : ${att.names.join(', ')}]` : message);
   await saveMsg(req, module, 'assistant', text);
   for (let i = 0; i < att.extra; i++) await countUsage(req); // les pièces jointes consomment des messages en plus

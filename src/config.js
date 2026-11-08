@@ -136,6 +136,7 @@ const config = {
       provider,
       key: str('AI_API_KEY') || (a ? str('ANTHROPIC_API_KEY') : ''),
       model: str('AI_MODEL') || (a ? str('ANTHROPIC_MODEL', 'claude-sonnet-5-5') : 'gpt-4o-mini'),
+      modelFallbacks: [...new Set(str('AI_MODEL_FALLBACKS').split(',').map((model) => model.trim()).filter(Boolean))].slice(0, 2),
       // Modèle plus petit et moins cher pour les tâches simples (assistant du site, agent client). Vide = même modèle.
       modelFast: str('AI_MODEL_FAST'),
       baseUrl: (str('AI_BASE_URL') || (a ? str('ANTHROPIC_BASE_URL', 'https://api.anthropic.com') : 'https://api.openai.com/v1')).replace(/\/+$/, ''),
