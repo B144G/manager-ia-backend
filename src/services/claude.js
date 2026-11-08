@@ -58,7 +58,9 @@ const failure = (r, name) => {
   // Certains services (Gemini) renvoient l'erreur dans une liste : [{ error: { message } }].
   const d = Array.isArray(r.data) ? r.data[0] : r.data;
   const msg = (d && d.error && (d.error.message || d.error)) || (d && d.message) || (typeof r.data === 'string' ? r.data : '') || 'réponse inattendue (vérifiez AI_BASE_URL et AI_MODEL)';
-  return new Error(`${name} HTTP ${r.status} : ${oneLine(String(msg), 240)}`);
+  const error = new Error(`${name} HTTP ${r.status} : ${oneLine(String(msg), 240)}`);
+  error.status = r.status;
+  return error;
 };
 
 /**
@@ -68,10 +70,8 @@ const failure = (r, name) => {
  *               chez Anthropic, ce qui réduit fortement le coût des messages suivants
  *  - tier     : 'fast' = petit modèle (AI_MODEL_FAST) s'il est défini, sinon le modèle principal
  */
-async function ask({ system = '', stable = '', messages, maxTokens = 600, tier }) {
-  if (!isConfigured()) throw new HttpError(503, 'Assistant indisponible');
+async function askModel({ system = '', stable = '', messages, maxTokens = 600, model }) {
   const c = config.ai;
-  const model = (tier === 'fast' && c.modelFast) || c.model;
   let text;
   if (c.provider === 'openai') {
     const sys = [stable, system].filter(Boolean).join('\n\n');
@@ -103,6 +103,22 @@ async function ask({ system = '', stable = '', messages, maxTokens = 600, tier }
   }
   if (!text) throw new Error('IA : réponse vide');
   return text;
+}
+
+async function ask({ system = '', stable = '', messages, maxTokens = 600, tier }) {
+  if (!isConfigured()) throw new HttpError(503, 'Assistant indisponible');
+  const c = config.ai;
+  const primary = (tier === 'fast' && c.modelFast) || c.model;
+  const models = [...new Set([primary, ...(c.modelFallbacks || [])])];
+  const errors = [];
+  for (const model of models) {
+    try {
+      return await askModel({ system, stable, messages, maxTokens, model });
+    } catch (e) {
+      errors.push(`${model}: ${oneLine(e.message, 160)}`);
+    }
+  }
+  throw new Error(`IA : échec des modèles (${errors.join(' ; ')})`);
 }
 
 module.exports = { ask, isConfigured, stats, SITE_PROMPT, APP_PROMPT };

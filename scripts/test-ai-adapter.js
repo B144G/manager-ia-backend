@@ -17,7 +17,7 @@ function fake(handler) {
 }
 const load = (env) => {
   Object.keys(require.cache).forEach((k) => { if (/[\\/]src[\\/]/.test(k)) delete require.cache[k]; });
-  for (const k of ['AI_PROVIDER', 'AI_API_KEY', 'AI_MODEL', 'AI_MODEL_FAST', 'AI_BASE_URL', 'AI_PROMPT_CACHE', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_BASE_URL', 'AI_REASONING_EFFORT', 'AI_TIMEOUT_MS', 'AI_AUTH_HEADER']) delete process.env[k];
+  for (const k of ['AI_PROVIDER', 'AI_API_KEY', 'AI_MODEL', 'AI_MODEL_FAST', 'AI_MODEL_FALLBACKS', 'AI_BASE_URL', 'AI_PROMPT_CACHE', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_BASE_URL', 'AI_REASONING_EFFORT', 'AI_TIMEOUT_MS', 'AI_AUTH_HEADER']) delete process.env[k];
   Object.assign(process.env, { DATABASE_URL: 'pglite://memory', ...env });
   return require('../src/services/claude');
 };
@@ -63,6 +63,23 @@ const load = (env) => {
   const hh = o.seen[o.seen.length - 1].headers;
   ok(hh['x-goog-api-key'] === 'AQ.cle-google' && !hh.authorization, "AI_AUTH_HEADER : la clé part dans l'en-tête choisi, sans « Authorization »");
   o.srv.close();
+
+  console.log('Modèles de secours');
+  const fb = await fake((url, body) => ({
+    choices: [{ message: { content: body.model === 'fallback-two' ? `Réponse de ${body.model}` : '' } }],
+    usage: { prompt_tokens: 10, completion_tokens: body.model === 'fallback-two' ? 5 : 0 },
+  }));
+  c = load({
+    AI_PROVIDER: 'openai',
+    AI_API_KEY: 'k3',
+    AI_BASE_URL: `http://127.0.0.1:${fb.port}/v1`,
+    AI_MODEL: 'qwen-primary',
+    AI_MODEL_FALLBACKS: 'fallback-one, fallback-two, ignored-three',
+  });
+  const fallbackText = await c.ask({ messages: [{ role: 'user', content: 'x' }] });
+  ok(fallbackText === 'Réponse de fallback-two', 'une réponse vide bascule jusqu’au premier modèle de secours qui répond');
+  ok(fb.seen.map((x) => x.body.model).join(',') === 'qwen-primary,fallback-one,fallback-two', 'trois modèles maximum appelés dans l’ordre; les autres secours sont ignorés');
+  fb.srv.close();
 
   console.log('Pièces jointes (Anthropic)');
   const im = await fake(() => ({ content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 1, output_tokens: 1 } }));
