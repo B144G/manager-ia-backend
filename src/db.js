@@ -2485,6 +2485,53 @@ const MIGRATIONS = [
   CREATE INDEX idx_admin_alerts_key ON admin_alerts(dedupe_key, created_at);
   CREATE UNIQUE INDEX uq_admin_alerts_open ON admin_alerts(dedupe_key) WHERE handled_at IS NULL;
   `,
+  // « Suivi de l'IA » : règles par contact (exclusion totale ou partielle de l'IA), brouillons à valider, journal ; auteur d'un message d'équipe.
+  `
+  ALTER TABLE chat_messages ADD COLUMN staff_id BIGINT;
+  CREATE TABLE ai_rules (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    rkey TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'full',
+    no_price BIGINT NOT NULL DEFAULT 0,
+    no_order BIGINT NOT NULL DEFAULT 0,
+    no_appt BIGINT NOT NULL DEFAULT 0,
+    no_followup BIGINT NOT NULL DEFAULT 0,
+    draft BIGINT NOT NULL DEFAULT 0,
+    expires_at TEXT,
+    reason TEXT NOT NULL DEFAULT '',
+    label TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (org_id, rkey)
+  );
+  CREATE TABLE ai_drafts (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    chat_id BIGINT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+    body TEXT NOT NULL,
+    final_body TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    decided_by BIGINT,
+    decided_at TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_ai_drafts ON ai_drafts(org_id, status, id);
+  CREATE INDEX idx_ai_drafts_chat ON ai_drafts(chat_id, status);
+  CREATE TABLE ai_rule_log (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    rkey TEXT NOT NULL DEFAULT '',
+    label TEXT NOT NULL DEFAULT '',
+    user_id BIGINT,
+    action TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    expires_at TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_ai_rule_log ON ai_rule_log(org_id, id);
+  `,
 ];
 
 

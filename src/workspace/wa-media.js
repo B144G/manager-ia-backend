@@ -116,7 +116,7 @@ router.post('/chats/:id/send-media', asyncHandler(async (req, res) => {
   if (!(await mediaFor(item.id)).some((m) => kind === 'all' || m.kind === kind)) throw new HttpError(400, "Cet article n'a pas de fichier de ce type.");
   let r;
   try { r = await sendItem(req.org, chat, item, kind); } catch (e) { throw new HttpError(502, "Le fichier n'a pas pu partir. Vérifiez la connexion du canal (et API_PUBLIC_URL pour Messenger et Instagram)."); }
-  await db.prepare("INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, 'staff', ?, ?)").run(chat.id, `[fichier envoyé] ${item.name} (${r.images} photo(s), ${r.videos} vidéo(s))`, nowISO());
+  await db.prepare("INSERT INTO chat_messages (chat_id, role, content, created_at, staff_id) VALUES (?, 'staff', ?, ?, ?)").run(chat.id, `[fichier envoyé] ${item.name} (${r.images} photo(s), ${r.videos} vidéo(s))`, nowISO(), req.user.id);
   await A.logActivity(req.org.id, req.user.id, 'sales', `Photos/vidéos de « ${item.name} » envoyées à un client`);
   res.json({ ok: true, sent: r.sent });
 }));

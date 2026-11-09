@@ -9,6 +9,7 @@ const modules = [
   { id: 'stock', title: 'Stock et achats', min: 'member', ai: true },
   { id: 'crm', title: 'Clients et ventes', min: 'member', ai: true },
   { id: 'sales', title: 'Assistant commercial', min: 'member', ai: true },
+  { id: 'aifollow', title: "Suivi de l'IA", min: 'manager', ai: false },
   { id: 'hr', title: 'Ressources humaines', min: 'manager', ai: true },
   { id: 'payroll', title: 'Paie', min: 'admin', ai: true },
   { id: 'fiscal', title: 'Fiscalité et liasse', min: 'admin', ai: true },

@@ -35,6 +35,7 @@ async function runOnce() {
   await require('./services/signedUrl').purge();
   await require('./services/accounts').sweep();
   await require('./services/alerts').sweep();
+  await require('./workspace/ai-rules').liftAllExpired(); // exclusions de l'IA arrivées à échéance (elles sont aussi levées à chaque lecture)
   await db.prepare('DELETE FROM chat_media WHERE created_at < ?').run(addDays(new Date(), -90).toISOString());
   await db.prepare('DELETE FROM notifications WHERE created_at < ?').run(addDays(new Date(), -180).toISOString());
   await db.prepare('DELETE FROM notices WHERE created_at < ?').run(addDays(new Date(), -120).toISOString());

@@ -9,6 +9,7 @@ const vault = require('../services/vault');
 const waOrg = require('../services/waOrg');
 const stt = require('../services/stt');
 const inbound = require('./inbound');
+const R = require('./ai-rules');
 const waOut = require('./wa-out');
 const { safeEqual, log, makeSeen, oneLine, cleanText } = require('../util');
 
@@ -78,18 +79,21 @@ async function handleMessage(org, m) {
   if (!from || from.length > 15) return;
   if (tooMany(`${org.id}:${from}`)) return;
 
+  // Contact dont l'IA est exclue : aucun message automatique (« je n'ai pas compris »…), le message reste pour l'équipe.
+  const quiet = await R.excludedContact(org, 'whatsapp', from);
+  const say = async (t) => { if (!quiet) await waOrg.sendText(org, from, t); };
   let text = ''; let viaVoice = false; let attachment = null;
   if (m.type === 'text' && m.text && typeof m.text.body === 'string') text = cleanText(m.text.body, 1000);
   else if (m.type === 'audio' && m.audio && m.audio.id && stt.isConfigured()) {
     try { text = cleanText(await stt.transcribe(await waOrg.downloadMedia(org, m.audio.id)), 1000); viaVoice = true; } catch (e) { log.warn('WhatsApp : message vocal illisible :', oneLine(e.message, 160)); }
-    if (!text) return void (await waOrg.sendText(org, from, "Je n'ai pas pu comprendre votre message vocal. Pouvez-vous le réécrire ou le renvoyer ?"));
+    if (!text) return void (await say("Je n'ai pas pu comprendre votre message vocal. Pouvez-vous le réécrire ou le renvoyer ?"));
   } else if ((m.type === 'image' && m.image && m.image.id) || (m.type === 'document' && m.document && m.document.id)) {
     // Photo ou document (PDF) : lu par l'IA (modèle capable de lire les images), conservé pour l'équipe.
     const doc = m.type === 'document' ? m.document : m.image;
-    try { attachment = await waOrg.downloadMedia(org, doc.id); } catch (e) { log.warn('WhatsApp : pièce jointe illisible :', oneLine(e.message, 160)); return void (await waOrg.sendText(org, from, "Je n'ai pas pu ouvrir votre fichier. Pouvez-vous le renvoyer ou m'écrire votre demande ?")); }
+    try { attachment = await waOrg.downloadMedia(org, doc.id); } catch (e) { log.warn('WhatsApp : pièce jointe illisible :', oneLine(e.message, 160)); return void (await say("Je n'ai pas pu ouvrir votre fichier. Pouvez-vous le renvoyer ou m'écrire votre demande ?")); }
     text = cleanText(doc.caption || '', 1000);
   } else {
-    return void (await waOrg.sendText(org, from, UNSUPPORTED));
+    return void (await say(UNSUPPORTED));
   }
   await processIncoming(org, from, { text, viaVoice, attachment });
 }

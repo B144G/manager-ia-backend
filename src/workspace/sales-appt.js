@@ -7,6 +7,7 @@ const A = require('./access');
 const crypto = require('crypto');
 const channels = require('./channels');
 const waOut = require('./wa-out');
+const R = require('./ai-rules');
 const waOrg = require('../services/waOrg');
 const { HttpError, asyncHandler, cleanText, oneLine, log } = require('../util');
 
@@ -86,7 +87,7 @@ router.put('/appointments/:id', asyncHandler(async (req, res) => {
     const last = chat && await db.prepare("SELECT created_at FROM chat_messages WHERE chat_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1").get(chat.id);
     if (chat && chat.channel !== 'web' && channels.isConnected(req.org, chat.channel) && last && Date.now() - Date.parse(last.created_at) < 24 * 3600000) {
       const text = status === 'confirmed' ? `Votre rendez-vous du ${frDate(date)} à ${time.replace(':', 'h')} est confirmé. À bientôt !` : `Votre rendez-vous du ${frDate(a.date)} à ${a.time.replace(':', 'h')} est annulé. Écrivez-nous pour en fixer un autre.`;
-      try { await channels.sendText(req.org, chat, text); await db.prepare("INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, 'staff', ?, ?)").run(chat.id, text, nowISO()); notified = true; } catch (e) { log.warn('Confirmation de rendez-vous non envoyée :', oneLine(e.message, 120)); }
+      try { await channels.sendText(req.org, chat, text); await db.prepare("INSERT INTO chat_messages (chat_id, role, content, created_at, staff_id) VALUES (?, 'staff', ?, ?, ?)").run(chat.id, text, nowISO(), req.user.id); notified = true; } catch (e) { log.warn('Confirmation de rendez-vous non envoyée :', oneLine(e.message, 120)); }
     }
   }
   await A.logActivity(req.org.id, req.user.id, 'sales', `Rendez-vous ${status === 'confirmed' ? 'confirmé' : status === 'cancelled' ? 'annulé' : status === 'done' ? 'terminé' : 'modifié'}`);
@@ -152,6 +153,7 @@ async function runReminders() {
     for (const a of rows) {
       try {
         const chat = a.chat_id ? await db.prepare('SELECT * FROM chats WHERE id = ?').get(a.chat_id) : null;
+        if (await R.autoBlocked(org.id, { chat, customerId: a.customer_id, phone: a.phone })) continue; // « Suivi de l'IA » : contact exclu ou sans relances automatiques
         const first = waOut.firstName(a.customer);
         const text = `Rappel : vous avez rendez-vous demain, ${frDate(a.date)} à ${a.time.replace(':', 'h')}${a.purpose ? ' (' + a.purpose + ')' : ''}, chez ${org.name}. Répondez à ce message si vous devez le déplacer.`;
         let sent = false;

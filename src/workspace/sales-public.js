@@ -17,6 +17,7 @@ const wh = require('../services/webhooks');
 const appt = require('./sales-appt');
 const briefAI = require('./sales-brief');
 const N = require('./negotiation');
+const R = require('./ai-rules');
 const { HttpError, asyncHandler, cleanText, oneLine, stripAccents, log } = require('../util');
 
 const router = express.Router();
@@ -122,7 +123,7 @@ async function handoff(org, chat, reason) {
   require('./relay').notifyHandoff(org, await db.prepare('SELECT * FROM chats WHERE id = ?').get(chat.id), reason).catch(() => {});
 }
 
-const saveMsg = async (chatId, role, content) => await db.prepare('INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, ?, ?, ?)').run(chatId, role, String(content).slice(0, 4000), nowISO());
+const saveMsg = async (chatId, role, content, staffId = null) => await db.prepare('INSERT INTO chat_messages (chat_id, role, content, created_at, staff_id) VALUES (?, ?, ?, ?, ?)').run(chatId, role, String(content).slice(0, 4000), nowISO(), staffId);
 
 async function newChat(org, session, campaign, channel, contact) {
   const now = nowISO();
@@ -184,7 +185,10 @@ const mediaById = async (chatId, id) => { const m = id ? await db.prepare('SELEC
 
 async function run(org, chat, text, viaVoice, attachment) {
   const ing = await ingest(org, chat, text, viaVoice, attachment);
-  if (ing.bad) { const o = { sessionId: chat.session, reply: FILE_TEXT }; await saveMsg(chat.id, 'assistant', o.reply); return o; }
+  if (ing.bad) {
+    if ((await R.rulesOfChat(org.id, chat)).excluded) return { sessionId: chat.session, chatId: chat.id, reply: chat.channel === 'web' ? R.HELD_TEXT : '', silent: true, excluded: true };
+    const o = { sessionId: chat.session, reply: FILE_TEXT }; await saveMsg(chat.id, 'assistant', o.reply); return o;
+  }
   return await respond(org, chat, { text, viaVoice, media: ing.media });
 }
 
@@ -193,17 +197,36 @@ async function respond(org, chat, { text = '', viaVoice = false, media = null } 
   chat = await db.prepare('SELECT * FROM chats WHERE id = ?').get(chat.id) || chat;
   const out = { sessionId: chat.session, chatId: chat.id, reply: '', transcript: viaVoice ? text : undefined };
 
+  // « Suivi de l'IA » : règles propres à ce contact, vérifiées à chaque réponse (l'échéance d'une exclusion est calculée ici).
+  const rules = await R.rulesOfChat(org.id, chat);
+  if (rules.excluded) {
+    // Exclusion totale : le message est déjà enregistré ; l'IA ne répond pas du tout, l'équipe est prévenue et répond elle-même.
+    out.silent = true; out.excluded = true;
+    await R.onHeldMessage(org, chat);
+    if (chat.channel === 'web') out.reply = R.HELD_TEXT; // le visiteur du site sait que son message est reçu (texte fixe, non enregistré dans la conversation)
+    return out;
+  }
+  // L'IA parle : directement, ou sous forme de brouillon si l'équipe veut valider chaque réponse de ce contact.
+  const say = async (txt) => {
+    if (rules.draft) {
+      out.draft = await R.createDraft(org, chat, txt, '');
+      out.silent = true; out.media = undefined; out.spoken = ''; out.reply = chat.channel === 'web' ? R.HELD_TEXT : '';
+      return out;
+    }
+    out.reply = txt; await saveMsg(chat.id, 'assistant', txt); return out;
+  };
+
   if (chat.status === 'handoff') {
     out.handoff = true;
     if (chat.channel !== 'web') { out.silent = true; return out; } // un conseiller a repris la conversation : l'IA se tait
-    out.reply = HANDOFF_TEXT; await saveMsg(chat.id, 'assistant', out.reply); return out;
+    return await say(HANDOFF_TEXT);
   }
 
   const used = await A.aiUsed(org);
   const limit = A.limitsFor(await A.ownerPlan(org)).aiMonth;
   if (!claude.isConfigured() || used >= limit) {
     await handoff(org, chat, claude.isConfigured() ? "quota d'IA atteint" : 'IA non activée');
-    out.reply = HANDOFF_TEXT; out.handoff = true; await saveMsg(chat.id, 'assistant', out.reply); return out;
+    out.handoff = true; return await say(HANDOFF_TEXT);
   }
 
   const customer = chat.customer_id ? await db.prepare('SELECT id, name, phone, default_discount FROM customers WHERE id = ?').get(chat.customer_id) : null;
@@ -220,19 +243,30 @@ async function respond(org, chat, { text = '', viaVoice = false, media = null } 
   const negSettings = await N.settingsOf(org.id);
   try {
     const negotiation = await N.contextFor(org, chat, customer, catalogNow, history.slice(-6).map((m) => m.content));
-    const raw = await claude.ask({ stable: agent.stable(), system: agent.dataBlock({ org, catalog: catalogNow, negotiation, profile: await require('./profile').contextText(org.id, true), chat, customer, today: nowISO().slice(0, 10), weekday: ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'][new Date(Date.now() + 3600000).getUTCDay()], busy: await appt.busyText(org.id) }), messages, maxTokens: 600, tier: 'fast' });
+    const raw = await claude.ask({ stable: agent.stable(), system: agent.dataBlock({ org, catalog: catalogNow, negotiation, profile: await require('./profile').contextText(org.id, true), restrict: R.promptLines(rules), chat, customer, today: nowISO().slice(0, 10), weekday: ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'][new Date(Date.now() + 3600000).getUTCDay()], busy: await appt.busyText(org.id) }), messages, maxTokens: 600, tier: 'fast' });
     await db.prepare('INSERT INTO ai_usage (org_id, user_id, created_at) VALUES (?, 0, ?)').run(org.id, nowISO());
     res = agent.parse(raw);
     out.spoken = res.reply;
   } catch (e) {
     log.warn('Assistant commercial : appel IA échoué :', oneLine(e.message, 200));
     await handoff(org, chat, 'erreur technique');
-    out.reply = TECH_TEXT; out.handoff = true; await saveMsg(chat.id, 'assistant', out.reply); return out;
+    out.handoff = true; return await say(TECH_TEXT);
   }
 
   await L.mergeLead(chat, res.lead, null);
   let reply = res.reply;
-  const a = res.action || {};
+  let a = res.action || {};
+  // Droits de l'IA pour ce contact : ce qui est interdit n'est JAMAIS exécuté (le serveur décide, pas le modèle) ; un conseiller reprend la main.
+  let restricted = '';
+  if (a.type === 'order' && rules.noOrder) restricted = 'commande';
+  else if (a.type === 'appointment' && rules.noAppt) restricted = 'rendez-vous';
+  else if (a.type === 'negotiate' && rules.noPrice) restricted = 'prix';
+  else if (rules.noPrice && R.mentionsPrice(org, res.reply, catalogNow)) restricted = 'prix';
+  if (restricted) {
+    a = {}; reply = R.RESTRICT_TEXT; res.reply = ''; out.spoken = reply;
+    await handoff(org, chat, `l'IA n'a pas le droit de traiter ce point pour ce contact (${restricted})`);
+    out.handoff = true; out.restricted = restricted;
+  }
   let toHuman = '';                 // raison du passage automatique à l'équipe (commande ou rendez-vous enregistré)
   if (a.type === 'register' || a.type === 'order') {
     const cid = await upsertCustomer(org, chat, a) || chat.customer_id;
@@ -253,7 +287,7 @@ async function respond(org, chat, { text = '', viaVoice = false, media = null } 
         out.order = r.order; out.registered = true;
         await L.mergeLead(chat, null, 'chaud');
         out.negotiated = r.order.negotiated;
-        reply += `\n\nVotre commande ${r.order.number} est enregistrée :\n${r.order.lines.map((l) => `• ${l.label} × ${l.quantity}${l.negotiated ? ' à ' + N.money(l.price, org) + ' l\'unité' : ''}`).join('\n')}\nTotal : ${r.order.total.toLocaleString('fr-FR')} ${org.currency}.\n${r.order.needsApproval ? 'Cette commande avec remise doit d\'abord être validée par un responsable ; il vous contactera très bientôt.' : 'L\'équipe va la confirmer et vous contacter très bientôt.'}`;
+        reply += `\n\nVotre commande ${r.order.number} est enregistrée :\n${r.order.lines.map((l) => `• ${l.label} × ${l.quantity}${l.negotiated && !rules.noPrice ? ' à ' + N.money(l.price, org) + ' l\'unité' : ''}`).join('\n')}${rules.noPrice ? '' : `\nTotal : ${r.order.total.toLocaleString('fr-FR')} ${org.currency}.`}\n${r.order.needsApproval ? 'Cette commande avec remise doit d\'abord être validée par un responsable ; il vous contactera très bientôt.' : 'L\'équipe va la confirmer et vous contacter très bientôt.'}`;
         if (r.notes && r.notes.length) reply += `\n(${r.notes.join(' ; ')}.)`;
         if (r.unknown.length) reply += `\n(Non trouvé dans notre catalogue : ${r.unknown.join(', ')}.)`;
       } else {
@@ -319,16 +353,15 @@ async function respond(org, chat, { text = '', viaVoice = false, media = null } 
     setImmediate(async () => { briefAI.build(org, chat.id).catch(() => {}); });
   }
   // Garde-fou : un prix cité par l'IA sous le minimum autorisé ne part jamais chez le client ; un conseiller reprend la main.
-  const cited = await N.guardReply(org, chat, customer, res.reply, catalogNow, negSettings);
+  const cited = res.reply ? await N.guardReply(org, chat, customer, res.reply, catalogNow, negSettings) : null;
   if (cited) {
     await N.log(org.id, { chatId: chat.id, itemId: cited.id, label: cited.name, actor: 'assistant', kind: 'refused', note: 'prix cité dans le message sous le minimum autorisé : message remplacé' });
     reply = reply.startsWith(res.reply) ? reply.slice(res.reply.length).trim() : reply;
     reply = `${N.handoffText(negSettings)}${reply ? '\n\n' + reply : ''}`;
     if (!out.handoff) { await handoff(org, chat, 'prix cité sous le minimum autorisé'); out.handoff = true; }
   }
-  out.reply = reply;
-  await saveMsg(chat.id, 'assistant', reply);
-  return out;
+  if (rules.draft) out.media = undefined;
+  return await say(reply);
 }
 
 // ---------- Routes publiques ----------
@@ -374,3 +407,4 @@ module.exports.mediaById = mediaById;
 module.exports.FILE_TEXT = FILE_TEXT;
 module.exports.sniffMime = sniffMime;
 module.exports.HANDOFF_TEXT = HANDOFF_TEXT;
+module.exports.saveMsg = saveMsg;

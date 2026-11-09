@@ -6,6 +6,7 @@ const express = require('express');
 const { db, nowISO } = require('../db');
 const A = require('./access');
 const waOrg = require('../services/waOrg');
+const R = require('./ai-rules');
 const { amap, afilter, HttpError, asyncHandler, oneLine, log } = require('../util');
 
 const DAY_CAP = 200;
@@ -28,7 +29,7 @@ const optIn = async (orgId, phone) => await db.prepare('DELETE FROM wa_optout WH
 const sentToday = async (orgId) => (await db.prepare("SELECT COUNT(*) c FROM wa_outbound WHERE org_id = ? AND status = 'sent' AND created_at >= ?").get(orgId, new Date(Date.now() - 86400000).toISOString())).c;
 
 /** Envoie un modèle. Journalise toujours. Renvoie { ok, error }. Si chat est fourni, le message apparaît dans la conversation. */
-async function sendTemplate(org, { phone, tpl, params, chat, refKind, refId }) {
+async function sendTemplate(org, { phone, tpl, params, chat, refKind, refId, human }) {
   const to = intl(phone);
   const log1 = async (status, error) => await db.prepare('INSERT INTO wa_outbound (org_id, chat_id, ref_kind, ref_id, phone, template, status, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(org.id, chat ? chat.id : null, refKind || '', refId || null, to, tpl.name, status, error || '', nowISO());
@@ -36,6 +37,8 @@ async function sendTemplate(org, { phone, tpl, params, chat, refKind, refId }) {
   if (waOrg.modeOf(org) === 'qr') return { ok: false, error: "Les modèles de message ne sont pas disponibles avec la connexion par QR code (envoi non sollicité évité pour protéger votre numéro)." };
   if (to.length < 8 || to.length > 15) return { ok: false, error: 'Numéro de téléphone invalide.' };
   if (await isOptedOut(org.id, to)) return { ok: false, error: 'Cette personne a demandé à ne plus recevoir de messages.' };
+  // « Suivi de l'IA » : contact exclu (ou sans relances automatiques) : aucun envoi automatique ni campagne, sauf message écrit à la main par un membre de l'équipe.
+  if (!human && refKind !== 'chat-manual' && await R.autoBlocked(org.id, { chat, phone: to })) return { ok: false, error: "L'IA est exclue pour ce contact (voir Suivi de l'IA) : aucun message automatique." };
   if (await sentToday(org.id) >= DAY_CAP) return { ok: false, error: `Plafond de ${DAY_CAP} messages sortants par 24 h atteint.` };
   try {
     await waOrg.sendTemplate(org, to, tpl.name, tpl.language, params);
@@ -45,7 +48,7 @@ async function sendTemplate(org, { phone, tpl, params, chat, refKind, refId }) {
     return { ok: false, error: `Meta a refusé l'envoi : ${msg}` };
   }
   await log1('sent', '');
-  if (chat) await db.prepare("INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, 'staff', ?, ?)").run(chat.id, `[modèle ${tpl.name}] ${render(tpl.preview, params)}`.slice(0, 2000), nowISO());
+  if (chat) await db.prepare("INSERT INTO chat_messages (chat_id, role, content, created_at, staff_id) VALUES (?, 'staff', ?, ?, ?)").run(chat.id, `[modèle ${tpl.name}] ${render(tpl.preview, params)}`.slice(0, 2000), nowISO(), human && human !== true ? human : null);
   return { ok: true };
 }
 
@@ -60,16 +63,16 @@ async function silentLeads(org) {
     WHERE c.org_id = ? AND c.channel = 'whatsapp' AND c.status = 'open' AND c.assignee_id IS NULL
       AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.chat_id = c.id)
       AND NOT EXISTS (SELECT 1 FROM wa_outbound o WHERE o.org_id = c.org_id AND o.ref_kind = 'chat' AND o.ref_id = c.id AND o.status = 'sent')
-    ORDER BY c.updated_at DESC LIMIT 200`).all(org.id), async (r) => r.lastUser && r.lastUser < hi && r.lastUser > lo && !(await isOptedOut(org.id, r.contact)));
+    ORDER BY c.updated_at DESC LIMIT 200`).all(org.id), async (r) => r.lastUser && r.lastUser < hi && r.lastUser > lo && !(await isOptedOut(org.id, r.contact)) && !(await R.autoBlocked(org.id, { chat: await db.prepare('SELECT * FROM chats WHERE id = ?').get(r.id) })));
 }
 /** Factures échues avec un numéro de téléphone, sans rappel WhatsApp depuis 7 jours. */
 async function overdueInvoices(org) {
   const since = new Date(Date.now() - 7 * 86400000).toISOString();
-  return afilter(await db.prepare(`SELECT d.id, d.number, d.total, d.paid, d.credited, d.due, c.name AS customer, c.phone
+  return afilter(await db.prepare(`SELECT d.id, d.number, d.total, d.paid, d.credited, d.due, d.customer_id, c.name AS customer, c.phone
     FROM documents d JOIN customers c ON c.id = d.customer_id
     WHERE d.org_id = ? AND d.kind = 'invoice' AND d.status = 'sent' AND d.due IS NOT NULL AND d.due < ? AND d.paid < d.total - d.credited AND c.phone != ''
       AND NOT EXISTS (SELECT 1 FROM wa_outbound o WHERE o.org_id = d.org_id AND o.ref_kind = 'invoice' AND o.ref_id = d.id AND o.status = 'sent' AND o.created_at > ?)
-    ORDER BY d.due LIMIT 200`).all(org.id, nowISO().slice(0, 10), since), async (r) => !(await isOptedOut(org.id, r.phone)));
+    ORDER BY d.due LIMIT 200`).all(org.id, nowISO().slice(0, 10), since), async (r) => !(await isOptedOut(org.id, r.phone)) && !(await R.autoBlocked(org.id, { phone: r.phone, customerId: r.customer_id })));
 }
 
 async function sendLead(org, tpl, lead) {
@@ -148,7 +151,7 @@ router.post('/chats/:id/template', asyncHandler(async (req, res) => {
   if (!tpl) throw new HttpError(404, 'Modèle introuvable.');
   const params = (Array.isArray((req.body || {}).params) ? req.body.params : []).slice(0, 8).map((x) => String(x == null ? '' : x).slice(0, 300));
   if (tpl.params && params.length !== tpl.params) throw new HttpError(400, `Ce modèle attend ${tpl.params} variable(s).`);
-  const r = await sendTemplate(req.org, { phone: chat.contact, tpl, params, chat, refKind: 'chat-manual', refId: chat.id });
+  const r = await sendTemplate(req.org, { phone: chat.contact, tpl, params, chat, refKind: 'chat-manual', refId: chat.id, human: req.user.id });
   if (!r.ok) throw new HttpError(400, r.error);
   await A.logActivity(req.org.id, req.user.id, 'sales', 'Modèle WhatsApp envoyé à un prospect');
   res.json({ ok: true });

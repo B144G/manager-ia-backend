@@ -10,6 +10,7 @@ const stt = require('../services/stt');
 const vault = require('../services/vault');
 const waOrg = require('../services/waOrg');
 const B = require('./sales-brief');
+const AF = require('./ai-follow');
 const N = require('./negotiation');
 const P = require('./pricing');
 const tts = require('../services/tts');
@@ -120,7 +121,14 @@ router.get('/chats', async (req, res) => {
 router.get('/chats/:id', async (req, res) => {
   const c = await db.prepare('SELECT * FROM chats WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
   if (!c) throw new HttpError(404, 'Conversation introuvable.');
-  res.json({ campaign: c.campaign, status: c.status, channel: c.channel, contact: c.contact, assigneeId: c.assignee_id, lead: L.cleanLead(JSON.parse(c.lead || '{}')), summary: L.leadSummary(c.lead), brief: B.read(c), appointments: await db.prepare("SELECT id, date, time, purpose, status FROM appointments WHERE chat_id = ? ORDER BY id DESC LIMIT 5").all(c.id), negotiation: await N.logOfChat(req.org.id, c.id), messages: await db.prepare('SELECT role, content, created_at AS at FROM chat_messages WHERE chat_id = ? ORDER BY id LIMIT 200').all(c.id) });
+  res.json({ campaign: c.campaign, status: c.status, channel: c.channel, contact: c.contact, assigneeId: c.assignee_id, lead: L.cleanLead(JSON.parse(c.lead || '{}')), summary: L.leadSummary(c.lead), brief: B.read(c), appointments: await db.prepare("SELECT id, date, time, purpose, status FROM appointments WHERE chat_id = ? ORDER BY id DESC LIMIT 5").all(c.id), negotiation: await N.logOfChat(req.org.id, c.id), ...await AF.thread(req.org, c, req.query) });
+});
+
+// Mise à jour en direct de la conversation ouverte : seulement les messages d'identifiant plus grand que « since » (interrogation légère toutes les 4-5 secondes).
+router.get('/chats/:id/live', async (req, res) => {
+  const c = await db.prepare('SELECT * FROM chats WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
+  if (!c) throw new HttpError(404, 'Conversation introuvable.');
+  res.json(await AF.thread(req.org, c, { since: req.query.since }));
 });
 
 // Dossier préparé par l'IA interne : régénérer, ou appliquer la fiche client trouvée.
@@ -160,7 +168,7 @@ async function replyToChat(org, user, chat, text) {
   const last = await db.prepare("SELECT created_at FROM chat_messages WHERE chat_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1").get(chat.id);
   if (!last || Date.now() - Date.parse(last.created_at) > 24 * 3600000) throw new HttpError(400, waOrg.modeOf(org) === 'qr' && wa ? "Plus de 24 h depuis le dernier message du client : pour protéger votre numéro, écrivez-lui seulement quand il vous a écrit récemment." : "Plus de 24 h depuis le dernier message du client : Meta n'autorise plus d'écrire librement. Attendez qu'il vous réécrive.");
   try { await (wa ? await waOrg.sendText(org, chat.contact, text) : await metaChat.sendText(org, chat.contact, text)); } catch (e) { throw new HttpError(502, "Le message n'a pas pu partir. Vérifiez la connexion dans les réglages."); }
-  await db.prepare("INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, 'staff', ?, ?)").run(chat.id, text, nowISO());
+  await db.prepare("INSERT INTO chat_messages (chat_id, role, content, created_at, staff_id) VALUES (?, 'staff', ?, ?, ?)").run(chat.id, text, nowISO(), user.id);
   await db.prepare("UPDATE chats SET status = 'handoff', updated_at = ? WHERE id = ?").run(nowISO(), chat.id);
   await A.logActivity(org.id, user.id, 'sales', 'Réponse envoyée à un client');
 }
@@ -324,8 +332,9 @@ mine.get('/chats', async (req, res) => {
 });
 mine.get('/chats/:id', async (req, res) => {
   const c = await mineChat(req);
-  res.json({ campaign: c.campaign, status: c.status, channel: c.channel, contact: c.contact, assigneeId: c.assignee_id, lead: L.cleanLead(JSON.parse(c.lead || '{}')), summary: L.leadSummary(c.lead), brief: B.read(c), appointments: await db.prepare("SELECT id, date, time, purpose, status FROM appointments WHERE chat_id = ? ORDER BY id DESC LIMIT 5").all(c.id), negotiation: await N.logOfChat(req.org.id, c.id), messages: await db.prepare('SELECT role, content, created_at AS at FROM chat_messages WHERE chat_id = ? ORDER BY id LIMIT 200').all(c.id) });
+  res.json({ campaign: c.campaign, status: c.status, channel: c.channel, contact: c.contact, assigneeId: c.assignee_id, lead: L.cleanLead(JSON.parse(c.lead || '{}')), summary: L.leadSummary(c.lead), brief: B.read(c), appointments: await db.prepare("SELECT id, date, time, purpose, status FROM appointments WHERE chat_id = ? ORDER BY id DESC LIMIT 5").all(c.id), negotiation: await N.logOfChat(req.org.id, c.id), ...await AF.thread(req.org, c, req.query) });
 });
+mine.get('/chats/:id/live', async (req, res) => { res.json(await AF.thread(req.org, await mineChat(req), { since: req.query.since })); });
 mine.get('/chats/:id/media/:mid', async (req, res) => await sendMedia(req, res, await mineChat(req)));
 mine.post('/chats/:id/apply-brief', async (req, res) => { res.json({ ok: true, done: await B.apply(req.org, await mineChat(req)) }); });
 mine.post('/chats/:id/reply', asyncHandler(async (req, res) => {

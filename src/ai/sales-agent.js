@@ -35,7 +35,7 @@ const stable = () => {
   return k ? `${RULES}\n\nÉducation (fournie par Brij-IA) :\n${k}` : RULES;
 };
 
-function dataBlock({ org, catalog, chat, customer, today, busy, weekday, negotiation, profile }) {
+function dataBlock({ org, catalog, chat, customer, today, busy, weekday, negotiation, profile, restrict }) {
   const lines = [`Organisation : ${org.name}${org.sector ? ` (secteur : ${org.sector})` : ''}. Monnaie : ${org.currency}.`];
   if (org.description) lines.push(`Présentation : ${oneLine(org.description, 600)}`);
   if (profile) lines.push(profile);
@@ -47,6 +47,7 @@ function dataBlock({ org, catalog, chat, customer, today, busy, weekday, negotia
   if (chat.campaign) lines.push(`La personne vient de la campagne : « ${chat.campaign} ».`);
   lines.push(customer ? `Personne déjà enregistrée : ${oneLine(customer.name, 80)}, téléphone ${customer.phone || 'non donné'}.` : "La personne n'est pas encore enregistrée.");
   if (negotiation) lines.push(negotiation);
+  if (restrict && restrict.length) lines.push(...restrict);
   lines.push(`Date du jour : ${weekday ? weekday + ' ' : ''}${today}.`);
   lines.push(`Rendez-vous : créneaux déjà pris (durée 60 minutes) : ${busy || 'aucun'}.`);
   return `<donnees>\n${lines.join('\n')}\n</donnees>`;

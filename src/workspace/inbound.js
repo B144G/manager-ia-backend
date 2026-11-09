@@ -8,6 +8,7 @@ const { db, nowISO } = require('../db');
 const sales = require('./sales-public');
 const channels = require('./channels');
 const waMedia = require('./wa-media');
+const R = require('./ai-rules');
 const { oneLine, log } = require('../util');
 
 // En production : toujours des secondes réelles. Les variables servent uniquement aux tests automatiques.
@@ -41,6 +42,9 @@ async function deliver(org, chat0, { viaVoice, mediaId, heard }) {
 async function receive(org, channel, contact, { campaign = '', text = '', viaVoice = false, attachment = null } = {}) {
   const chat = await sales.ensureChat(org, channel, contact, campaign);
   const ing = await sales.ingest(org, chat, text, viaVoice, attachment);
+  // « Suivi de l'IA » : si l'IA est exclue pour ce contact, le message est déjà enregistré ; l'équipe est prévenue et l'IA ne répond pas (ni attente, ni message automatique).
+  const rules = await R.rulesOfChat(org.id, chat);
+  if (rules.excluded) return void (await R.onHeldMessage(org, chat));
   if (ing.bad) return void (await channels.sendText(org, chat, sales.FILE_TEXT));
   const cur = await db.prepare('SELECT status FROM chats WHERE id = ?').get(chat.id);
   if (cur.status === 'handoff') return;                    // conversation reprise par un humain : l'IA se tait

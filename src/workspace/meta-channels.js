@@ -9,6 +9,7 @@ const A = require('./access');
 const vault = require('../services/vault');
 const metaChat = require('../services/metaChat');
 const inbound = require('./inbound');
+const R = require('./ai-rules');
 const stt = require('../services/stt');
 const { HttpError, asyncHandler, safeEqual, log, makeSeen, oneLine, cleanText } = require('../util');
 
@@ -68,16 +69,18 @@ async function handle(org, channel, ev) {
   if (tooMany(`${org.id}:${channel}:${from}`)) return;
   let text = typeof m.text === 'string' ? cleanText(m.text, 1000) : '';
   let viaVoice = false; let attachment = null;
+  const quiet = await R.excludedContact(org, channel, from); // IA exclue pour ce contact : aucun message automatique
+  const say = async (t) => { if (!quiet) await metaChat.sendText(org, from, t); };
   if (!text) {
     const a = (Array.isArray(m.attachments) ? m.attachments : [])[0];
     const url = a && a.payload && a.payload.url;
-    if (!a || !url || !['audio', 'image', 'file'].includes(a.type)) return void (await metaChat.sendText(org, from, NOT_TEXT));
+    if (!a || !url || !['audio', 'image', 'file'].includes(a.type)) return void (await say(NOT_TEXT));
     let buf;
-    try { buf = await metaChat.downloadUrl(url); } catch (e) { log.warn('Messenger/Instagram : pièce jointe illisible :', oneLine(e.message, 160)); return void (await metaChat.sendText(org, from, CANT_OPEN)); }
+    try { buf = await metaChat.downloadUrl(url); } catch (e) { log.warn('Messenger/Instagram : pièce jointe illisible :', oneLine(e.message, 160)); return void (await say(CANT_OPEN)); }
     if (a.type === 'audio') {
-      if (!stt.isConfigured()) return void (await metaChat.sendText(org, from, NOT_TEXT));
+      if (!stt.isConfigured()) return void (await say(NOT_TEXT));
       try { text = cleanText(await stt.transcribe(buf), 1000); viaVoice = true; } catch (e) { log.warn('Messenger/Instagram : message vocal illisible :', oneLine(e.message, 160)); }
-      if (!text) return void (await metaChat.sendText(org, from, "Je n'ai pas pu comprendre votre message vocal. Pouvez-vous le réécrire ou le renvoyer ?"));
+      if (!text) return void (await say("Je n'ai pas pu comprendre votre message vocal. Pouvez-vous le réécrire ou le renvoyer ?"));
     } else attachment = buf;
   }
   let campaign = '';

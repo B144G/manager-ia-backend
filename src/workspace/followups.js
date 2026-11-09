@@ -14,6 +14,7 @@ const limits = require('../middleware/limits');
 const A = require('./access');
 const W = require('./w3');
 const waOrg = require('../services/waOrg');
+const R = require('./ai-rules');
 const claude = require('../services/claude');
 const { sendMail, mailEnabled } = require('../services/notify');
 const { HttpError, asyncHandler, oneLine, safeEqual, extractJSON, log } = require('../util');
@@ -199,7 +200,7 @@ async function sendEmail(org, ctx, m, userId) {
   await db.prepare('INSERT INTO outbox (org_id, user_id, customer_id, to_email, subject, body, attachments, status, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(org.id, userId || org.owner_id, ctx.customer.id || null, to, m.subject, text.slice(0, 5000), '[]', ok ? 'sent' : 'failed', error, nowISO());
   return ok ? { ok: true } : { ok: false, error: `L'e-mail n'a pas pu partir : ${error}` };
 }
-async function sendWhatsApp(org, item, ctx, m) {
+async function sendWhatsApp(org, item, ctx, m, human) {
   if (!waOrg.isConnected(org)) return { ok: false, error: "WhatsApp n'est pas connecté." };
   const out = require('./wa-out');
   const to = intl(ctx.customer.phone);
@@ -213,7 +214,7 @@ async function sendWhatsApp(org, item, ctx, m) {
     const tpl = purpose ? await out.tplOf(org.id, purpose) : null;
     if (!tpl) return { ok: false, error: 'Hors fenêtre de 24 h : un modèle WhatsApp approuvé est nécessaire.' };
     const params = purpose === 'relance' ? [out.firstName(ctx.customer.name), org.name] : [out.firstName(ctx.customer.name), ctx.number, ctx.amount == null ? '' : money(ctx.amount, org), org.name];
-    const r = await out.sendTemplate(org, { phone: to, tpl, params, refKind: 'followup', refId: item.id });
+    const r = await out.sendTemplate(org, { phone: to, tpl, params, refKind: 'followup', refId: item.id, human: Boolean(human) });
     return r.ok ? { ok: true } : { ok: false, error: r.error };
   } catch (e) { return { ok: false, error: oneLine(String(e.message).replace(/^.*HTTP \d+ : /, ''), 160) }; }
 }
@@ -222,7 +223,16 @@ async function sendWhatsApp(org, item, ctx, m) {
  * Envoie (ou prépare) une relance. L'élément est « pris » avant l'envoi : deux serveurs ne peuvent pas l'envoyer deux fois.
  * Renvoie { ok, state, channel, error, text, waLink }.
  */
+/** « Suivi de l'IA » : un envoi AUTOMATIQUE (sans membre de l'équipe) vers un contact exclu ou sans relances automatiques est refusé. */
+async function aiBlocked(org, item, userId) {
+  if (userId || KINDS[item.kind].team) return false;
+  const ctx = await contextOf(org, item);
+  if (!ctx) return false;
+  const chat = item.kind === 'prospect' ? await db.prepare('SELECT * FROM chats WHERE id = ? AND org_id = ?').get(item.ref_id, org.id) : null;
+  return await R.autoBlocked(org.id, { chat, customerId: ctx.customer.id, phone: ctx.customer.phone });
+}
 async function deliver(org, st, item, { userId = null, channel, subject, body } = {}) {
+  if (await aiBlocked(org, item, userId)) return { ok: false, blockedByAi: true, error: "L'IA est exclue pour ce contact (Suivi de l'IA) : aucune relance automatique." };
   const claim = await db.prepare("UPDATE fu_items SET state = 'sending', updated_at = ? WHERE id = ? AND org_id = ? AND state IN ('to_send','postponed')").run(nowISO(), item.id, org.id);
   if (!claim.changes) return { ok: false, error: 'Cette relance a déjà été traitée.' };
   const back = async (error, ch) => { await setState(item.id, 'to_send', { error, attempts: Number(item.attempts) + 1 }); await logRow(org.id, item, { userId, channel: ch, result: 'failed', detail: error }); return { ok: false, error, channel: ch }; };
@@ -246,7 +256,7 @@ async function deliver(org, st, item, { userId = null, channel, subject, body } 
   }
   let used = want; let res; let fb = false; let waErr = '';
   if (want === 'whatsapp') {
-    res = await sendWhatsApp(org, item, ctx, m);
+    res = await sendWhatsApp(org, item, ctx, m, userId);
     if (!res.ok) { waErr = res.error; used = 'email'; fb = true; res = await sendEmail(org, ctx, m, userId); }
   } else res = await sendEmail(org, ctx, m, userId);
   if (!res.ok) return await back(waErr ? `WhatsApp : ${waErr} ; e-mail : ${res.error}` : res.error, used);
@@ -267,6 +277,7 @@ async function autoRun(org, st) {
   for (const it of await db.prepare("SELECT * FROM fu_items WHERE org_id = ? AND state = 'to_send' AND attempts < 3 ORDER BY id LIMIT 60").all(org.id)) {
     if (left <= 0) break;
     if (st.channel === 'manual' && !KINDS[it.kind].team) continue;
+    if (await aiBlocked(org, it, null)) continue; // contact exclu : la relance reste en attente jusqu'à la levée de l'exclusion
     const r = await deliver(org, st, it, { userId: null });
     if (r.ok) { n++; if (!KINDS[it.kind].team) left--; }
   }
@@ -441,4 +452,4 @@ pub.get('/followup-stop/:token', limits.make(60 * 1000, 30, 'Trop de requêtes.'
   return page(`<h1 style="font-size:20px">C'est fait</h1><p>Vous ne recevrez plus de relances de ${esc(cu.org)}.</p>`, 200);
 }));
 
-module.exports = { router, pub, tickAll, tickOrg, scan, settingsOf, queueSummary, render, compose, KINDS };
+module.exports = { router, pub, tickAll, tickOrg, scan, settingsOf, queueSummary, render, compose, KINDS, deliver, aiBlocked };

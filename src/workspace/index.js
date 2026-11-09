@@ -246,6 +246,7 @@ orgRouter.use('/crm', require('./crm'));
 orgRouter.use('/mail', require('./mail'));
 orgRouter.use('/sales', require('./sales').router);
 orgRouter.use('/sales-mine', require('./sales').mine);
+orgRouter.use('/aifollow', require('./ai-follow').router);
 orgRouter.use('/hr', require('./hr'));
 orgRouter.use('/accounting', require('./accounting'));
 orgRouter.use('/integrations', require('./integrations'));
