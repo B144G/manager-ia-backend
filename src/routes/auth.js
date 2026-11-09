@@ -15,6 +15,7 @@ const crypto = require('crypto');
 const config = require('../config');
 const { mailUser, mailEnabled, sendMail } = require('../services/notify');
 const sec = require('../services/security');
+const accounts = require('../services/accounts');
 
 const DOMAINS = ['ia', 'ecom', 'trading', 'web', 'port', 'stat', 'bud'];
 const OTHERS = ['app', 'delegate', 'client'];
@@ -97,6 +98,7 @@ async function createUser(req, res, { name, contact, hash, interests }) {
   }
   await setUserCookie(res, Number(id), req);
   await sec.audit('register', null, Number(id), '');
+  await accounts.recordEvent(Number(id), 'inscription');
   notify('inscription', `Nouvelle inscription : ${name} (${contact}) - intérêts : ${interests.join(', ') || 'aucun'}`);
   return publicUser(await db.prepare('SELECT * FROM users WHERE id = ?').get(id));
 }
@@ -191,6 +193,7 @@ router.post('/login', limits.login, asyncHandler(async (req, res) => {
     throw fail;
   }
   await sec.clearFails(key);
+  accounts.assertNotSuspended(row); // mot de passe juste mais compte suspendu : message clair, aucune session ouverte
   if (Number(row.totp_enabled)) {
     // Mot de passe juste, mais la double authentification est active : on attend le code (étape valable 5 minutes, aucun cookie pour l'instant).
     const ticket = jwt.sign({ typ: 'tfa', sub: row.id }, config.jwtSecret, { algorithm: 'HS256', expiresIn: '5m' });
@@ -211,6 +214,7 @@ router.post('/login/2fa', limits.twofa, asyncHandler(async (req, res) => {
   await sec.assertNotLocked(key);
   const row = await db.prepare('SELECT * FROM users WHERE id = ?').get(p.sub);
   if (!row || !Number(row.totp_enabled)) throw new HttpError(401, 'Cette étape a expiré : recommencez la connexion.');
+  accounts.assertNotSuspended(row);
   const code = String(b.code || '').trim().slice(0, 20);
   let ok = false;
   const step = central.totp.verify(central.totp.unseal(row.totp_secret), code, row.totp_step);
@@ -270,6 +274,7 @@ router.post('/password/reset', limits.make(15 * 60 * 1000, 10, 'Trop de tentativ
     await db.prepare('UPDATE password_resets SET used_at = ? WHERE user_id = ?').run(nowISO(), r.user_id);
   })();
   await sec.audit('password_reset', req, r.user_id, '');
+  await accounts.recordEvent(r.user_id, 'mot_de_passe_reinitialise');
   await central.sessions.revokeAllForUser(r.user_id, '', 'mot de passe réinitialisé');
   res.json({ ok: true });
 }));
@@ -285,6 +290,7 @@ router.post('/me/password', requireUser, limits.make(15 * 60 * 1000, 10, 'Trop d
   if (pass === cur) throw new HttpError(400, 'Le nouveau mot de passe doit être différent de l\'ancien.');
   await db.prepare('UPDATE users SET pass_hash = ?, pass_changed_at = ? WHERE id = ?').run(await bcrypt.hash(pass, sec.BCRYPT_COST), nowISO(), req.user.id);
   await sec.audit('password_change', req, req.user.id, '');
+  await accounts.recordEvent(req.user.id, 'mot_de_passe_change');
   await setUserCookie(res, req.user.id, req, { closeOthers: true }); // cet appareil reste connecté, les autres sont déconnectés immédiatement
   if (req.user.contact.includes('@')) mailUser(req.user.contact, 'Votre mot de passe Brij-IA a été modifié', `Bonjour ${req.user.name},\n\nVotre mot de passe vient d'être modifié. Si ce n'est pas vous, réinitialisez-le tout de suite depuis la page de connexion (« Mot de passe oublié »).\n\nL'équipe Brij-IA`);
   res.json({ ok: true });
@@ -292,10 +298,17 @@ router.post('/me/password', requireUser, limits.make(15 * 60 * 1000, 10, 'Trop d
 
 router.post('/logout', async (req, res) => {
   const sid = sessionIdOf(req, USER_COOKIE, 'user');
-  if (sid) await central.sessions.revoke(sid, 'déconnexion');
+  if (sid) {
+    const s = await db.prepare("SELECT user_id FROM sessions WHERE id = ? AND kind = 'user' AND revoked_at IS NULL").get(sid);
+    if (await central.sessions.revoke(sid, 'déconnexion') && s) await accounts.recordEvent(s.user_id, 'deconnexion');
+  }
   clearUserCookie(res);
   res.json({ ok: true });
 });
+
+// Messages de l'administration adressés à l'utilisateur (paiement validé ou refusé, compte suspendu ou réactivé…) : affichés dans l'application, lus / non lus.
+router.get('/me/notices', requireUser, asyncHandler(async (req, res) => res.json(await accounts.listNotices(req.user.id, { limit: req.query.limit }))));
+router.post('/me/notices/read', requireUser, asyncHandler(async (req, res) => { await accounts.markNoticesRead(req.user.id, (req.body || {}).ids); res.json({ ok: true }); }));
 
 router.get('/me', requireUser, (req, res) => res.json({ user: publicUser(req.user) }));
 

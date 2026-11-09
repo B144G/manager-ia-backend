@@ -122,7 +122,7 @@ app.use((req, res) => {
 // Gestion des erreurs : toujours {"error":"message en français"}
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
-  if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
+  if (err instanceof HttpError) return res.status(err.status).json(err.errorCode ? { error: err.message, code: err.errorCode } : { error: err.message });
   if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Requête trop volumineuse.' });
   if (err.type === 'entity.parse.failed' || err.type === 'encoding.unsupported' || err.type === 'charset.unsupported') {
     return res.status(400).json({ error: 'Requête invalide (JSON incorrect).' });

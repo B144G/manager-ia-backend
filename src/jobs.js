@@ -9,6 +9,8 @@ async function runOnce() {
   const now = nowISO();
 
   // 1) Offres expirées -> retour à "Gratuit"
+  const toExpire = await db.prepare("SELECT id FROM users WHERE plan != 'Gratuit' AND plan_expires IS NOT NULL AND plan_expires <= ?").all(now);
+  for (const x of toExpire) await require('./services/accounts').recordEvent(x.id, 'offre_expiree');
   const expired = await db.prepare("UPDATE users SET plan = 'Gratuit', plan_expires = NULL WHERE plan != 'Gratuit' AND plan_expires IS NOT NULL AND plan_expires <= ?").run(now);
   if (expired.changes) log.info(`Tâches : ${expired.changes} offre(s) expirée(s) repassée(s) à Gratuit.`);
 
@@ -31,6 +33,8 @@ async function runOnce() {
   await db.prepare('DELETE FROM conversations WHERE created_at < ?').run(addDays(new Date(), -90).toISOString());
   await require('./services/security').sweep();
   await require('./services/signedUrl').purge();
+  await require('./services/accounts').sweep();
+  await require('./services/alerts').sweep();
   await db.prepare('DELETE FROM chat_media WHERE created_at < ?').run(addDays(new Date(), -90).toISOString());
   await db.prepare('DELETE FROM notifications WHERE created_at < ?').run(addDays(new Date(), -180).toISOString());
   await db.prepare('DELETE FROM notices WHERE created_at < ?').run(addDays(new Date(), -120).toISOString());
@@ -64,10 +68,19 @@ function startDigest() {
   setInterval(run, every).unref();
 }
 
+// Alertes d'activité suspecte (comptes, connexions, usage IA, paiements, abus) : calcul léger toutes les 10 minutes (ALERTS_TICK_MS en dehors de la production).
+function startAlerts() {
+  const every = (process.env.NODE_ENV !== 'production' && Number(process.env.ALERTS_TICK_MS)) || 10 * 60 * 1000;
+  const run = () => require('./services/alerts').scan().catch((e) => log.warn('Alertes :', oneLine(e.message, 160)));
+  setTimeout(run, 45 * 1000).unref();
+  setInterval(run, every).unref();
+}
+
 function start() {
   setTimeout(safeRun, 20 * 1000).unref();
   setInterval(safeRun, 3600 * 1000).unref();
+  startAlerts();
   startDigest();
 }
 
-module.exports = { start, runOnce };
+module.exports = { start, runOnce, startAlerts };

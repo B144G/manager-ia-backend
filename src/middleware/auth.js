@@ -26,6 +26,10 @@ async function setUserCookie(res, userId, req, { closeOthers = false } = {}) {
   // « pc » = date du dernier changement de mot de passe : un changement invalide toutes les sessions ouvertes avant lui (sans dépendre de l'horloge).
   const row = await db.prepare('SELECT pass_changed_at FROM users WHERE id = ?').get(userId);
   const sid = await sessions.create(req, { kind: 'user', userId, maxAgeMs: USER_MAX_AGE });
+  if (!closeOthers) { // vraie connexion (pas un simple changement de mot de passe) : date de dernière connexion + chronologie
+    await db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(new Date().toISOString(), userId);
+    await require('../services/accounts').recordEvent(userId, 'connexion');
+  }
   const token = jwt.sign({ sub: userId, typ: 'user', sid, pc: (row && row.pass_changed_at) || '' }, config.jwtSecret, { algorithm: 'HS256', expiresIn: '30d' });
   res.cookie(USER_COOKIE, token, cookieOpts(USER_MAX_AGE));
   if (closeOthers) await sessions.revokeAllForUser(userId, sid, 'mot de passe changé');
@@ -66,6 +70,7 @@ async function requireUser(req, res, next) {
   if (!sess || Number(sess.user_id) !== Number(p.sub)) throw new HttpError(401, 'Session fermée ou expirée. Veuillez vous reconnecter.');
   const row = await getUserFresh(p.sub);
   if (!row) throw new HttpError(401, 'Compte introuvable. Veuillez vous reconnecter.');
+  require('../services/accounts').assertNotSuspended(row); // compte suspendu : plus aucun accès, même avec un cookie déjà émis
   if ((p.pc || '') !== (row.pass_changed_at || '')) throw new HttpError(401, 'Votre mot de passe a été modifié : reconnectez-vous.');
   req.user = row;
   req.sessionId = p.sid;

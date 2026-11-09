@@ -97,8 +97,8 @@ const limitsFor = (plan) => require('../services/custom-plan').limitsFor(plan); 
  *   temps que l'abonnement (même après un renouvellement anticipé qui prolonge l'échéance).
  * - Offre Gratuite : le mois civil.
  */
-async function quotaWindow(org) {
-  const u = await getUserFresh(org.owner_id) || {};
+function windowOfUser(u) {
+  u = u || {};
   const now = Date.now();
   const exp = u.plan && u.plan !== 'Gratuit' && u.plan_expires ? Date.parse(u.plan_expires) : 0;
   if (exp > now) {
@@ -109,6 +109,7 @@ async function quotaWindow(org) {
   const d = new Date(now);
   return { start: new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).toISOString(), end: new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)).toISOString() };
 }
+const quotaWindow = async (org) => windowOfUser(await getUserFresh(org.owner_id));
 /** Messages IA déjà utilisés par l'organisation sur la période en cours. */
 const aiUsed = async (org) => { const w = await quotaWindow(org); return (await db.prepare('SELECT COUNT(*) c FROM ai_usage WHERE org_id = ? AND created_at >= ? AND created_at < ?').get(org.id, w.start, w.end)).c; };
 
@@ -124,4 +125,4 @@ const monthRange = (m) => {
   return { month, from: `${month}-01`, to: `${next}-01` };
 };
 
-module.exports = { RANK, ROLES, ROLE_LABEL, text, oneOf, date, amount, qty, money0, id, idOrNull, loadOrg, need, can, scope, visible, branchOf, memberOf, ownerPlan, limitsFor, quotaWindow, aiUsed, logActivity, monthRange };
+module.exports = { RANK, ROLES, ROLE_LABEL, text, oneOf, date, amount, qty, money0, id, idOrNull, loadOrg, need, can, scope, visible, branchOf, memberOf, ownerPlan, limitsFor, quotaWindow, windowOfUser, aiUsed, logActivity, monthRange };

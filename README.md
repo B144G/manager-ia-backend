@@ -560,6 +560,12 @@ docker run -d --name manager-ia -p 3000:3000 --env-file .env -v manager-ia-data:
 
 À chaque **nouvelle inscription**, **nouvelle demande de contact**, **paiement à valider** et **paiement confirmé**, vous recevez un e-mail (à `ADMIN_EMAIL`) et un message WhatsApp (à `ADMIN_WHATSAPP`). Si un des deux canaux n'est pas configuré, le serveur continue sans problème. Toutes les notifications sont aussi visibles dans l'onglet *Notifications* de `/admin`. Elles ne ralentissent jamais le site.
 
+### Parcours de paiement et gestion des clients (administration)
+
+- **Paiement** : l'utilisateur envoie l'ID de transaction → pastille « Paiements » dans le menu de `/admin` (mise à jour toutes les minutes), notification dans l'onglet *Notifications* et e-mail à `ADMIN_EMAIL`. Dans *Paiements* (onglets À valider / En attente / Validés / Refusés), vous validez (confirmation, activation de l'offre et de ses quotas, e-mail avec reçu) ou refusez (**motif obligatoire**, communiqué au client). Dans les deux cas, le client reçoit un **bandeau dans l'application** (table `user_notices`, lu / non lu), même s'il n'a qu'un numéro de téléphone.
+- **Clients** : liste de tous les comptes (offre, échéance, état, organisations, membres, messages IA, total payé), recherche, filtres, tri, export CSV. Une **fiche** par client : paiements, connexions (fermer une ou toutes), chronologie (types d'événements et dates seulement), notes privées, suspension / réactivation (motif obligatoire, connexion refusée avec « Compte suspendu, contactez le support », WhatsApp QR coupé). La fiche ne montre **jamais** le contenu des messages ni les données métier des entreprises.
+- **Alertes** : une tâche (toutes les 10 minutes, `ALERTS_TICK_MS` hors production) repère les échecs de connexion répétés, les connexions depuis beaucoup d'adresses, les inscriptions en série depuis une même adresse, les pics de messages IA, les refus de paiement répétés et les blocages automatiques d'adresses. Seuils : variables `ALERT_*` (voir `.env.example`). E-mail à l'administrateur pour la gravité haute, sans doublon.
+
 ### E-mail avec Gmail (mot de passe d'application)
 
 Gmail refuse votre mot de passe normal pour ce genre d'usage. Il faut un « mot de passe d'application » :

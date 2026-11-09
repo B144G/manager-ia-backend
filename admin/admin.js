@@ -7,17 +7,17 @@
   const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
   const JOURS = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
   const MN = ['Janv.', 'Févr.', 'Mars', 'Avr.', 'Mai', 'Juin', 'Juil.', 'Août', 'Sept.', 'Oct.', 'Nov.', 'Déc.'];
-  const STATUS_LABEL = { pending: 'En attente', awaiting_validation: 'À valider', paid: 'Payé', failed: 'Refusé / échoué' };
+  const STATUS_LABEL = { pending: 'En attente', awaiting_validation: 'À valider', paid: 'Validé', failed: 'Refusé / échoué' };
   const ICONS = {
     overview: 'M3 3h8v8H3zM13 3h8v5h-8zM13 10h8v11h-8zM3 13h8v8H3z', users: 'M16 11a4 4 0 10-8 0M4 21a8 8 0 0116 0M20 8a3 3 0 010 6',
     orgs: 'M12 3v5M5 14v-3h14v3M5 14v4M12 14v4M19 14v4M9 3h6v5H9zM2 18h6v3H2zM9 18h6v3H9zM16 18h6v3h-6z', payments: 'M3 7h18v12H3zM3 7l3-3h12l3 3M16 13h2',
     plans: 'M12 2l3 6 6 .9-4.5 4.3 1 6.3L12 16.6 6.5 19.5l1-6.3L3 8.9 9 8z', contacts: 'M3 5h18v14H3zM3 7l9 7 9-7', ai: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z',
     notifications: 'M6 8a6 6 0 1112 0c0 7 3 9 3 9H3s3-2 3-9M10 21a2 2 0 004 0', settings: 'M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a7 7 0 000-6l2-1.5-2-3.4-2.4.9a7 7 0 00-1.7-1L14.9 1h-4l-.4 2.5a7 7 0 00-1.7 1l-2.4-.9-2 3.4 2 1.5a7 7 0 000 6l-2 1.5 2 3.4 2.4-.9a7 7 0 001.7 1l.4 2.5h4l.4-2.5a7 7 0 001.7-1l2.4.9 2-3.4z',
-    shield: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z', down: 'M12 3v12M7 11l5 5 5-5M4 20h16', out: 'M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9', search: 'M11 4a7 7 0 100 14 7 7 0 000-14zM21 21l-5-5',
+    alerts: 'M12 3l10 18H2zM12 10v5M12 18v.5', shield: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z', security: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6zM9 12l2 2 4-4', down: 'M12 3v12M7 11l5 5 5-5M4 20h16', out: 'M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9', search: 'M11 4a7 7 0 100 14 7 7 0 000-14zM21 21l-5-5',
   };
-  const NAV = [['overview', "Vue d'ensemble"], ['users', 'Utilisateurs'], ['orgs', 'Organisations'], ['payments', 'Paiements'], ['plans', 'Offres et abonnements'], ['contacts', 'Contacts reçus'], ['ai', "Utilisation de l'IA"], ['notifications', 'Notifications'], ['security', 'Sécurité']];
+  const NAV = [['overview', "Vue d'ensemble"], ['users', 'Clients'], ['orgs', 'Organisations'], ['payments', 'Paiements'], ['alerts', 'Alertes'], ['plans', 'Offres et abonnements'], ['contacts', 'Contacts reçus'], ['ai', "Utilisation de l'IA"], ['notifications', 'Notifications'], ['security', 'Sécurité']];
 
-  const S = { view: 'overview', days: 30, ov: null, payFilter: '', admin: 'Administrateur' };
+  const S = { view: 'overview', days: 30, ov: null, sum: null, payFilter: 'awaiting_validation', alertStatus: 'open', admin: 'Administrateur' };
 
   function h(tag, attrs, ...kids) {
     const el = document.createElement(tag);
@@ -99,9 +99,11 @@
   function go(view, extra) { S.view = view; if (extra) Object.assign(S, extra); render(); }
 
   function drawShell() {
-    const todo = (S.ov && S.ov.todo) || { payments: 0, leads: 0 };
-    const badges = { payments: todo.payments, contacts: todo.leads };
-    const btn = (k, l) => h('button', { type: 'button', class: S.view === k ? 'on' : '', 'aria-current': S.view === k ? 'page' : null, onclick: () => go(k) }, icon(k), h('span', { class: 'nl' }, l), badges[k] ? h('span', { class: 'nb' }, String(badges[k])) : null);
+    const sum = S.sum || { payments: ((S.ov && S.ov.todo) || {}).payments || 0, leads: ((S.ov && S.ov.todo) || {}).leads || 0, alerts: ((S.ov && S.ov.todo) || {}).alerts || 0 };
+    const todo = { payments: sum.payments, leads: sum.leads, alerts: sum.alerts };
+    const badges = { payments: todo.payments, contacts: todo.leads, alerts: todo.alerts };
+    const curNav = S.view === 'client' ? 'users' : S.view;
+    const btn = (k, l) => h('button', { type: 'button', class: curNav === k ? 'on' : '', 'aria-current': curNav === k ? 'page' : null, onclick: () => go(k) }, icon(k), h('span', { class: 'nl' }, l), badges[k] ? h('span', { class: 'nb' }, String(badges[k])) : null);
     $('side').replaceChildren(
       h('div', { class: 'brand' }, h('a', { class: 'logo', href: '/admin' }, 'BRIJ', h('b', {}, '-IA')), h('span', { class: 'tag' }, 'ADMIN')),
       h('div', { class: 'org' }, icon('shield'), h('div', {}, h('b', {}, 'Administration'), h('small', {}, 'Plateforme Brij-IA'))),
@@ -113,7 +115,7 @@
     $('top').replaceChildren(
       h('form', { class: 'search', onsubmit: (e) => { e.preventDefault(); const v = q.value.trim(); if (v) go('users', { q: v }); } }, icon('search'), q),
       h('span', { class: 'grow' }),
-      h('button', { type: 'button', class: 'bell', 'aria-label': 'À traiter', onclick: () => go('overview') }, icon('notifications'), (todo.payments + todo.leads) ? h('i') : null),
+      h('button', { type: 'button', class: 'bell', title: todo.payments + ' paiement(s) à valider · ' + todo.alerts + ' alerte(s) · ' + todo.leads + ' demande(s) de contact', 'aria-label': 'À traiter : ' + (todo.payments + todo.alerts + todo.leads), onclick: () => (todo.payments ? go('payments', { payFilter: 'awaiting_validation' }) : todo.alerts ? go('alerts', { alertStatus: 'open' }) : go('overview')) }, icon('notifications'), (todo.payments + todo.alerts + todo.leads) ? h('i') : null),
       h('div', { class: 'user' }, h('span', { class: 'av blue' }, initials(S.admin)), h('div', {}, h('b', {}, S.admin), h('small', {}, 'Administrateur'))));
   }
 
@@ -130,12 +132,13 @@
     // À traiter + santé du système
     const prio = h('ul', { class: 'prio' });
     if (ov.todo.payments) prio.append(h('li', { class: 'red' }, plural(ov.todo.payments, 'paiement Mobile Money attend', 'paiements Mobile Money attendent') + ' votre validation'));
+    if (ov.todo.alerts) prio.append(h('li', { class: 'red' }, plural(ov.todo.alerts, "alerte d'activité suspecte est ouverte", "alertes d'activité suspecte sont ouvertes")));
     if (ov.todo.leads) prio.append(h('li', {}, plural(ov.todo.leads, "demande de contact n'a pas encore de réponse", "demandes de contact n'ont pas encore de réponse")));
     if (ov.todo.expiring) prio.append(h('li', {}, plural(ov.todo.expiring, 'abonnement arrive à échéance', 'abonnements arrivent à échéance') + ' cette semaine'));
     if (!prio.children.length) prio.append(h('li', { class: 'ok' }, 'Rien à traiter : tout est à jour.'));
     const brief = h('section', { class: 'brief' },
       h('div', { class: 'bh' }, icon('ai'), h('b', {}, "À traiter aujourd'hui"), h('small', {}, "Mis à jour à l'instant")), prio,
-      h('div', { class: 'row' }, h('button', { class: 'bt', type: 'button', onclick: () => go('payments', { payFilter: 'awaiting_validation' }) }, 'Valider les paiements'), h('button', { class: 'bt ghost', type: 'button', onclick: () => go('contacts') }, 'Voir les demandes')));
+      h('div', { class: 'row' }, h('button', { class: 'bt', type: 'button', onclick: () => go('payments', { payFilter: 'awaiting_validation' }) }, 'Valider les paiements'), ov.todo.alerts ? h('button', { class: 'bt ghost', type: 'button', onclick: () => go('alerts', { alertStatus: 'open' }) }, 'Voir les alertes') : null, h('button', { class: 'bt ghost', type: 'button', onclick: () => go('contacts') }, 'Voir les demandes')));
     const warn = ov.system.filter((x) => x.status !== 'ok').length;
     const sys = card('Santé du système', h('small', {}, warn ? warn + ' à configurer' : 'Tout est opérationnel'), h('div', { class: 'sys' }, ov.system.map((x) => h('div', {}, h('i', { class: x.status === 'ok' ? '' : 'warn' }), h('b', {}, x.label), h('span', {}, x.text)))));
     main.append(h('div', { class: 'g2' }, brief, sys));
@@ -181,7 +184,7 @@
 
     // Paiements à valider + demandes de contact
     const payRows = ov.payments.map((p) => h('tr', {}, h('td', { class: 'ref' }, p.reference), h('td', {}, p.user), h('td', {}, p.planName), h('td', { class: 'mu' }, p.operator || '—'), h('td', { class: 'num' }, fmtXAF(p.amountXAF)),
-      h('td', { class: 'r' }, h('button', { class: 'bt solid sm', type: 'button', onclick: () => payAction(p.id, 'validate') }, 'Valider'), ' ', h('button', { class: 'bt out sm', type: 'button', onclick: () => payAction(p.id, 'reject') }, 'Refuser'))));
+      h('td', { class: 'r' }, h('button', { class: 'bt solid sm', type: 'button', disabled: payBusy.has(p.id) ? '' : null, onclick: () => payAction(p, 'validate') }, 'Valider'), ' ', h('button', { class: 'bt out sm', type: 'button', disabled: payBusy.has(p.id) ? '' : null, onclick: () => payAction(p, 'reject') }, 'Refuser'))));
     const pays = card('Paiements à valider', h('small', {}, ov.todo.payments + ' en attente'),
       payRows.length ? h('div', { class: 'wrap' }, h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, ['Référence', 'Utilisateur', 'Offre', 'Opérateur', 'Montant', ''].map((t) => h('th', {}, t)))), h('tbody', {}, payRows))) : h('p', { class: 'empty' }, 'Aucun paiement en attente.'));
     const leads = card('Demandes de contact', h('button', { class: 'link', type: 'button', onclick: () => go('contacts') }, 'Voir tout'),
@@ -197,29 +200,131 @@
     main.append(h('div', { class: 'g3' }, users, act));
   }
 
-  async function payAction(id, what) {
-    try { await api('/payments/' + id + '/' + what, { method: 'POST' }); toast(what === 'validate' ? 'Paiement validé : l’offre est activée.' : 'Paiement refusé.'); await load(); } catch (e) { fail(e); }
-  }
-
   // ---------- Autres vues ----------
+
+  // ---------- Clients : liste enrichie ----------
+  const STATE_PILL = { active: 'ok', expiring: 'amber', expired: 'red', free: '' };
+  const statePill = (c) => h('span', { class: 'pill ' + (STATE_PILL[c.planState] || '') }, c.planStateLabel);
+  const csvQuery = () => { const f = S.cf || {}; return Object.entries(f).filter(([, v]) => v).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&'); };
   async function usersView(main) {
-    const q = h('input', { type: 'search', value: S.q || '', placeholder: 'Rechercher un nom, un e-mail, un numéro…', 'aria-label': 'Rechercher' });
-    const plan = h('select', { 'aria-label': 'Offre' }, h('option', { value: '' }, 'Toutes les offres'), PLANS.map((p) => h('option', { value: p }, p)));
+    const f = S.cf = Object.assign({ q: '', plan: '', state: '', sort: 'created', recent: '', suspended: '', alerts: '' }, S.cf || {});
+    if (S.q) { f.q = S.q; S.q = ''; }
+    const q = h('input', { type: 'search', value: f.q, placeholder: 'Rechercher un nom, un e-mail, un numéro…', 'aria-label': 'Rechercher' });
+    const sel = (key, label, opts) => { const s = h('select', { 'aria-label': label }, opts.map(([v, l]) => h('option', { value: v, selected: f[key] === v ? '' : null }, l))); s.addEventListener('change', () => { f[key] = s.value; run(); }); return s; };
+    const chk = (key, label) => { const c = h('input', { type: 'checkbox', checked: f[key] === '1' ? '' : null }); c.addEventListener('change', () => { f[key] = c.checked ? '1' : ''; run(); }); return h('label', { class: 'chk' }, c, label); };
+    const exp = h('a', { class: 'bt solid', href: '/api/admin/export/users.csv' }, icon('down'), 'Exporter (CSV)');
     const box = h('div', { class: 'dc' }, h('p', { class: 'empty' }, 'Chargement…'));
-    main.append(head('Utilisateurs', 'Tous les comptes de la plateforme.', h('a', { class: 'bt solid', href: '/api/admin/export/users.csv' }, icon('down'), 'Exporter (CSV)')), h('div', { class: 'filters' }, q, plan), box);
+    const count = h('p', { class: 'muted' });
+    main.append(head('Clients', 'Tous les comptes : offre, échéance, activité et paiements. Cliquez sur un client pour ouvrir sa fiche.', exp),
+      h('div', { class: 'filters' }, q,
+        sel('plan', 'Offre', [['', 'Toutes les offres'], ...PLANS.map((p) => [p, p]), ['Sur mesure', 'Sur mesure']]),
+        sel('state', 'État de l’offre', [['', 'Tous les états'], ['active', 'Active'], ['expiring', 'Expire bientôt'], ['expired', 'Expirée'], ['free', 'Gratuite']]),
+        sel('recent', 'Inscription', [['', 'Toutes les dates'], ['7', 'Inscrits cette semaine'], ['30', 'Inscrits ce mois-ci']]),
+        sel('sort', 'Tri', [['created', 'Plus récents d’abord'], ['login', 'Dernière connexion'], ['name', 'Nom (A à Z)'], ['expires', 'Échéance proche'], ['paid', 'Total payé'], ['orgs', 'Organisations']]),
+        chk('suspended', 'Suspendus'), chk('alerts', 'Avec alertes')), count, box);
     let timer;
     const run = async () => {
+      f.q = q.value; exp.setAttribute('href', '/api/admin/export/users.csv?' + csvQuery());
       try {
-        const { users } = await api('/users?q=' + encodeURIComponent(q.value) + '&plan=' + encodeURIComponent(plan.value));
-        box.replaceChildren(users.length ? h('div', { class: 'wrap' }, h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, ['Nom', 'Contact', 'Offre', 'Expire', 'Inscrit', 'Changer l’offre', 'Mot de passe', 'Connexions'].map((t) => h('th', {}, t)))),
-          h('tbody', {}, users.map((u) => { const sel = h('select', { class: 'sel', 'aria-label': 'Offre de ' + u.name }, PLANS.map((p) => h('option', { value: p, selected: p === u.plan ? '' : null }, p)));
-            return h('tr', {}, h('td', {}, h('b', {}, u.name)), h('td', { class: 'mu' }, u.contact), h('td', {}, planPill(u.plan)), h('td', { class: 'mu' }, fmtDate(u.planExpires)), h('td', { class: 'mu' }, fmtDate(u.created)),
-              h('td', {}, sel, ' ', h('button', { class: 'bt solid sm', type: 'button', onclick: async () => { try { await api('/users/' + u.id + '/plan', { method: 'POST', body: { plan: sel.value } }); toast('Offre mise à jour.'); run(); } catch (e) { fail(e); } } }, 'Appliquer')), h('td', {}, h('button', { class: 'bt sm', type: 'button', onclick: async () => { try { const r = await api('/users/' + u.id + '/reset-link', { method: 'POST', body: {} }); try { await navigator.clipboard.writeText(r.link); toast('Lien copié (valable 1 h). Envoyez-le à ' + u.name + ' après avoir vérifié son identité.'); } catch { window.prompt('Copiez ce lien (valable 1 h) et envoyez-le à ' + u.name + ' :', r.link); } } catch (e) { fail(e); } } }, 'Lien de réinitialisation')),
-              h('td', {}, h('button', { class: 'bt out sm', type: 'button', onclick: async () => { if (!window.confirm('Déconnecter ' + u.name + ' de tous ses appareils ? Il devra se reconnecter avec son mot de passe.')) return; try { const r = await api('/security/users/' + u.id + '/revoke-sessions', { method: 'POST', body: {} }); toast(r.closed ? r.closed + ' connexion(s) fermée(s) : ' + u.name + ' est déconnecté.' : u.name + ' n’avait aucune connexion ouverte.'); } catch (e) { fail(e); } } }, 'Déconnecter'))); })))) : h('p', { class: 'empty' }, 'Aucun utilisateur trouvé.'));
+        const { clients, total } = await api('/clients?limit=500&' + csvQuery());
+        count.textContent = total + (total > 1 ? ' clients' : ' client') + (total > clients.length ? ' (les ' + clients.length + ' premiers sont affichés ; affinez la recherche)' : '');
+        const cell = (c) => h('tr', { class: 'clk' + (c.suspended ? ' sus' : ''), tabindex: '0', onclick: () => go('client', { clientId: c.id }), onkeydown: (e) => { if (e.key === 'Enter') go('client', { clientId: c.id }); } },
+          h('td', {}, h('b', {}, c.name), c.suspended ? h('span', { class: 'pill red sp' }, 'Suspendu') : null, c.openAlerts ? h('span', { class: 'pill amber sp' }, c.openAlerts + (c.openAlerts > 1 ? ' alertes' : ' alerte')) : null, h('br'), h('span', { class: 'mu' }, c.contact)),
+          h('td', { class: 'mu' }, fmtDate(c.createdAt)),
+          h('td', { class: 'mu' }, c.lastLoginAt ? ago(c.lastLoginAt) : 'jamais'),
+          h('td', {}, planPill(c.planLabel), c.planState === 'free' ? null : ' ', c.planState === 'free' ? null : statePill(c), h('br'), h('span', { class: 'mu' }, c.planExpires && c.planState !== 'free' ? (c.planState === 'expired' ? 'a expiré le ' : 'jusqu’au ') + fmtDate(c.planExpires) : '')),
+          h('td', { class: 'num' }, c.orgs + ' / ' + c.members),
+          h('td', { class: 'num' }, fmtN(c.aiUsed) + ' / ' + fmtN(c.aiMax)),
+          h('td', { class: 'num' }, c.paidTotalXAF ? fmtXAF(c.paidTotalXAF) : '—', c.awaitingPayments ? h('div', { class: 'pill amber sp' }, 'à valider') : null),
+          h('td', { class: 'r' }, h('button', { class: 'bt out sm', type: 'button', onclick: (e) => { e.stopPropagation(); go('client', { clientId: c.id }); } }, 'Voir la fiche')));
+        box.replaceChildren(clients.length ? h('div', { class: 'wrap' }, h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, ['Client', 'Inscrit', 'Dernière connexion', 'Offre et échéance', 'Organisations / membres', 'Messages IA (période)', 'Total payé', ''].map((t) => h('th', {}, t)))), h('tbody', {}, clients.map(cell)))) : h('p', { class: 'empty' }, 'Aucun client ne correspond.'));
       } catch (e) { fail(e); }
     };
-    q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 250); }); plan.addEventListener('change', run);
-    S.q = ''; run();
+    q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 250); });
+    run();
+  }
+
+  // ---------- Fiche client ----------
+  const kv = (k, v) => h('div', { class: 'kv' }, h('small', {}, k), h('b', {}, v == null || v === '' ? '—' : v));
+  async function clientView(main) {
+    const id = S.clientId;
+    const back = h('button', { class: 'bt out', type: 'button', onclick: () => go('users') }, '← Tous les clients');
+    let d;
+    try { d = await api('/clients/' + id); } catch (e) { fail(e); main.append(head('Client introuvable', '', back)); return; }
+    const p = d.profile, again = () => render();
+    const act = async (fn, msg) => { try { await fn(); if (msg) toast(msg); again(); } catch (e) { fail(e); } };
+    main.append(head(p.name, p.contact + ' · client n° ' + p.id, back));
+
+    // En-tête : offre, état, actions
+    const planSel = h('select', { class: 'sel', 'aria-label': 'Offre de ' + p.name }, PLANS.map((x) => h('option', { value: x, selected: x === p.plan ? '' : null }, x)));
+    const actions = h('div', { class: 'row' },
+      p.suspended
+        ? h('button', { class: 'bt solid', type: 'button', onclick: async () => { const r = await ask({ title: 'Réactiver ce compte ?', lines: [p.name + ' pourra se reconnecter. Il recevra une notice (et un e-mail s’il a une adresse e-mail).'], confirmText: 'Oui, réactiver' }); if (r) act(() => api('/clients/' + id + '/reactivate', { method: 'POST', body: {} }), 'Compte réactivé.'); } }, 'Réactiver le compte')
+        : h('button', { class: 'bt out dgo', type: 'button', onclick: async () => { const r = await ask({ title: 'Suspendre ce compte ?', lines: [p.name + ' sera déconnecté de tous ses appareils, ne pourra plus se connecter (message : « Compte suspendu, contactez le support. ») et le WhatsApp de ses organisations sera coupé.'], danger: true, confirmText: 'Oui, suspendre', reason: { label: 'Motif de la suspension', placeholder: 'Ex. usage abusif signalé, paiement contesté…', min: 5, error: 'Le motif est obligatoire (au moins 5 caractères).' } }); if (r) act(() => api('/clients/' + id + '/suspend', { method: 'POST', body: { reason: r.reason } }), 'Compte suspendu.'); } }, 'Suspendre le compte'),
+      h('button', { class: 'bt out', type: 'button', onclick: async () => { const r = await ask({ title: 'Déconnecter tous les appareils ?', lines: [p.name + ' devra se reconnecter avec son mot de passe.'], confirmText: 'Oui, tout déconnecter' }); if (r) act(async () => { const j = await api('/clients/' + id + '/sessions/revoke-all', { method: 'POST', body: {} }); toast(j.closed ? j.closed + ' connexion(s) fermée(s).' : 'Aucune connexion ouverte.'); }); } }, 'Déconnecter partout'),
+      h('button', { class: 'bt out', type: 'button', onclick: async () => { try { const r = await api('/users/' + id + '/reset-link', { method: 'POST', body: {} }); try { await navigator.clipboard.writeText(r.link); toast('Lien copié (valable 1 h). Envoyez-le après avoir vérifié son identité.'); } catch { window.prompt('Copiez ce lien (valable 1 h) :', r.link); } } catch (e) { fail(e); } } }, 'Lien de réinitialisation'));
+    if (p.suspended) main.append(h('div', { class: 'ban' }, h('b', {}, 'Compte suspendu'), ' depuis le ' + fmtDateTime(p.suspendedAt) + ' · motif : ' + p.suspendedReason));
+
+    const u = d.usage;
+    main.append(h('div', { class: 'g2' },
+      card('Profil et abonnement', null, h('div', { class: 'kvs' },
+        kv('Inscrit le', fmtDate(p.createdAt)), kv('Dernière connexion', p.lastLoginAt ? fmtDateTime(p.lastLoginAt) + ' (' + ago(p.lastLoginAt) + ')' : 'jamais'),
+        kv('Offre', h('span', {}, planPill(p.planLabel), p.planState === 'free' ? null : ' ', p.planState === 'free' ? null : statePill(p))), kv('Échéance', p.planExpires && p.planState !== 'free' ? fmtDate(p.planExpires) : '—'),
+        kv('Messages IA (période en cours)', fmtN(u.aiUsed) + ' / ' + fmtN(u.aiMax)), kv('Renouvellement du quota', fmtDate(u.periodEnd)),
+        kv('Limites de l’offre', u.orgsMax + ' organisation(s) · ' + (u.membersMax > 999 ? 'équipe illimitée' : u.membersMax + ' personnes')), kv('Total payé', fmtXAF(u.paidTotalXAF)),
+        kv('Double authentification', p.twofa ? 'Activée' : 'Non activée')),
+        h('div', { class: 'row mt' }, planSel, h('button', { class: 'bt solid sm', type: 'button', onclick: async () => { const r = await ask({ title: 'Changer l’offre à la main ?', lines: ['Offre « ' + planSel.value + ' » pour ' + p.name + ' (durée habituelle). Pour un paiement Mobile Money, utilisez plutôt la page « Paiements ».'], confirmText: 'Oui, appliquer' }); if (r) act(() => api('/users/' + id + '/plan', { method: 'POST', body: { plan: planSel.value } }), 'Offre mise à jour.'); } }, 'Appliquer l’offre')),
+        actions),
+      card('Ce que vous voyez, et ce que vous ne voyez pas', null,
+        h('p', { class: 'muted' }, 'La vie privée de vos clients est protégée : cette fiche ne montre que ce qui est nécessaire pour gérer les comptes.'),
+        h('h3', { class: 'okh' }, '✔ Ce que vous voyez'), h('ul', { class: 'sc ok' }, d.scope.visible.map((x) => h('li', {}, x))),
+        h('h3', { class: 'nokh' }, '✖ Ce que vous ne voyez pas'), h('ul', { class: 'sc no' }, d.scope.hidden.map((x) => h('li', {}, x))))));
+
+    // Organisations
+    main.append(card('Organisations (' + d.orgs.length + ')', null, d.orgs.length ? h('div', { class: 'wrap' }, h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, ['Organisation', 'Membres', 'WhatsApp', 'Messages IA (période)', 'Créée le'].map((t) => h('th', {}, t)))),
+      h('tbody', {}, d.orgs.map((o) => h('tr', {}, h('td', {}, h('b', {}, o.name)), h('td', { class: 'num' }, String(o.members)), h('td', {}, WA_LABEL[o.whatsapp] || o.whatsapp), h('td', { class: 'num' }, fmtN(o.aiUsed)), h('td', { class: 'mu' }, fmtDate(o.createdAt))))))) : h('p', { class: 'empty' }, 'Aucune organisation.')));
+
+    // Paiements
+    main.append(card('Historique des paiements (' + d.payments.length + ')', null, d.payments.length ? h('div', { class: 'wrap' }, h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, ['Date', 'Offre', 'Montant', 'Opérateur', 'Référence / ID', 'Statut', ''].map((t) => h('th', {}, t)))),
+      h('tbody', {}, d.payments.map((x) => h('tr', {}, h('td', { class: 'mu' }, fmtDateTime(x.createdAt)), h('td', {}, x.planName), h('td', { class: 'num' }, fmtXAF(x.amountXAF)), h('td', { class: 'mu' }, (x.operator || '—') + (x.phone ? ' · ' + x.phone : '')),
+        h('td', {}, h('b', { class: 'ref' }, x.reference), h('br'), h('span', { class: 'mu' }, x.transactionId ? 'ID : ' + x.transactionId : '')),
+        h('td', {}, h('span', { class: 'pill ' + (PAY_PILL[x.status] || '') }, STATUS_LABEL[x.status] || x.status), x.rejectReason ? h('div', { class: 'mu why' }, 'Motif : ' + x.rejectReason) : null),
+        h('td', { class: 'r' }, payButtons({ ...x, user: p }))))))) : h('p', { class: 'empty' }, 'Aucun paiement.')));
+
+    // Connexions ouvertes
+    main.append(card('Connexions ouvertes (' + d.sessions.length + ')', d.sessions.length ? h('button', { class: 'bt out sm', type: 'button', onclick: async () => { const r = await ask({ title: 'Tout déconnecter ?', lines: ['Toutes les connexions de ' + p.name + ' seront fermées.'], confirmText: 'Oui, tout fermer' }); if (r) act(async () => { const j = await api('/clients/' + id + '/sessions/revoke-all', { method: 'POST', body: {} }); toast(j.closed + ' connexion(s) fermée(s).'); }); } }, 'Tout fermer') : null,
+      d.sessions.length ? d.sessions.map((s) => h('div', { class: 'setrow' }, h('b', {}, s.device), h('span', {}, s.ip + ' · ouverte ' + ago(s.createdAt) + ' · active ' + ago(s.lastSeen)),
+        h('button', { class: 'bt out sm', type: 'button', onclick: () => act(() => api('/clients/' + id + '/sessions/' + s.handle + '/revoke', { method: 'POST', body: {} }), 'Connexion fermée.') }, 'Fermer cette connexion')))
+        : h('p', { class: 'empty' }, 'Aucune connexion ouverte.'), h('p', { class: 'muted' }, 'Adresses tronquées par respect de la vie privée.')));
+
+    // Alertes du client
+    if (d.alerts.length) main.append(card('Alertes d’activité suspecte', null, h('div', { class: 'mini' }, d.alerts.map((a) => h('div', { class: 'it ' + (a.severity === 'high' ? 'red' : 'amber') }, h('b', {}, a.title), h('span', {}, a.detail), h('em', {}, a.handledAt ? 'traitée' : ago(a.createdAt)))))));
+
+    // Chronologie + notes
+    const note = h('textarea', { rows: '3', maxlength: '1000', placeholder: 'Note privée (visible par vous seul) : appel, accord, remarque…', 'aria-label': 'Nouvelle note' });
+    const tl = card('Chronologie d’activité (types d’événements et dates seulement)', null, d.timeline.length ? h('div', { class: 'act' }, d.timeline.map((e) => h('div', {}, h('i', { class: /refuse|suspendu|expiree/.test(e.kind) ? 'r' : /valide|reactive|inscription/.test(e.kind) ? 'g' : '' }), e.label + (e.detail ? ' : ' + e.detail : ''), h('span', {}, fmtDateTime(e.at))))) : h('p', { class: 'empty' }, 'Rien pour l’instant.'));
+    const nt = card('Notes de l’administrateur', null, note, h('div', { class: 'row mt' }, h('button', { class: 'bt solid sm', type: 'button', onclick: () => { const v = note.value.trim(); if (v.length < 2) { toast('Écrivez votre note.'); return; } act(() => api('/clients/' + id + '/notes', { method: 'POST', body: { text: v } }), 'Note ajoutée.'); } }, 'Ajouter la note')),
+      d.notes.length ? h('div', { class: 'mini mt' }, d.notes.map((n) => h('div', { class: 'it' }, h('b', {}, n.text), h('span', {}, fmtDateTime(n.createdAt)), h('button', { class: 'link', type: 'button', onclick: () => act(() => api('/clients/' + id + '/notes/' + n.id, { method: 'DELETE' }), 'Note supprimée.') }, 'Supprimer')))) : null);
+    main.append(h('div', { class: 'g3 eq' }, tl, nt));
+  }
+
+  // ---------- Alertes d'activité suspecte ----------
+  const SEV_PILL = { high: 'red', medium: 'amber', low: '' };
+  const THRESH_LABEL = { loginFails: 'Échecs de connexion sur un compte', loginWindowMin: '…en (minutes)', sessionIps: 'Adresses différentes sur un compte', sessionWindowH: '…en (heures)', signupsPerIp: 'Inscriptions depuis une même adresse', signupWindowH: '…en (heures)', aiPerHour: 'Messages IA en 1 heure', aiPerDay: 'Messages IA en 24 heures', payRejects: 'Paiements refusés', payWindowD: '…en (jours)', abuseWindowH: 'Blocages d’adresses récents (heures)', cooldownH: 'Pas de nouvelle alerte identique pendant (heures)' };
+  const THRESH_ENV = { loginFails: 'ALERT_LOGIN_FAILS', loginWindowMin: 'ALERT_LOGIN_WINDOW_MIN', sessionIps: 'ALERT_SESSION_IPS', sessionWindowH: 'ALERT_SESSION_WINDOW_H', signupsPerIp: 'ALERT_SIGNUPS_PER_IP', signupWindowH: 'ALERT_SIGNUP_WINDOW_H', aiPerHour: 'ALERT_AI_PER_HOUR', aiPerDay: 'ALERT_AI_PER_DAY', payRejects: 'ALERT_PAY_REJECTS', payWindowD: 'ALERT_PAY_WINDOW_D', abuseWindowH: 'ALERT_ABUSE_WINDOW_H', cooldownH: 'ALERT_COOLDOWN_HOURS' };
+  async function alertsView(main) {
+    const st = S.alertStatus || 'open';
+    main.append(head('Alertes', 'Activité suspecte repérée automatiquement toutes les 10 minutes. Vous êtes aussi prévenu par e-mail pour les alertes de gravité haute.'));
+    try {
+      const { alerts, counts, thresholds } = await api('/alerts?status=' + st);
+      main.append(h('div', { class: 'tabs', role: 'tablist' }, [['open', 'Ouvertes'], ['handled', 'Traitées']].map(([k, l]) => h('button', { type: 'button', role: 'tab', 'aria-selected': st === k ? 'true' : 'false', class: st === k ? 'on' : '', onclick: () => { S.alertStatus = k; render(); } }, l, k === 'open' ? h('span', { class: 'cnt' + (counts.open ? ' hot' : '') }, String(counts.open)) : null))));
+      main.append(h('div', { class: 'dc' }, alerts.length ? h('div', { class: 'mini' }, alerts.map((a) => h('div', { class: 'it al ' + (a.severity === 'high' ? 'red' : a.severity === 'medium' ? 'amber' : '') },
+        h('div', { class: 'row' }, h('span', { class: 'pill ' + (SEV_PILL[a.severity] || '') }, 'Gravité ' + a.severityLabel.toLowerCase()), h('b', {}, a.kindLabel), a.mailed ? h('span', { class: 'mu' }, '· e-mail envoyé') : null),
+        h('b', {}, a.title), h('span', {}, a.detail), h('span', {}, 'Repérée ' + ago(a.createdAt) + (a.handledAt ? ' · traitée ' + ago(a.handledAt) : '')),
+        h('div', { class: 'row' }, a.user ? h('button', { class: 'bt out sm', type: 'button', onclick: () => go('client', { clientId: a.user.id }) }, 'Voir le client : ' + a.user.name) : null,
+          a.handledAt ? null : h('button', { class: 'bt solid sm', type: 'button', onclick: async () => { try { await api('/alerts/' + a.id + '/handle', { method: 'POST', body: {} }); toast('Alerte marquée comme traitée.'); await refreshSummary(); render(); } catch (e) { fail(e); } } }, 'Marquer comme traitée'))))) : h('p', { class: 'empty' }, st === 'open' ? 'Aucune alerte : rien de suspect pour l’instant.' : 'Aucune alerte traitée.')));
+      main.append(card('Seuils de détection', h('small', {}, 'modifiables par variables d’environnement'), Object.entries(thresholds).map(([k, v]) => h('div', { class: 'setrow' }, h('b', {}, THRESH_LABEL[k] || k), h('span', {}, v + '  ·  ' + THRESH_ENV[k])))));
+    } catch (e) { fail(e); }
   }
 
   const WA_LABEL = { open: 'Connecté', qr: 'QR en attente', connecting: 'Connexion…', disconnected: 'Non connecté' };
@@ -237,17 +342,68 @@
     } catch (e) { fail(e); }
   }
 
+  // ---------- Boîte de confirmation (remplace window.confirm : permet de saisir un motif) ----------
+  function ask(o) {
+    return new Promise((resolve) => {
+      const prev = document.activeElement;
+      const esc = (e) => { if (e.key === 'Escape') close(null); };
+      function close(v) { ov.remove(); document.removeEventListener('keydown', esc); if (prev && prev.focus) prev.focus(); resolve(v); }
+      const ta = o.reason ? h('textarea', { rows: '3', maxlength: '300', placeholder: o.reason.placeholder || '', 'aria-label': o.reason.label || 'Motif' }) : null;
+      const err = h('p', { class: 'error', role: 'alert' });
+      const ok = h('button', { class: 'bt solid' + (o.danger ? ' dg' : ''), type: 'button', onclick: () => {
+        if (ta) { const v = ta.value.trim(); if (v.length < (o.reason.min || 3)) { err.textContent = o.reason.error || 'Écrivez le motif.'; ta.focus(); return; } ok.disabled = true; close({ reason: v }); } else { ok.disabled = true; close({}); }
+      } }, o.confirmText || 'Confirmer');
+      const ov = h('div', { class: 'mdl', role: 'dialog', 'aria-modal': 'true', 'aria-label': o.title },
+        h('div', { class: 'mdb' }, h('h2', {}, o.title), (o.lines || []).map((l) => h('p', {}, l)), ta, err, h('div', { class: 'row' }, ok, h('button', { class: 'bt out', type: 'button', onclick: () => close(null) }, 'Annuler'))));
+      ov.addEventListener('click', (e) => { if (e.target === ov) close(null); });
+      document.body.append(ov); document.addEventListener('keydown', esc); (ta || ok).focus();
+    });
+  }
+
+  // ---------- Paiements : valider / refuser (confirmation, motif obligatoire pour un refus, protection contre le double clic) ----------
+  const payBusy = new Set();
+  async function payAction(p, what) {
+    if (payBusy.has(p.id)) return;
+    const who = typeof p.user === 'string' ? p.user : p.user.name;
+    const r = await ask(what === 'validate'
+      ? { title: 'Valider ce paiement ?', lines: [who + ' · ' + p.planName + ' · ' + fmtXAF(p.amountXAF) + ' · réf. ' + p.reference, "L'offre sera activée tout de suite et le client sera prévenu (dans l'application, et par e-mail avec son reçu s'il a une adresse e-mail)."], confirmText: 'Oui, valider et activer' }
+      : { title: 'Refuser ce paiement ?', lines: [who + ' · ' + p.planName + ' · ' + fmtXAF(p.amountXAF) + ' · réf. ' + p.reference, "Aucune offre ne sera activée. Le motif ci-dessous sera envoyé au client."], danger: true, confirmText: 'Oui, refuser', reason: { label: 'Motif du refus', placeholder: 'Ex. ID de transaction introuvable, montant insuffisant…', min: 3, error: 'Le motif est obligatoire (au moins 3 caractères).' } });
+    if (!r) return;
+    payBusy.add(p.id); render();
+    try { await api('/payments/' + p.id + '/' + what, { method: 'POST', body: r.reason ? { reason: r.reason } : {} }); toast(what === 'validate' ? 'Paiement validé : l’offre est activée et le client est prévenu.' : 'Paiement refusé : le client est prévenu avec le motif.'); }
+    catch (e) { fail(e); }
+    finally { payBusy.delete(p.id); await load(); }
+  }
+  const payButtons = (p) => (p.status === 'paid' || p.status === 'failed' ? null : [
+    h('button', { class: 'bt solid sm', type: 'button', disabled: payBusy.has(p.id) ? '' : null, onclick: () => payAction(p, 'validate') }, 'Valider'), ' ',
+    h('button', { class: 'bt out sm', type: 'button', disabled: payBusy.has(p.id) ? '' : null, onclick: () => payAction(p, 'reject') }, 'Refuser')]);
+  const PAY_PILL = { paid: 'ok', failed: 'red', awaiting_validation: 'amber', pending: '' };
+  const PAY_TABS = [['awaiting_validation', 'À valider'], ['pending', 'En attente'], ['paid', 'Validés'], ['failed', 'Refusés'], ['', 'Tous']];
   async function paymentsView(main) {
-    const sel = h('select', { class: 'sel', 'aria-label': 'Statut' }, [['', 'Tous les statuts'], ['awaiting_validation', 'À valider'], ['pending', 'En attente'], ['paid', 'Payés'], ['failed', 'Refusés / échoués']].map(([v, l]) => h('option', { value: v, selected: v === S.payFilter ? '' : null }, l)));
-    sel.addEventListener('change', () => { S.payFilter = sel.value; render(); });
-    main.append(head('Paiements', 'Mobile Money et paiements automatiques.', sel));
-    try {
-      const { payments } = await api('/payments' + (S.payFilter ? '?status=' + S.payFilter : ''));
-      main.append(h('div', { class: 'dc' }, payments.length ? h('div', { class: 'wrap' }, h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, ['Référence', 'Utilisateur', 'Offre', 'Opérateur', 'Montant', 'Statut', 'Date', ''].map((t) => h('th', {}, t)))),
-        h('tbody', {}, payments.map((p) => h('tr', {}, h('td', { class: 'ref' }, p.reference), h('td', {}, p.user.name, h('br'), h('span', { class: 'mu' }, p.user.contact)), h('td', {}, p.planName), h('td', { class: 'mu' }, (p.operator || '—') + (p.phone ? ' · ' + p.phone : '')), h('td', { class: 'num' }, fmtXAF(p.amountXAF)),
-          h('td', {}, h('span', { class: 'pill ' + (p.status === 'paid' ? 'ok' : p.status === 'failed' ? 'red' : 'amber') }, STATUS_LABEL[p.status] || p.status)), h('td', { class: 'mu' }, fmtDateTime(p.created)),
-          h('td', { class: 'r' }, p.status === 'paid' || p.status === 'failed' ? null : [h('button', { class: 'bt solid sm', type: 'button', onclick: () => payAction(p.id, 'validate') }, 'Valider'), ' ', h('button', { class: 'bt out sm', type: 'button', onclick: () => payAction(p.id, 'reject') }, 'Refuser')])))))) : h('p', { class: 'empty' }, 'Aucun paiement.')));
-    } catch (e) { fail(e); }
+    const q = h('input', { type: 'search', value: S.payQ || '', placeholder: 'Rechercher : nom, contact, référence, ID de transaction…', 'aria-label': 'Rechercher un paiement' });
+    const tabs = h('div', { class: 'tabs', role: 'tablist' });
+    const box = h('div', { class: 'dc' }, h('p', { class: 'empty' }, 'Chargement…'));
+    main.append(head('Paiements', 'Mobile Money et paiements automatiques. Validez ou refusez chaque paiement ; le client est prévenu dans les deux cas.'), tabs, h('div', { class: 'filters' }, q), box);
+    const run = async () => {
+      try {
+        const { payments, counts } = await api('/payments?status=' + encodeURIComponent(S.payFilter) + '&q=' + encodeURIComponent(q.value));
+        tabs.replaceChildren(...PAY_TABS.map(([k, l]) => h('button', { type: 'button', role: 'tab', 'aria-selected': S.payFilter === k ? 'true' : 'false', class: S.payFilter === k ? 'on' : '', onclick: () => { S.payFilter = k; render(); } },
+          l, k === '' ? null : h('span', { class: 'cnt' + (k === 'awaiting_validation' && counts[k] ? ' hot' : '') }, String(counts[k] || 0)))));
+        const rows = payments.map((p) => h('tr', {},
+          h('td', { class: 'mu' }, fmtDateTime(p.created)),
+          h('td', {}, h('button', { class: 'link tx', type: 'button', onclick: () => go('client', { clientId: p.user.id }) }, p.user.name), h('br'), h('span', { class: 'mu' }, p.user.contact)),
+          h('td', {}, p.planName, h('br'), h('span', { class: 'mu' }, p.durationDays ? p.durationDays + ' jours' : '')),
+          h('td', { class: 'num' }, fmtXAF(p.amountXAF)),
+          h('td', { class: 'mu' }, (p.operator === 'orange' ? 'Orange Money' : p.operator === 'mtn' ? 'MTN Mobile Money' : p.operator || '—'), h('br'), p.phone || ''),
+          h('td', {}, h('b', { class: 'ref' }, p.reference), h('br'), h('span', { class: 'mu' }, p.transactionId ? 'ID : ' + p.transactionId : p.mode === 'push' ? 'Paiement automatique' : 'ID pas encore saisi')),
+          h('td', {}, h('span', { class: 'pill ' + (PAY_PILL[p.status] || '') }, STATUS_LABEL[p.status] || p.status), p.status === 'failed' && p.rejectReason ? h('div', { class: 'mu why' }, 'Motif : ' + p.rejectReason) : null, p.decidedAt ? h('div', { class: 'mu why' }, fmtDateTime(p.decidedAt)) : null),
+          h('td', { class: 'r' }, payButtons(p))));
+        box.replaceChildren(payments.length ? h('div', { class: 'wrap' }, h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, ['Date', 'Client', 'Offre et durée', 'Montant', 'Opérateur et numéro', 'Référence et ID', 'Statut', ''].map((t) => h('th', {}, t)))), h('tbody', {}, rows)))
+          : h('p', { class: 'empty' }, S.payFilter === 'awaiting_validation' ? 'Aucun paiement à valider : tout est à jour.' : 'Aucun paiement.'));
+      } catch (e) { fail(e); }
+    };
+    let tm; q.addEventListener('input', () => { clearTimeout(tm); tm = setTimeout(() => { S.payQ = q.value; run(); }, 250); });
+    run();
   }
 
   async function plansView(main) {
@@ -406,17 +562,28 @@
     reload();
   }
 
-  const VIEWS = { overview, users: usersView, orgs: orgsView, payments: paymentsView, plans: plansView, contacts: contactsView, ai: aiView, notifications: notifsView, settings: settingsView, security: securityView };
+  const VIEWS = { overview, users: usersView, client: clientView, alerts: alertsView, orgs: orgsView, payments: paymentsView, plans: plansView, contacts: contactsView, ai: aiView, notifications: notifsView, settings: settingsView, security: securityView };
   function render() {
     drawShell();
     const main = $('main'); main.replaceChildren(); window.scrollTo(0, 0);
     if (!S.ov && S.view === 'overview') { main.append(h('p', { class: 'empty' }, 'Chargement…')); return; }
     (VIEWS[S.view] || overview)(main);
   }
-  async function load() {
-    try { S.ov = await api('/overview?days=' + S.days); if (S.ov.admin) S.admin = S.ov.admin; render(); } catch (e) { if (e.message !== 'Session expirée') fail(e); }
+  async function refreshSummary() {
+    try {
+      const prev = S.sum, sum = await api('/summary'); S.sum = sum;
+      const n = sum.payments + sum.alerts;
+      document.title = (n ? '(' + n + ') ' : '') + 'Administration Brij-IA';
+      if (prev && sum.payments > prev.payments) toast('Nouveau paiement à valider : ouvrez « Paiements ».');
+      else if (prev && sum.alerts > prev.alerts) toast('Nouvelle alerte d’activité suspecte.');
+      if (prev && (prev.payments !== sum.payments || prev.alerts !== sum.alerts || prev.leads !== sum.leads)) { drawShell(); if (S.view === 'payments' || S.view === 'alerts') render(); }
+    } catch (e) { /* hors ligne ou session expirée : on réessaiera */ }
   }
-  async function start() { showApp(); S.ov = null; await load(); }
+  async function load() {
+    try { S.ov = await api('/overview?days=' + S.days); if (S.ov.admin) S.admin = S.ov.admin; await refreshSummary(); render(); } catch (e) { if (e.message !== 'Session expirée') fail(e); }
+  }
+  let sumTimer = null;
+  async function start() { showApp(); S.ov = null; S.sum = null; await load(); if (!sumTimer) sumTimer = setInterval(refreshSummary, 60000); }
 
   start().catch(() => showLogin());
 })();

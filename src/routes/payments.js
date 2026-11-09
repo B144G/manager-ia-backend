@@ -10,6 +10,7 @@ const { markPaid, planConflict, planOf } = require('../services/payments');
 const custom = require('../services/custom-plan');
 const { notify } = require('../services/notify');
 const A = require('../workspace/access');
+const accounts = require('../services/accounts');
 const { amap, afilter, asyncHandler, HttpError, cleanText, genReference, log, oneLine } = require('../util');
 
 const router = express.Router();
@@ -43,8 +44,8 @@ router.get('/billing', requireUser, async (req, res) => {
     return { id: p.id, name: p.name, period: p.period, days: p.days, priceXAF: p.priceXAF, limits: lim(stored), current: active && u.plan === stored, available: !reason, reason: reason || '' };
   });
   const orgs = await amap(await db.prepare('SELECT * FROM orgs WHERE owner_id = ? ORDER BY id').all(u.id), async (o) => ({ id: o.id, name: o.name, aiUsed: await A.aiUsed(o), aiMax: A.limitsFor(u.plan).aiMonth, periodEnd: (await A.quotaWindow(o)).end }));
-  const history = (await db.prepare('SELECT reference, plan, operator, amount_xaf, mode, status, created_at, paid_at FROM payments WHERE user_id = ? ORDER BY id DESC LIMIT 20').all(u.id))
-    .map((p) => ({ reference: p.reference, plan: custom.label((planOf(p.plan) || {}).name || p.plan), planKey: custom.isCustom(p.plan) ? p.plan : '', operator: p.operator, amountXAF: p.amount_xaf, mode: p.mode, status: p.status, createdAt: p.created_at, paidAt: p.paid_at }));
+  const history = (await db.prepare('SELECT reference, plan, operator, amount_xaf, mode, status, created_at, paid_at, reject_reason FROM payments WHERE user_id = ? ORDER BY id DESC LIMIT 20').all(u.id))
+    .map((p) => ({ reference: p.reference, plan: custom.label((planOf(p.plan) || {}).name || p.plan), planKey: custom.isCustom(p.plan) ? p.plan : '', operator: p.operator, amountXAF: p.amount_xaf, mode: p.mode, status: p.status, createdAt: p.created_at, paidAt: p.paid_at, rejectReason: p.status === 'failed' ? p.reject_reason || '' : '' }));
   res.json({
     plan: active ? u.plan : 'Gratuit', planLabel: active ? custom.label(u.plan) : 'Gratuit', currentLimits: lim(active ? u.plan : 'Gratuit'), custom: custom.info(), expiresAt: active ? u.plan_expires : null, daysLeft: active ? Math.ceil((exp - Date.now()) / 86400000) : 0,
     freeLimits: lim('Gratuit'), plans, orgs, history, durationDays: config.durationDays, automatic: config.campay.enabled,
@@ -68,7 +69,11 @@ async function syncPush(p) {
       return 'paid';
     }
     if (st === 'failed' && p.status === 'pending') {
-      await db.prepare("UPDATE payments SET status = 'failed' WHERE id = ? AND status = 'pending'").run(p.id);
+      const r = await db.prepare("UPDATE payments SET status = 'failed', decided_at = ? WHERE id = ? AND status = 'pending'").run(nowISO(), p.id);
+      if (r.changes) {
+        await accounts.recordEvent(p.user_id, 'paiement_refuse', p.reference);
+        await accounts.addNotice(p.user_id, 'payment_failed', { title: "Paiement non abouti", text: `Votre paiement ${p.reference} n'a pas abouti (refusé ou annulé sur le téléphone). Aucune somme n'est due : vous pouvez réessayer depuis « Abonnement ».`, data: { reference: p.reference } });
+      }
       return 'failed';
     }
   } catch (e) {
@@ -129,6 +134,7 @@ router.post('/payments/initiate', requireUser, limits.paymentsInit, asyncHandler
               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`)
     .run(reference, req.user.id, plan.id, operator, phone, amount, push ? 'push' : 'manual', providerRef, nowISO());
 
+  await accounts.recordEvent(req.user.id, 'paiement_initie', reference);
   res.json({ reference, mode: push ? 'push' : 'manual', status: 'pending', amountXAF: amount, instructions });
 }));
 
@@ -142,10 +148,16 @@ router.post('/payments/confirm-manual', requireUser, async (req, res) => {
   if (!p) throw new HttpError(404, 'Paiement introuvable.');
   if (p.mode !== 'manual') throw new HttpError(400, 'Ce paiement est automatique : aucune confirmation manuelle nécessaire.');
   if (p.status === 'paid') throw new HttpError(409, 'Ce paiement est déjà validé.');
+  if (p.status === 'failed') throw new HttpError(409, "Ce paiement a été refusé. Faites un nouveau paiement depuis « Abonnement » (ou contactez-nous sur WhatsApp).");
+  // Double clic / renvoi du même ID : on ne prévient pas l'administrateur deux fois.
+  if (p.status === 'awaiting_validation' && p.transaction_id === transactionId) return res.json({ ok: true, status: 'awaiting_validation', already: true });
 
-  await db.prepare("UPDATE payments SET transaction_id = ?, status = 'awaiting_validation' WHERE id = ? AND status != 'paid'").run(transactionId, p.id);
+  const upd = await db.prepare("UPDATE payments SET transaction_id = ?, status = 'awaiting_validation' WHERE id = ? AND status IN ('pending', 'awaiting_validation')").run(transactionId, p.id);
+  if (!upd.changes) throw new HttpError(409, 'Ce paiement ne peut plus être modifié.');
   const plan = planOf(p.plan);
-  notify('paiement_a_valider', `Paiement à valider : ${req.user.name} (${req.user.contact}) - ${plan ? custom.label(plan.name) : p.plan} - ${p.amount_xaf} FCFA - ${p.operator} - ID transaction ${transactionId} - réf. ${p.reference}`);
+  const corrected = p.status === 'awaiting_validation';
+  await accounts.recordEvent(req.user.id, 'paiement_soumis', p.reference);
+  notify('paiement_a_valider', `Paiement à valider${corrected ? ' (ID corrigé)' : ''} : ${req.user.name} (${req.user.contact}) - ${plan ? custom.label(plan.name) : p.plan} (${plan ? plan.days : '?'} jours) - ${p.amount_xaf} FCFA - ${p.operator} ${p.phone || ''} - ID transaction ${transactionId} - réf. ${p.reference}. Ouvrez l'administration > Paiements pour valider ou refuser.`);
   res.json({ ok: true, status: 'awaiting_validation' });
 });
 

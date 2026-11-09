@@ -81,6 +81,7 @@ router.post('/orgs', async (req, res) => {
     return oid;
   })();
   await A.logActivity(id, req.user.id, 'team', `Organisation « ${name} » créée`);
+  await require('../services/accounts').recordEvent(req.user.id, 'organisation_creee'); // chronologie admin : le type d'événement seulement, jamais le nom ni le contenu
   res.status(201).json({ id });
 });
 

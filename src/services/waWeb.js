@@ -156,6 +156,7 @@ function createManager(opts = {}) {
       s.number = digits(String(me.id || '').split(':')[0].split('@')[0]);
       s.status = 'open'; s.qr = null; s.retry = 0; s.registered = true; s.since = nowISO();
       await db.prepare('UPDATE wa_qr_sessions SET number = ?, since = ?, updated_at = ? WHERE org_id = ?').run(s.number, s.since, nowISO(), s.orgId);
+      require('./accounts').recordEventForOrgOwner(s.orgId, 'whatsapp_connecte');
     }
     if (u.connection === 'close') {
       const err = u.lastDisconnect && u.lastDisconnect.error;
@@ -188,6 +189,7 @@ function createManager(opts = {}) {
     orgId = Number(orgId);
     const s = get(orgId);
     if (s) {
+      if (s.status === 'open') require('./accounts').recordEventForOrgOwner(orgId, 'whatsapp_deconnecte');
       s.stopping = true; s.status = 'disconnected'; s.qr = null;
       if (s.timer) { clearTimeout(s.timer); s.timer = null; }
       const sock = s.sock; s.sock = null; s.gen++;

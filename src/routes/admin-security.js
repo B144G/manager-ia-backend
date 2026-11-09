@@ -105,6 +105,7 @@ router.post('/users/:id/revoke-sessions', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) throw new HttpError(400, 'Identifiant invalide.');
   const n = await central.sessions.revokeAllForUser(id, '', "fermée par l'administrateur");
+  await require('../services/accounts').recordEvent(id, 'connexions_fermees', `${n} appareil(s)`);
   await central.audit.record(req, 'admin.user_sessions_revoke', { target: `user:${id}`, severity: 'high', detail: `${n} session(s)` });
   res.json({ ok: true, closed: n });
 });

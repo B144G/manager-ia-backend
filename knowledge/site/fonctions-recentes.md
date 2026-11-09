@@ -20,3 +20,7 @@
 
 **Résumé du matin** : les responsables peuvent recevoir par e-mail un résumé et des alertes urgentes (rupture de stock, facture très en retard, conversation en attente, budget de projet dépassé). Pas par WhatsApp.
 **Paie, comptabilité, fiscalité, juridique** : outils de travail (bulletins avec modèle Cameroun, solde de tout compte, écritures OHADA, document de fin d'exercice, registres) qui ne remplacent ni un expert-comptable, ni un juriste. Rien n'est transmis à l'administration.
+
+**Après un paiement : ce que voit la personne** : dès qu'elle envoie l'ID de transaction, son paiement passe « à valider » et l'équipe est prévenue. Quand l'équipe valide, un bandeau vert s'affiche en haut de l'espace de travail (« Paiement validé : votre offre … est active jusqu'au … »), l'offre est activée avec tous ses quotas, et un e-mail avec le reçu part si la personne a une adresse e-mail (les personnes qui n'ont qu'un numéro de téléphone voient le bandeau dans l'application). Si l'équipe refuse le paiement, un bandeau indique le motif (par exemple « ID de transaction introuvable ») et rien n'est activé : la personne peut refaire un paiement depuis « Abonnement », où le motif reste visible dans l'historique. Le bouton « C'est noté » masque le bandeau.
+
+**Compte suspendu** : si un compte est suspendu par l'équipe (par exemple après un usage abusif), la connexion affiche « Compte suspendu, contactez le support » ; il faut écrire à l'équipe (WhatsApp +237 653 62 13 88) pour le faire réactiver. Une fois réactivé, la personne se reconnecte normalement.

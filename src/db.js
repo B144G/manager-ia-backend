@@ -2429,6 +2429,62 @@ const MIGRATIONS = [
     PRIMARY KEY (day, path, source, device)
   );
   `,
+  // Gestion des clients et parcours de paiement : messages à l'utilisateur dans l'application, suspension de compte, notes de l'administrateur,
+  // chronologie d'activité NON confidentielle (types d'événements et dates seulement), alertes d'activité suspecte.
+  `
+  ALTER TABLE users ADD COLUMN last_login_at TEXT;
+  ALTER TABLE users ADD COLUMN suspended_at TEXT;
+  ALTER TABLE users ADD COLUMN suspended_reason TEXT NOT NULL DEFAULT '';
+  ALTER TABLE payments ADD COLUMN reject_reason TEXT NOT NULL DEFAULT '';
+  ALTER TABLE payments ADD COLUMN decided_at TEXT;
+  CREATE INDEX idx_users_created ON users(created_at);
+
+  CREATE TABLE user_notices (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL DEFAULT '',
+    data TEXT NOT NULL DEFAULT '{}',
+    is_read BIGINT NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_user_notices ON user_notices(user_id, is_read, id);
+
+  CREATE TABLE account_events (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    at TEXT NOT NULL
+  );
+  CREATE INDEX idx_account_events ON account_events(user_id, id);
+  CREATE INDEX idx_account_events_at ON account_events(at);
+
+  CREATE TABLE admin_notes (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_admin_notes ON admin_notes(user_id, id);
+
+  CREATE TABLE admin_alerts (
+    id BIGSERIAL PRIMARY KEY,
+    kind TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'medium',
+    user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    dedupe_key TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    mailed_at TEXT,
+    handled_at TEXT
+  );
+  CREATE INDEX idx_admin_alerts ON admin_alerts(handled_at, id);
+  CREATE INDEX idx_admin_alerts_key ON admin_alerts(dedupe_key, created_at);
+  CREATE UNIQUE INDEX uq_admin_alerts_open ON admin_alerts(dedupe_key) WHERE handled_at IS NULL;
+  `,
 ];
 
 

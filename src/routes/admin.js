@@ -5,7 +5,10 @@ const config = require('../config');
 const { db, nowISO, publicUser } = require('../db');
 const limits = require('../middleware/limits');
 const { setAdminCookie, clearAdminCookie, requireAdmin, sessionIdOf, ADMIN_COOKIE } = require('../middleware/auth');
-const { markPaid, planConflict, planOf } = require('../services/payments');
+const { markPaid, rejectPayment, planConflict, planOf } = require('../services/payments');
+const accounts = require('../services/accounts');
+const clientsSvc = require('../services/clients');
+const alertsSvc = require('../services/alerts');
 const sec = require('../services/security');
 const { notify } = require('../services/notify');
 const { HttpError, safeEqual, cleanText, addDays, parseJSON } = require('../util');
@@ -78,6 +81,7 @@ router.use((req, res, next) => {
 });
 
 router.use('/security', require('./admin-security'));
+router.use(require('./admin-clients')); // résumé (pastilles), clients, alertes
 
 router.get('/security-log', async (req, res) => {
   const ev = await central.audit.list({ limit: req.query.limit });
@@ -132,7 +136,7 @@ const mapPayment = (r) => ({
   reference: r.reference,
   user: { id: r.user_id, name: r.user_name, contact: r.user_contact },
   plan: r.plan,
-  planName: custom.label(r.plan),
+  planName: custom.label((planOf(r.plan) || {}).name || r.plan),
   operator: r.operator,
   phone: r.phone,
   amountXAF: r.amount_xaf,
@@ -141,20 +145,29 @@ const mapPayment = (r) => ({
   transactionId: r.transaction_id,
   created: r.created_at,
   paidAt: r.paid_at,
+  decidedAt: r.decided_at || null,
+  rejectReason: r.reject_reason || '',
+  durationDays: (planOf(r.plan) || {}).days || null,
 });
 
 router.get('/payments', async (req, res) => {
   const status = String(req.query.status || '');
-  let sql = `SELECT p.*, u.name AS user_name, u.contact AS user_contact FROM payments p
-             JOIN users u ON u.id = p.user_id`;
-  const params = [];
+  const q = cleanText(String(req.query.q || ''), 80);
+  const w = []; const params = [];
   if (status) {
     if (!STATUSES.includes(status)) throw new HttpError(400, 'Statut inconnu.');
-    sql += ' WHERE p.status = ?';
-    params.push(status);
+    w.push('p.status = ?'); params.push(status);
   }
-  sql += ' ORDER BY p.id DESC LIMIT 500';
-  res.json({ payments: (await db.prepare(sql).all(...params)).map(mapPayment) });
+  if (q) {
+    const like = '%' + q.replace(/[\\%_]/g, '\\$&') + '%';
+    w.push("(p.reference ILIKE ? ESCAPE '\\' OR u.name ILIKE ? ESCAPE '\\' OR u.contact ILIKE ? ESCAPE '\\' OR p.transaction_id ILIKE ? ESCAPE '\\' OR p.phone ILIKE ? ESCAPE '\\')");
+    params.push(like, like, like, like, like);
+  }
+  const sql = `SELECT p.*, u.name AS user_name, u.contact AS user_contact FROM payments p JOIN users u ON u.id = p.user_id${w.length ? ' WHERE ' + w.join(' AND ') : ''}
+             ORDER BY (CASE WHEN p.status = 'awaiting_validation' THEN 0 ELSE 1 END), p.id DESC LIMIT 500`;
+  const counts = Object.fromEntries(STATUSES.map((k) => [k, 0]));
+  for (const r of await db.prepare('SELECT status, COUNT(*) AS n FROM payments GROUP BY status').all()) counts[r.status] = Number(r.n);
+  res.json({ payments: (await db.prepare(sql).all(...params)).map(mapPayment), counts });
 });
 
 async function findPayment(req) {
@@ -176,10 +189,15 @@ router.post('/payments/:id/validate', async (req, res) => {
   res.json({ ok: true, status: 'paid', plan: r.planName, planExpires: r.expires });
 });
 
+// Refus : le motif est obligatoire ; l'utilisateur le reçoit dans l'application (et par e-mail s'il a une adresse).
 router.post('/payments/:id/reject', async (req, res) => {
   const p = await findPayment(req);
   if (p.status === 'paid') throw new HttpError(409, 'Ce paiement est déjà validé : impossible de le refuser.');
-  await db.prepare("UPDATE payments SET status = 'failed' WHERE id = ?").run(p.id);
+  if (p.status === 'failed') throw new HttpError(409, 'Ce paiement est déjà refusé.');
+  const reason = cleanText((req.body || {}).reason, 300);
+  if (reason.length < 3) throw new HttpError(400, 'Indiquez le motif du refus : il sera communiqué au client.');
+  const r = await rejectPayment(p.id, reason);
+  if (!r) throw new HttpError(409, 'Ce paiement ne peut plus être refusé.');
   res.json({ ok: true, status: 'failed' });
 });
 
@@ -199,6 +217,7 @@ router.post('/users/:id/plan', async (req, res) => {
     expires = addDays(new Date(), days).toISOString();
   }
   await db.prepare('UPDATE users SET plan = ?, plan_expires = ?, reminded_for = NULL WHERE id = ?').run(plan, expires, u.id);
+  await accounts.recordEvent(u.id, 'offre_changee', custom.label(plan));
   res.json({ user: publicUser(await db.prepare('SELECT * FROM users WHERE id = ?').get(u.id)) });
 });
 
@@ -306,7 +325,7 @@ router.get('/overview', async (req, res) => {
     },
     plans: { Gratuit: free, ...Object.fromEntries(PAID.map((n) => [n, payers[n] || 0])), prices: Object.fromEntries(Object.values(config.legacyPlans).map((p) => [p.name, p.priceXAF])), unlimited: Object.fromEntries(Object.values(config.plans).map((p) => [p.period, p.priceXAF])) },
     series,
-    todo: { payments: pendingCount, leads: leadsOpen, expiring },
+    todo: { payments: pendingCount, leads: leadsOpen, expiring, alerts: (await alertsSvc.openCounts()).open },
     payments: pendingPays.map((p) => ({ id: p.id, reference: p.reference, user: p.user_name, planName: custom.label((planOf(p.plan) || {}).name || p.plan), operator: p.operator, amountXAF: p.amount_xaf, created: p.created_at })),
     leads: (await db.prepare('SELECT id, name, what, message, created_at FROM leads WHERE handled = 0 ORDER BY id DESC LIMIT 3').all()).map((l) => ({ id: l.id, name: l.name, text: l.message || l.what || '', created: l.created_at })),
     latestUsers: (await db.prepare('SELECT * FROM users ORDER BY id DESC LIMIT 4').all()).map(publicUser),
@@ -352,14 +371,14 @@ const csvCell = (v) => {
   return '"' + s.replace(/"/g, '""') + '"';
 };
 router.get('/export/users.csv', async (req, res) => {
-  const rows = await db.prepare('SELECT * FROM users ORDER BY id').all();
-  const lines = [['id', 'nom', 'contact', 'offre', 'expiration', 'centres_interet', 'inscrit_le'].join(';')];
-  for (const r of rows) {
-    lines.push([r.id, r.name, r.contact, r.plan, r.plan_expires || '', parseJSON(r.interests, []).join(' '), r.created_at].map(csvCell).join(';'));
+  const { clients } = await clientsSvc.listClients({ ...req.query, limit: 5000, sort: req.query.sort || 'created' });
+  const lines = [['id', 'nom', 'contact', 'inscrit_le', 'derniere_connexion', 'offre', 'echeance', 'etat_offre', 'suspendu', 'organisations', 'membres', 'messages_ia_periode', 'total_paye_fcfa'].join(';')];
+  for (const c of clients) {
+    lines.push([c.id, c.name, c.contact, c.createdAt, c.lastLoginAt || '', c.planLabel, c.planExpires || '', c.planStateLabel, c.suspended ? 'oui' : 'non', c.orgs, c.members, c.aiUsed, c.paidTotalXAF].map(csvCell).join(';'));
   }
   res.set('Content-Type', 'text/csv; charset=utf-8');
   res.set('Content-Disposition', `attachment; filename="inscrits-${nowISO().slice(0, 10)}.csv"`);
-  res.send('﻿' + lines.join('\r\n') + '\r\n');
+  res.send('\ufeff' + lines.join('\r\n') + '\r\n');
 });
 
 module.exports = router;
