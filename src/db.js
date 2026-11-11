@@ -2532,6 +2532,55 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_ai_rule_log ON ai_rule_log(org_id, id);
   `,
+  /* COMPTABILITÉ PRO : sections analytiques (projet, antenne, activité), écritures récurrentes, clôture annuelle et à-nouveaux */ `
+  ALTER TABLE acc_lines ADD COLUMN section TEXT NOT NULL DEFAULT '';
+  CREATE INDEX idx_acc_lines_section ON acc_lines(org_id, section);
+  CREATE TABLE acc_sections (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    label TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'custom',
+    active BIGINT NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, code)
+  );
+  CREATE TABLE acc_recurring (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    label TEXT NOT NULL,
+    journal TEXT NOT NULL,
+    frequency TEXT NOT NULL DEFAULT 'monthly',
+    day_of_month BIGINT NOT NULL DEFAULT 1,
+    start_date TEXT NOT NULL,
+    end_date TEXT,
+    lines_json TEXT NOT NULL DEFAULT '[]',
+    section TEXT NOT NULL DEFAULT '',
+    active BIGINT NOT NULL DEFAULT 1,
+    last_run TEXT,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_acc_recurring_org ON acc_recurring(org_id);
+  CREATE TABLE acc_year_ends (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    year TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'closed',
+    cycle BIGINT NOT NULL DEFAULT 1,
+    closing_entry_id BIGINT,
+    opening_entry_ids TEXT NOT NULL DEFAULT '[]',
+    prev_locked TEXT,
+    resultat BIGINT NOT NULL DEFAULT 0,
+    forced BIGINT NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    closed_by BIGINT,
+    closed_at TEXT,
+    reopen_reason TEXT NOT NULL DEFAULT '',
+    reopened_by BIGINT,
+    reopened_at TEXT,
+    PRIMARY KEY (org_id, year)
+  );
+  `,
 ];
 
 

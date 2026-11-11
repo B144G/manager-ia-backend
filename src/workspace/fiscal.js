@@ -226,9 +226,10 @@ function statementsOf(rows, cumRows, prior) {
 
 async function liasse(req, year) {
   const from = `${year}-01-01`; const to = `${year}-12-31`;
-  const rows = await accounting().balance(req.org, from, to);
+  const NOYE = { noClose: true, noOpen: true }; // la liasse raisonne sur les opérations : ni écriture de clôture du résultat ni à-nouveaux (qui dupliqueraient les soldes cumulés)
+  const rows = await accounting().balance(req.org, from, to, NOYE);
   // Soldes cumulés depuis l'ouverture (toutes les écritures jusqu'à la fin de l'exercice) : base du bilan.
-  const cum = await accounting().balance(req.org, '0001-01-01', to);
+  const cum = await accounting().balance(req.org, '0001-01-01', to, NOYE);
   const resultYear = -rows.filter((r) => '678'.includes(r.account[0])).reduce((a, r) => a + r.balance, 0);
   const resultToDate = -cum.filter((r) => '678'.includes(r.account[0])).reduce((a, r) => a + r.balance, 0);
   const prior = resultToDate - resultYear; // résultat des exercices précédents qui n'a pas encore été viré en réserves/report à nouveau
@@ -324,7 +325,7 @@ async function vatMonth(req, monthParam) {
   const r = A.monthRange(monthParam);
   const [y, m] = r.month.split('-').map(Number);
   const to = `${r.month}-${pad(lastDay(y, m))}`;
-  const rows = await accounting().balance(req.org, r.from, to);
+  const rows = await accounting().balance(req.org, r.from, to, { noClose: true, noOpen: true });
   const col = rows.filter((x) => x.account.startsWith('443')); const ded = rows.filter((x) => x.account.startsWith('445'));
   const collected = -col.reduce((a, x) => a + x.balance, 0); const deductible = ded.reduce((a, x) => a + x.balance, 0);
   const missing = [];

@@ -166,7 +166,7 @@ async function checklist(req, month) {
   const rc = (await db.prepare("SELECT COUNT(*) c FROM documents WHERE org_id = ? AND kind = 'invoice' AND status = 'sent' AND total - paid - credited > 0 AND due IS NOT NULL AND due < ?").get(req.org.id, t)).c;
   add('receivables', 'Créances clients échues relancées', rc ? 'warn' : 'ok', rc ? `${rc} facture(s) client échue(s)` : '', { count: rc });
   // 6. Caisse
-  const mv = (await db.prepare("SELECT COUNT(*) c FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id WHERE l.org_id = ? AND l.account = '571' AND e.date >= ? AND e.date <= ?").get(req.org.id, `${month}-01`, end)).c;
+  const mv = (await db.prepare("SELECT COUNT(*) c FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id WHERE l.org_id = ? AND l.account = '571' AND e.date >= ? AND e.date <= ? AND e.source NOT IN ('year_open', 'year_open_rev')").get(req.org.id, `${month}-01`, end)).c;
   const cc = (await db.prepare('SELECT COUNT(*) c FROM cash_counts WHERE org_id = ? AND date >= ? AND date <= ?').get(req.org.id, `${month}-01`, end)).c;
   add('cash', 'Caisse comptée', mv && !cc ? 'warn' : 'ok', mv && !cc ? 'Mouvements de caisse sans comptage du mois' : '');
   // 7. Contrôles manuels
@@ -253,7 +253,7 @@ router.post('/closing/adjustments', async (req, res) => {
 const cashView = (c) => ({ id: c.id, date: c.date, expected: c.expected, counted: c.counted, diff: c.diff, note: c.note, entryId: c.entry_id, branchId: c.branch_id });
 router.get('/cash-counts', async (req, res) => {
   const rows = await db.prepare('SELECT * FROM cash_counts WHERE org_id = ? ORDER BY date DESC, id DESC LIMIT 100').all(req.org.id);
-  const bal = (await db.prepare("SELECT COALESCE(SUM(l.debit - l.credit), 0) b FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id WHERE l.org_id = ? AND l.account = '571' AND e.date <= ?").get(req.org.id, today())).b;
+  const bal = (await db.prepare("SELECT COALESCE(SUM(l.debit - l.credit), 0) b FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id WHERE l.org_id = ? AND l.account = '571' AND e.date <= ? AND e.source NOT IN ('year_open', 'year_open_rev')").get(req.org.id, today())).b;
   res.json({ counts: rows.map(cashView), glBalance: bal });
 });
 router.post('/cash-counts', async (req, res) => {
@@ -262,7 +262,7 @@ router.post('/cash-counts', async (req, res) => {
   const counted = Number(typeof b.counted === 'string' ? b.counted.replace(/\s/g, '').replace(',', '.') : b.counted);
   if (!Number.isFinite(counted) || counted < 0 || counted > 1e12) throw new HttpError(400, 'Montant compté invalide (zéro ou plus).');
   const c = Math.round(counted);
-  const expected = (await db.prepare("SELECT COALESCE(SUM(l.debit - l.credit), 0) b FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id WHERE l.org_id = ? AND l.account = '571' AND e.date <= ?").get(req.org.id, date)).b;
+  const expected = (await db.prepare("SELECT COALESCE(SUM(l.debit - l.credit), 0) b FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id WHERE l.org_id = ? AND l.account = '571' AND e.date <= ? AND e.source NOT IN ('year_open', 'year_open_rev')").get(req.org.id, date)).b;
   const diff = c - expected;
   const note = A.text(b.note, 200);
   if (diff !== 0 && b.post && note.length < 3) throw new HttpError(400, "Pour comptabiliser l'écart, indiquez une explication.");

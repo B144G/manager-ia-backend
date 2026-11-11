@@ -50,7 +50,7 @@ const UNCOVERED = `b.in_ledger = 0 AND b.acc_entry_id IS NULL AND ${COVERED}`;
 async function realized(orgId, year) {
   const map = await mapOf(orgId);
   const lines = await db.prepare(`SELECT l.account, substr(e.date, 6, 2) AS m, SUM(l.debit) AS d, SUM(l.credit) AS c FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id
-    WHERE l.org_id = ? AND e.date >= ? AND e.date <= ? AND (l.account LIKE '6%' OR l.account LIKE '7%') GROUP BY l.account, substr(e.date, 6, 2)`).all(orgId, `${year}-01-01`, `${year}-12-31`);
+    WHERE l.org_id = ? AND e.date >= ? AND e.date <= ? AND (l.account LIKE '6%' OR l.account LIKE '7%') AND e.source NOT IN ('year_end', 'year_end_rev') GROUP BY l.account, substr(e.date, 6, 2)`).all(orgId, `${year}-01-01`, `${year}-12-31`);
   const out = new Map(); // "kind|catégorie" -> { kind, category, ledger[12], manual[12] }
   const slot = (kind, category) => { const k = `${kind}|${category}`; if (!out.has(k)) out.set(k, { kind, category, ledger: Array(12).fill(0), manual: Array(12).fill(0) }); return out.get(k); };
   for (const l of lines) {
@@ -159,7 +159,7 @@ router.get('/commitments', A.need('admin'), async (req, res) => res.json({ ...(a
 // ---------- Prévision de trésorerie ----------
 async function cashflow(req, months, collectRate) {
   const t = today(); const start = t.slice(0, 7);
-  const opening = await db.prepare("SELECT COALESCE(SUM(l.debit - l.credit), 0) b, COUNT(*) n FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id WHERE l.org_id = ? AND l.account LIKE '5%' AND l.account NOT LIKE '59%' AND e.date <= ?").get(req.org.id, t);
+  const opening = await db.prepare("SELECT COALESCE(SUM(l.debit - l.credit), 0) b, COUNT(*) n FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id WHERE l.org_id = ? AND l.account LIKE '5%' AND l.account NOT LIKE '59%' AND e.date <= ? AND e.source NOT IN ('year_open', 'year_open_rev')").get(req.org.id, t);
   const slot = (m) => (m < start ? start : m);
   const list = Array.from({ length: months }, (_, i) => addMonth(start, i));
   const M = new Map(list.map((m) => [m, { month: m, inflows: [], outflows: [] }]));
@@ -208,7 +208,7 @@ router.get('/duplicates', A.need('admin'), async (req, res) => {
   const year = yearOf(req.query.year);
   const man = await db.prepare(`SELECT b.id, b.kind, b.category, b.label, b.amount, b.date FROM budget_entries b WHERE b.org_id = ? AND b.date >= ? AND b.date <= ? AND ${UNCOVERED} ORDER BY b.date`).all(req.org.id, `${year}-01-01`, `${year}-12-31`);
   const gl = await db.prepare(`SELECT e.id AS entry_id, e.number, e.date, e.label, l.account, l.debit, l.credit FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id
-    WHERE l.org_id = ? AND e.date >= ? AND e.date <= ? AND (l.account LIKE '6%' OR l.account LIKE '7%') AND NOT EXISTS (SELECT 1 FROM budget_entries x WHERE x.acc_entry_id = e.id)`).all(req.org.id, `${year}-01-01`, `${year}-12-31`);
+    WHERE l.org_id = ? AND e.date >= ? AND e.date <= ? AND (l.account LIKE '6%' OR l.account LIKE '7%') AND e.source NOT IN ('year_end', 'year_end_rev') AND NOT EXISTS (SELECT 1 FROM budget_entries x WHERE x.acc_entry_id = e.id)`).all(req.org.id, `${year}-01-01`, `${year}-12-31`);
   const used = new Set(); const out = [];
   for (const b of man) {
     const c = gl.find((g) => !used.has(g.entry_id) && (b.kind === 'expense' ? g.account[0] === '6' && g.debit === b.amount : g.account[0] === '7' && g.credit === b.amount) && Math.abs(Date.parse(g.date) - Date.parse(b.date)) <= 3 * 86400000);

@@ -218,7 +218,7 @@ router.get('/:id/lines', async (req, res) => {
 /** Lignes d'écriture du compte comptable lié, pas encore pointées. */
 async function openGlLines(org, bank, from, to) {
   return await db.prepare(`SELECT l.id, l.entry_id, l.debit, l.credit, l.memo, e.number, e.date, e.label, e.piece, e.journal FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id
-    WHERE l.org_id = ? AND l.account = ? AND e.date >= ? AND e.date <= ? AND NOT EXISTS (SELECT 1 FROM bank_lines b WHERE b.acc_line_id = l.id) ORDER BY e.date, l.id`).all(org.id, bank.gl_account, from, to);
+    WHERE l.org_id = ? AND l.account = ? AND e.date >= ? AND e.date <= ? AND e.source NOT IN ('year_open', 'year_open_rev') AND NOT EXISTS (SELECT 1 FROM bank_lines b WHERE b.acc_line_id = l.id) ORDER BY e.date, l.id`).all(org.id, bank.gl_account, from, to);
 }
 const dayDiff = (a, b) => Math.abs(Math.round((Date.parse(a) - Date.parse(b)) / 86400000));
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -333,7 +333,7 @@ router.post('/lines/:lineId/post', async (req, res) => {
 router.get('/:id/summary', async (req, res) => {
   const bank = await bankOf(req, req.params.id);
   const asOf = A.date(req.query.asOf) || today();
-  const glRow = await db.prepare(`SELECT COALESCE(SUM(l.debit - l.credit), 0) b FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id WHERE l.org_id = ? AND l.account = ? AND e.date <= ?`).get(req.org.id, bank.gl_account, asOf);
+  const glRow = await db.prepare(`SELECT COALESCE(SUM(l.debit - l.credit), 0) b FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id WHERE l.org_id = ? AND l.account = ? AND e.date <= ? AND e.source NOT IN ('year_open', 'year_open_rev')`).get(req.org.id, bank.gl_account, asOf);
   const last = await db.prepare('SELECT balance FROM bank_lines WHERE bank_id = ? AND balance IS NOT NULL AND date <= ? ORDER BY date DESC, id DESC LIMIT 1').get(bank.id, asOf);
   const ub = (await db.prepare("SELECT * FROM bank_lines WHERE bank_id = ? AND status = 'unmatched' AND date <= ? ORDER BY date, id").all(bank.id, asOf)).map(lineView);
   const ug = (await openGlLines(req.org, bank, '0000-01-01', asOf)).map((g) => ({ accLineId: g.id, entryId: g.entry_id, number: g.number, date: g.date, label: g.label, piece: g.piece, amount: g.debit - g.credit }));

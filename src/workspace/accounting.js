@@ -18,9 +18,12 @@ const today = () => nowISO().slice(0, 10);
 const int = (v) => (Number.isFinite(Number(v)) && Math.abs(Number(v)) <= 1e12 ? Math.round(Number(v)) : NaN);
 
 async function ensure(org) {
-  if (!await db.prepare('SELECT 1 FROM acc_accounts WHERE org_id = ? LIMIT 1').get(org.id)) {
+  // Plan de base à la première utilisation ; ensuite, les comptes standard ajoutés au plan depuis sont ajoutés aussi (jamais les comptes personnalisés ni les libellés existants).
+  if ((await db.prepare('SELECT COUNT(*) c FROM acc_accounts WHERE org_id = ? AND custom = 0').get(org.id)).c < PLAN.length) {
+    const have = new Set((await db.prepare('SELECT code FROM acc_accounts WHERE org_id = ?').all(org.id)).map((r) => r.code));
     const ins = db.prepare('INSERT OR IGNORE INTO acc_accounts (org_id, code, label, custom) VALUES (?, ?, ?, 0)');
-    await db.transaction(async () => { for (const [c, l] of PLAN) await ins.run(org.id, c, l); })();
+    const missing = PLAN.filter(([c]) => !have.has(c));
+    if (missing.length) await db.transaction(async () => { for (const [c, l] of missing) await ins.run(org.id, c, l); })();
   }
   await db.prepare('INSERT OR IGNORE INTO acc_settings (org_id) VALUES (?)').run(org.id);
   return await db.prepare('SELECT * FROM acc_settings WHERE org_id = ?').get(org.id);
@@ -37,13 +40,13 @@ const range = (req) => {
 const accountExists = async (orgId, code) => Boolean(await db.prepare('SELECT 1 FROM acc_accounts WHERE org_id = ? AND code = ?').get(orgId, code));
 
 /** Enregistre une écriture : doit être équilibrée, comptes connus, date hors période verrouillée. Numérotation par journal et par année. */
-async function post(org, userId, { journal, date, label, piece, lines, source, sourceId, reversedOf }, settings) {
+async function post(org, userId, { journal, date, label, piece, lines, source, sourceId, reversedOf, allowClosedMonth, maxLines }, settings) {
   if (!JOURNALS[journal]) throw new HttpError(400, 'Journal inconnu.');
   if (!isDate(date)) throw new HttpError(400, 'Date invalide (AAAA-MM-JJ).');
   const cleanLabel = A.text(label, 200, { required: true, msg: "Indiquez le libellé de l'écriture." });
   if (settings.locked_until && date <= settings.locked_until) throw new HttpError(400, `Les écritures jusqu'au ${settings.locked_until} sont verrouillées (période clôturée).`);
-  if (await db.prepare("SELECT 1 FROM month_closings WHERE org_id = ? AND month = ? AND status = 'closed'").get(org.id, date.slice(0, 7))) throw new HttpError(400, `Le mois ${date.slice(0, 7)} est clôturé : rouvrez-le (avec un motif) dans la clôture mensuelle pour y passer une écriture.`);
-  if (!Array.isArray(lines) || lines.length < 2 || lines.length > 50) throw new HttpError(400, 'Une écriture comporte au moins deux lignes.');
+  if (!allowClosedMonth && await db.prepare("SELECT 1 FROM month_closings WHERE org_id = ? AND month = ? AND status = 'closed'").get(org.id, date.slice(0, 7))) throw new HttpError(400, `Le mois ${date.slice(0, 7)} est clôturé : rouvrez-le (avec un motif) dans la clôture mensuelle pour y passer une écriture.`);
+  if (!Array.isArray(lines) || lines.length < 2 || lines.length > (maxLines || 50)) throw new HttpError(400, 'Une écriture comporte au moins deux lignes.');
   let d = 0; let c = 0;
   const L = await amap(lines, async (l) => {
     const debit = int(l.debit || 0); const credit = int(l.credit || 0);
@@ -52,7 +55,14 @@ async function post(org, userId, { journal, date, label, piece, lines, source, s
     const account = String(l.account || '').trim();
     if (!await accountExists(org.id, account)) throw new HttpError(400, `Compte inconnu : ${account || '(vide)'}.`);
     d += debit; c += credit;
-    return { account, debit, credit, memo: A.text(l.memo, 120) };
+    // Section analytique (projet, antenne, activité) : doit exister et être active (une annulation peut reprendre une section désormais désactivée).
+    const section = String(l.section || '').trim();
+    if (section) {
+      const sec = await db.prepare('SELECT active FROM acc_sections WHERE org_id = ? AND code = ?').get(org.id, section);
+      if (!sec) throw new HttpError(400, `Section analytique inconnue : ${section}.`);
+      if (!sec.active && !reversedOf) throw new HttpError(400, `La section analytique ${section} est désactivée.`);
+    }
+    return { account, debit, credit, memo: A.text(l.memo, 120), section };
   });
   if (d !== c) throw new HttpError(400, `L'écriture n'est pas équilibrée : débit ${d.toLocaleString('fr-FR')} ≠ crédit ${c.toLocaleString('fr-FR')}.`);
   if (d === 0) throw new HttpError(400, 'Le montant ne peut pas être nul.');
@@ -62,8 +72,8 @@ async function post(org, userId, { journal, date, label, piece, lines, source, s
     const number = `${journal}-${year}-${String(n).padStart(5, '0')}`;
     const id = (await db.prepare('INSERT INTO acc_entries (org_id, journal, number, date, label, piece, source, source_id, reversed_of, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(org.id, journal, number, date, cleanLabel, A.text(piece, 60), source || '', sourceId || null, reversedOf || null, userId || null, nowISO())).lastInsertRowid;
-    const ins = db.prepare('INSERT INTO acc_lines (entry_id, org_id, account, debit, credit, memo) VALUES (?, ?, ?, ?, ?, ?)');
-    for (const l of L) await ins.run(id, org.id, l.account, l.debit, l.credit, l.memo);
+    const ins = db.prepare('INSERT INTO acc_lines (entry_id, org_id, account, debit, credit, memo, section) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    for (const l of L) await ins.run(id, org.id, l.account, l.debit, l.credit, l.memo, l.section);
     return { id: Number(id), number };
   })();
 }
@@ -91,18 +101,18 @@ async function recordEntry(org, userId, entry) {
 }
 
 /** Annule une écriture par une écriture inverse (contre-passation) : jamais de modification ni de suppression. Idempotent : refuse une seconde annulation. */
-async function reverseEntry(org, userId, entryId, date) {
+async function reverseEntry(org, userId, entryId, date, opts = {}) {
   const settings = await ensure(org);
   const e = await db.prepare('SELECT * FROM acc_entries WHERE id = ? AND org_id = ?').get(entryId, org.id);
   if (!e) throw new HttpError(404, 'Écriture introuvable.');
   if (e.reversed_of) throw new HttpError(400, "Cette écriture est déjà une annulation.");
   if (await db.prepare('SELECT 1 FROM acc_entries WHERE org_id = ? AND reversed_of = ?').get(org.id, e.id)) throw new HttpError(409, 'Cette écriture a déjà été annulée.');
-  const lines = (await db.prepare('SELECT * FROM acc_lines WHERE entry_id = ?').all(e.id)).map((l) => ({ account: l.account, debit: l.credit, credit: l.debit, memo: l.memo }));
-  const r = await post(org, userId, { journal: 'OD', date: isDate(date) ? date : today(), label: `Annulation de ${e.number} : ${e.label}`.slice(0, 200), piece: e.number, lines, reversedOf: e.id }, settings);
+  const lines = (await db.prepare('SELECT * FROM acc_lines WHERE entry_id = ?').all(e.id)).map((l) => ({ account: l.account, debit: l.credit, credit: l.debit, memo: l.memo, section: l.section || '' }));
+  const r = await post(org, userId, { journal: 'OD', date: isDate(date) ? date : today(), label: `Annulation de ${e.number} : ${e.label}`.slice(0, 200), piece: e.number, lines, reversedOf: e.id, allowClosedMonth: opts.allowClosedMonth, source: opts.source, sourceId: opts.sourceId, maxLines: opts.maxLines }, settings);
   return { ...r, reversed: e.number };
 }
 
-const entryView = (e, lines) => ({ id: e.id, journal: e.journal, number: e.number, date: e.date, label: e.label, piece: e.piece, source: e.source, reversedOf: e.reversed_of, lines: lines.filter((l) => l.entry_id === e.id).map((l) => ({ account: l.account, debit: l.debit, credit: l.credit, memo: l.memo })) });
+const entryView = (e, lines) => ({ id: e.id, journal: e.journal, number: e.number, date: e.date, label: e.label, piece: e.piece, source: e.source, reversedOf: e.reversed_of, lines: lines.filter((l) => l.entry_id === e.id).map((l) => ({ account: l.account, debit: l.debit, credit: l.credit, memo: l.memo, section: l.section || '' })) });
 
 async function entries(org, { journal, from, to, q, limit = 200 }) {
   const w = ['e.org_id = ?']; const a = [org.id];
@@ -185,15 +195,17 @@ async function generate(req) {
 }
 
 // ---------- Calculs ----------
-async function balance(org, from, to) {
+// opts.noClose : sans l'écriture de détermination du résultat (et son annulation) ; opts.noOpen : sans les écritures d'à-nouveaux (et leur annulation).
+async function balance(org, from, to, opts = {}) {
+  const extra = (opts.noClose ? " AND e.source NOT IN ('year_end', 'year_end_rev')" : '') + (opts.noOpen ? " AND e.source NOT IN ('year_open', 'year_open_rev')" : '');
   const rows = await db.prepare(`SELECT l.account, a.label, SUM(l.debit) AS debit, SUM(l.credit) AS credit FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id LEFT JOIN acc_accounts a ON a.org_id = l.org_id AND a.code = l.account
-    WHERE l.org_id = ? AND e.date >= ? AND e.date <= ? GROUP BY l.account, a.label ORDER BY l.account`).all(org.id, from, to);
+    WHERE l.org_id = ? AND e.date >= ? AND e.date <= ?${extra} GROUP BY l.account, a.label ORDER BY l.account`).all(org.id, from, to);
   return rows.map((r) => ({ account: r.account, label: r.label || '', debit: r.debit, credit: r.credit, balance: r.debit - r.credit }));
 }
 const sum = (rows, f) => rows.filter(f).reduce((a, r) => a + r.balance, 0);
 
 async function statements(org, year) {
-  const rows = await balance(org, `${year}-01-01`, `${year}-12-31`);
+  const rows = await balance(org, `${year}-01-01`, `${year}-12-31`, { noClose: true }); // l'écriture de clôture du résultat ne doit pas le compter deux fois
   const cls = (r) => r.account[0];
   const produits = rows.filter((r) => ['7'].includes(cls(r)) || r.account.startsWith('82') || r.account.startsWith('84') || r.account.startsWith('86') || r.account.startsWith('88'));
   const charges = rows.filter((r) => ['6'].includes(cls(r)) || r.account.startsWith('81') || r.account.startsWith('83') || r.account.startsWith('85') || r.account.startsWith('87') || r.account.startsWith('89'));
@@ -234,7 +246,13 @@ router.get('/', async (req, res) => {
   });
 });
 
-router.get('/accounts', async (req, res) => res.json({ accounts: (await db.prepare('SELECT code, label, custom FROM acc_accounts WHERE org_id = ? ORDER BY code').all(req.org.id)).map((a) => ({ code: a.code, label: a.label, custom: Boolean(a.custom) })) }));
+router.get('/accounts', async (req, res) => {
+  const q = String(req.query.q || '').replace(/[%_\\]/g, ' ').trim().slice(0, 60);
+  const rows = q
+    ? await db.prepare('SELECT code, label, custom FROM acc_accounts WHERE org_id = ? AND (code LIKE ? OR label ILIKE ?) ORDER BY code').all(req.org.id, `${q}%`, `%${q}%`)
+    : await db.prepare('SELECT code, label, custom FROM acc_accounts WHERE org_id = ? ORDER BY code').all(req.org.id);
+  res.json({ accounts: rows.map((a) => ({ code: a.code, label: a.label, custom: Boolean(a.custom) })) });
+});
 router.post('/accounts', async (req, res) => {
   const code = String((req.body || {}).code || '').trim();
   if (!/^[1-8]\d{2,7}$/.test(code)) throw new HttpError(400, 'Le numéro de compte comporte 3 à 8 chiffres et commence par 1 à 8.');
@@ -294,9 +312,13 @@ router.get('/balance', async (req, res) => {
   const { from, to } = range(req); const rows = await balance(req.org, from, to);
   res.json({ from, to, rows, totalDebit: rows.reduce((a, r) => a + r.debit, 0), totalCredit: rows.reduce((a, r) => a + r.credit, 0) });
 });
-router.get('/statements', async (req, res) => res.json(await statements(req.org, range(req).year)));
+router.get('/statements', async (req, res) => {
+  const { year } = range(req); const base = await statements(req.org, year);
+  if (!['1', 'true'].includes(String(req.query.compare || ''))) return res.json(base);
+  res.json(await require('./acc-pro-analytics').withComparison(req.org, year, base)); // N-1 et variations ; sans « compare », réponse inchangée
+});
 router.get('/vat', async (req, res) => {
-  const { from, to } = range(req); const rows = await balance(req.org, from, to);
+  const { from, to } = range(req); const rows = await balance(req.org, from, to, { noClose: true, noOpen: true }); // flux de TVA de la période : sans les écritures de clôture ni d'à-nouveaux
   const collected = -sum(rows, (r) => r.account.startsWith('443')); const deductible = sum(rows, (r) => r.account.startsWith('445'));
   res.json({ from, to, collected, deductible, due: Math.max(collected - deductible, 0), credit: Math.max(deductible - collected, 0), rate: req.acc.vat_rate });
 });
@@ -339,6 +361,11 @@ Règles : journaux possibles : ${Object.keys(JOURNALS).join(', ')} (CA = caisse,
 router.use('/bank', require('./acc-bank'));
 router.use(require('./acc-thirdparty'));
 router.use(require('./acc-ops'));
+// COMPTABILITÉ PRO : analytique, modèles de saisie, récurrentes, exports, clôture annuelle, ratios, contrôles, synthèse.
+router.use(require('./acc-pro'));
+router.use(require('./acc-pro-year'));
+router.use(require('./acc-pro-analytics'));
+router.use(require('./acc-audit'));
 
 module.exports = router;
 module.exports.pending = pending;

@@ -17,7 +17,7 @@ const nextCode = (n) => { let s = ''; let i = n; do { s = String.fromCharCode(65
 const sameParty = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
 
 const linesOf = async (orgId, account) => await db.prepare(`SELECT l.id, l.debit, l.credit, l.memo, l.letter, e.number, e.date, e.label, e.piece, e.journal FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id
-  WHERE l.org_id = ? AND l.account = ? ORDER BY e.date, l.id`).all(orgId, account);
+  WHERE l.org_id = ? AND l.account = ? AND e.source NOT IN ('year_open', 'year_open_rev') ORDER BY e.date, l.id`).all(orgId, account);
 
 /** Propositions de lettrage : par tiers, une ligne au débit et une au crédit de même montant. */
 function proposals(lines) {
