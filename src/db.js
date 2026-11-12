@@ -2581,6 +2581,33 @@ const MIGRATIONS = [
     PRIMARY KEY (org_id, year)
   );
   `,
+  `
+  CREATE TABLE acc_loans (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    label TEXT NOT NULL,
+    lender TEXT NOT NULL DEFAULT '',
+    principal BIGINT NOT NULL,
+    rate_bp BIGINT NOT NULL DEFAULT 0,
+    months BIGINT NOT NULL,
+    method TEXT NOT NULL DEFAULT 'annuity',
+    start_date TEXT NOT NULL,
+    first_due TEXT NOT NULL,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_acc_loans_org ON acc_loans(org_id);
+  CREATE TABLE acc_loan_lines (
+    id BIGSERIAL PRIMARY KEY,
+    loan_id BIGINT NOT NULL REFERENCES acc_loans(id) ON DELETE CASCADE,
+    n BIGINT NOT NULL,
+    due_date TEXT NOT NULL,
+    principal BIGINT NOT NULL,
+    interest BIGINT NOT NULL,
+    balance_after BIGINT NOT NULL,
+    UNIQUE (loan_id, n)
+  );
+  `,
 ];
 
 

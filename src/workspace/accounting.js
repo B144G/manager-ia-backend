@@ -366,6 +366,8 @@ router.use(require('./acc-pro'));
 router.use(require('./acc-pro-year'));
 router.use(require('./acc-pro-analytics'));
 router.use(require('./acc-audit'));
+router.use(require('./acc-trail'));
+router.use(require('./acc-loans'));
 
 module.exports = router;
 module.exports.pending = pending;
