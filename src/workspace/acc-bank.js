@@ -182,13 +182,29 @@ router.delete('/:id', async (req, res) => {
 // ---------- Import ----------
 const lineHash = (bankId, l, k) => crypto.createHash('sha1').update([bankId, l.date, l.amount, l.label.toLowerCase(), l.reference, k].join('|')).digest('hex');
 
+/** Lit le relevé envoyé : CSV (format détecté), OFX, MT940, CAMT.053 (détectés d'après le contenu) ou Excel (.xlsx en base64, converti en CSV). */
+function readStatement(b) {
+  const FM = require('./acc-bank-formats');
+  if (typeof b.xlsxBase64 === 'string' && b.xlsxBase64) {
+    if (b.xlsxBase64.length > FM.MAX_BYTES * 1.4) throw new HttpError(400, 'Fichier trop volumineux (1,5 Mo au plus).');
+    const parsed = parseStatement(FM.xlsxToCsv(Buffer.from(b.xlsxBase64, 'base64')), b.mapping || {});
+    parsed.detected.format = 'xlsx';
+    return parsed;
+  }
+  const text = typeof b.csv === 'string' ? b.csv : '';
+  if (!text.trim()) throw new HttpError(400, 'Choisissez le fichier du relevé ou collez son contenu.');
+  if (text.length > FM.MAX_BYTES) throw new HttpError(400, 'Fichier trop volumineux (1,5 Mo au plus).');
+  const fmt = FM.sniff(text);
+  if (fmt !== 'csv') { const r = FM.parseByFormat(fmt, text); return { detected: { format: fmt }, lines: r.lines, invalid: r.invalid }; }
+  const parsed = parseStatement(text, b.mapping || {});
+  parsed.detected.format = 'csv';
+  return parsed;
+}
+
 router.post('/:id/import', async (req, res) => {
   const bank = await bankOf(req, req.params.id);
   const b = req.body || {};
-  const text = typeof b.csv === 'string' ? b.csv : '';
-  if (!text.trim()) throw new HttpError(400, 'Collez ou chargez le contenu du relevé (CSV).');
-  if (text.length > 1.5e6) throw new HttpError(400, 'Fichier trop volumineux (1,5 Mo au plus).');
-  const parsed = parseStatement(text, b.mapping || {});
+  const parsed = readStatement(b);
   if (b.dryRun) return res.json({ dryRun: true, detected: parsed.detected, valid: parsed.lines.length, invalid: parsed.invalid.slice(0, 20), preview: parsed.lines.slice(0, 10) });
   if (!parsed.lines.length) throw new HttpError(400, 'Aucune ligne exploitable dans ce fichier.');
   const seen = new Map(); let added = 0; let dup = 0;
