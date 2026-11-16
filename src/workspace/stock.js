@@ -12,6 +12,8 @@ const { amap, afilter, HttpError } = require('../util');
 const P6 = require('./projects-w6');
 
 const router = express.Router({ mergeParams: true });
+// Stock entrepôt : l'entrepôt principal existe dès le premier passage (tout le stock y est rangé).
+router.use(async (req, res, next) => { await require('./wms-core').ensure(req.org.id); next(); });
 const today = () => nowISO().slice(0, 10);
 const addDays = (d, n) => new Date(Date.parse(d) + n * 86400000).toISOString().slice(0, 10);
 
@@ -34,6 +36,7 @@ const view = async (it, mgr) => ({
   id: it.id, name: it.name, unit: it.unit, quantity: it.quantity, minQuantity: it.min_quantity, maxQuantity: it.max_quantity, unitCost: it.unit_cost, avgCost: mgr ? Math.round(L.unitValue(it) * 100) / 100 : undefined,
   value: mgr ? Math.round(it.quantity * L.unitValue(it)) : undefined, sku: it.sku, barcode: it.barcode, tracking: it.tracking, pickRule: it.pick_rule, branchId: it.branch_id,
   state: stateOf(it), best: await bestPrice(it.id),
+  ...(await require('./wms-core').availability(it.id).then((x) => ({ reserved: x.reserved, available: x.available }))),
 });
 
 /** Articles du stock visibles (filtrés par antenne). */
@@ -173,8 +176,18 @@ router.post('/items/:id/move', async (req, res) => {
   const q = it.tracking === 'serial' && (b.quantity === undefined || b.quantity === '') ? serials.length : A.qty(b.quantity);
   if (kind === 'in' && b.unitCost !== undefined && b.unitCost !== '' && !A.can(req, 'manager')) throw new HttpError(403, "Seul un responsable peut valoriser une entrée.");
   const projectId = kind === 'out' ? await P6.linkableProject(req, b.projectId) : null;
+  // Emplacement (WMS) : entrée dans l'emplacement choisi (sinon règles de rangement), sortie depuis l'emplacement choisi (sinon automatique).
+  const locationId = b.locationId === undefined || b.locationId === null || b.locationId === '' ? undefined : A.id(b.locationId, 'Emplacement introuvable.');
+  if (locationId) await require('./wms-core').locationOf(req.org.id, locationId);
+  // Une sortie libre ne prend pas le stock réservé (une commande livrée passe par sa réservation).
+  if (kind === 'out') {
+    const W = require('./wms-core');
+    await W.expireReservations(req.org.id);
+    const av = await W.availability(it.id);
+    if (av.reserved > 0 && av.available + 1e-9 < q) throw new HttpError(400, `Stock réservé : il reste ${Math.max(0, av.available)} ${it.unit} disponible(s) pour « ${it.name} » (${av.reserved} ${it.unit} réservé(s)).`);
+  }
   const r = await L.adjust(req, it, kind === 'in' ? q : -q, A.text(b.reason, 150) || (kind === 'in' ? 'Entrée' : 'Sortie'),
-    { refKind: projectId ? 'project' : undefined, refId: projectId || undefined, strict: true, lotNo: A.text(b.lotNo, 40), expiry: A.date(b.expiry) || undefined, serials, unitCost: kind === 'in' && b.unitCost !== undefined && b.unitCost !== '' ? A.amount(b.unitCost) : undefined });
+    { locationId, refKind: projectId ? 'project' : undefined, refId: projectId || undefined, strict: true, lotNo: A.text(b.lotNo, 40), expiry: A.date(b.expiry) || undefined, serials, unitCost: kind === 'in' && b.unitCost !== undefined && b.unitCost !== '' ? A.amount(b.unitCost) : undefined });
   let project = null;
   if (projectId) {
     const mv = await db.prepare("SELECT id FROM stock_moves WHERE item_id = ? AND ref_kind = 'project' AND ref_id = ? ORDER BY id DESC LIMIT 1").get(it.id, projectId);
@@ -217,6 +230,8 @@ router.put('/suppliers/:id', A.need('manager'), async (req, res) => {
 });
 router.delete('/suppliers/:id', A.need('manager'), async (req, res) => {
   const s = await supplierOf(req, req.params.id);
+  // Un fournisseur qui a des commandes ou des factures dans le module Achats se garde (historique comptable) : on le bloque à la place.
+  if (await db.prepare('SELECT 1 FROM pur_orders WHERE supplier_id = ? UNION ALL SELECT 1 FROM pur_invoices WHERE supplier_id = ? LIMIT 1').get(s.id, s.id)) throw new HttpError(409, 'Ce fournisseur a des commandes ou des factures dans les Achats : bloquez-le plutôt que de le supprimer.');
   await db.prepare('DELETE FROM suppliers WHERE id = ?').run(s.id);
   res.json({ ok: true });
 });
@@ -308,7 +323,7 @@ async function receive(req, o, it, qtyIn, opts = {}) {
   const complete = done >= o.quantity - 1e-9;
   await db.transaction(async () => {
     await L.adjust(req, it, q, complete && o.received_qty === 0 ? `Commande #${o.id} reçue` : `Commande #${o.id} : réception ${complete ? 'du solde' : 'partielle'}`,
-      { unitCost: price > 0 ? price : undefined, lotNo: opts.lotNo || `CMD-${o.id}`, expiry: opts.expiry, serials: opts.serials, strict: opts.strict, refKind: 'order', refId: o.id });
+      { unitCost: price > 0 ? price : undefined, lotNo: opts.lotNo || `CMD-${o.id}`, expiry: opts.expiry, serials: opts.serials, strict: opts.strict, refKind: 'order', refId: o.id, locationId: opts.locationId });
     const receiptId = Number((await db.prepare('INSERT INTO purchase_receipts (org_id, order_id, quantity, unit_price, lot_no, expiry, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, o.id, q, price, opts.lotNo || '', opts.expiry || null, A.text(opts.note, 200), req.user.id, nowISO())).lastInsertRowid);
     await db.prepare('UPDATE purchase_orders SET status = ?, received_qty = ?, received_at = ?, decided_by = COALESCE(decided_by, ?), updated_at = ? WHERE id = ?').run(complete ? 'received' : 'partial', done, nowISO(), req.user.id, nowISO(), o.id);
     await P6.costFromReceipt(req, o, it, receiptId, q, price);
@@ -331,7 +346,7 @@ router.post('/orders/:id/receive', A.need('manager'), async (req, res) => {
   const b = req.body || {};
   if (it.tracking === 'lot' && !A.text(b.lotNo, 40)) throw new HttpError(400, `« ${it.name} » est suivi par lot : indiquez le numéro de lot reçu.`);
   const serials = it.tracking === 'serial' ? L.parseSerials(b.serials) : undefined;
-  const r = await receive(req, o, it, it.tracking === 'serial' && (b.quantity === undefined || b.quantity === '') ? serials.length : b.quantity, { lotNo: A.text(b.lotNo, 40), expiry: A.date(b.expiry) || undefined, serials, unitPrice: b.unitPrice, note: b.note, strict: true });
+  const r = await receive(req, o, it, it.tracking === 'serial' && (b.quantity === undefined || b.quantity === '') ? serials.length : b.quantity, { lotNo: A.text(b.lotNo, 40), expiry: A.date(b.expiry) || undefined, serials, unitPrice: b.unitPrice, note: b.note, strict: true, locationId: b.locationId ? A.id(b.locationId, 'Emplacement introuvable.') : undefined });
   await A.logActivity(req.org.id, req.user.id, 'stock', `Commande de « ${it.name} » : ${r.status === 'received' ? 'reçue' : 'réception partielle'} (${r.received})`);
   res.json(r);
 });

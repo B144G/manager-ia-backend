@@ -2608,6 +2608,603 @@ const MIGRATIONS = [
     UNIQUE (loan_id, n)
   );
   `,
+  // Bibliothèque : documents rangés en blocs protégés (mot de passe ressaisi, autorisation courte liée à la session), versions chiffrées, droits, corbeille, journal.
+  `
+  CREATE TABLE lib_settings (
+    org_id BIGINT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    grant_minutes BIGINT NOT NULL DEFAULT 15,
+    grant_max_minutes BIGINT NOT NULL DEFAULT 120,
+    max_file_mb BIGINT NOT NULL DEFAULT 0,
+    updated_at TEXT
+  );
+  CREATE TABLE lib_blocks (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT '#2f6f5e',
+    icon TEXT NOT NULL DEFAULT 'folder',
+    hidden BIGINT NOT NULL DEFAULT 0,
+    personal BIGINT NOT NULL DEFAULT 0,
+    builtin BIGINT NOT NULL DEFAULT 0,
+    position BIGINT NOT NULL DEFAULT 0,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_lib_blocks_org ON lib_blocks(org_id);
+  CREATE TABLE lib_role_perms (
+    block_id BIGINT NOT NULL REFERENCES lib_blocks(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    p_view BIGINT NOT NULL DEFAULT 0,
+    p_read BIGINT NOT NULL DEFAULT 0,
+    p_add BIGINT NOT NULL DEFAULT 0,
+    p_edit BIGINT NOT NULL DEFAULT 0,
+    p_delete BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (block_id, role)
+  );
+  CREATE TABLE lib_user_perms (
+    block_id BIGINT NOT NULL REFERENCES lib_blocks(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    p_view BIGINT NOT NULL DEFAULT 0,
+    p_read BIGINT NOT NULL DEFAULT 0,
+    p_add BIGINT NOT NULL DEFAULT 0,
+    p_edit BIGINT NOT NULL DEFAULT 0,
+    p_delete BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (block_id, user_id)
+  );
+  CREATE TABLE lib_folders (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    block_id BIGINT NOT NULL REFERENCES lib_blocks(id) ON DELETE CASCADE,
+    parent_id BIGINT REFERENCES lib_folders(id) ON DELETE CASCADE,
+    owner_id BIGINT,
+    name TEXT NOT NULL,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_lib_folders_block ON lib_folders(block_id);
+  CREATE TABLE lib_docs (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    block_id BIGINT NOT NULL REFERENCES lib_blocks(id) ON DELETE CASCADE,
+    folder_id BIGINT REFERENCES lib_folders(id) ON DELETE SET NULL,
+    owner_id BIGINT,
+    name TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size BIGINT NOT NULL DEFAULT 0,
+    version BIGINT NOT NULL DEFAULT 1,
+    tags TEXT NOT NULL DEFAULT '[]',
+    link_type TEXT,
+    link_id BIGINT,
+    created_by BIGINT,
+    updated_by BIGINT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT,
+    deleted_by BIGINT
+  );
+  CREATE INDEX idx_lib_docs_block ON lib_docs(block_id, deleted_at);
+  CREATE INDEX idx_lib_docs_org ON lib_docs(org_id);
+  CREATE TABLE lib_versions (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    doc_id BIGINT NOT NULL REFERENCES lib_docs(id) ON DELETE CASCADE,
+    n BIGINT NOT NULL,
+    name TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size BIGINT NOT NULL,
+    data BYTEA NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    UNIQUE (doc_id, n)
+  );
+  CREATE INDEX idx_lib_versions_org ON lib_versions(org_id);
+  CREATE TABLE lib_favorites (
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    doc_id BIGINT NOT NULL REFERENCES lib_docs(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, doc_id)
+  );
+  CREATE TABLE lib_recent (
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    doc_id BIGINT NOT NULL REFERENCES lib_docs(id) ON DELETE CASCADE,
+    at TEXT NOT NULL,
+    PRIMARY KEY (user_id, doc_id)
+  );
+  CREATE TABLE lib_grants (
+    session_id TEXT NOT NULL,
+    block_id BIGINT NOT NULL REFERENCES lib_blocks(id) ON DELETE CASCADE,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL,
+    hard_expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, block_id)
+  );
+  CREATE INDEX idx_lib_grants_exp ON lib_grants(hard_expires_at);
+  CREATE TABLE lib_audit (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    block_id BIGINT,
+    block_name TEXT NOT NULL DEFAULT '',
+    user_id BIGINT,
+    action TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    ip TEXT NOT NULL DEFAULT '',
+    at TEXT NOT NULL
+  );
+  CREATE INDEX idx_lib_audit_org ON lib_audit(org_id, id);
+  CREATE INDEX idx_lib_audit_fail ON lib_audit(user_id, action, at);
+  `,
+  // Achats : demande → appel d'offres → bon de commande → réception (contrôle qualité) → facture rapprochée → paiement. Fournisseurs partagés avec le Stock.
+  `
+  ALTER TABLE suppliers ADD COLUMN contact_person TEXT NOT NULL DEFAULT '';
+  ALTER TABLE suppliers ADD COLUMN email TEXT NOT NULL DEFAULT '';
+  ALTER TABLE suppliers ADD COLUMN phone TEXT NOT NULL DEFAULT '';
+  ALTER TABLE suppliers ADD COLUMN address TEXT NOT NULL DEFAULT '';
+  ALTER TABLE suppliers ADD COLUMN city TEXT NOT NULL DEFAULT '';
+  ALTER TABLE suppliers ADD COLUMN tax_id TEXT NOT NULL DEFAULT '';
+  ALTER TABLE suppliers ADD COLUMN rccm TEXT NOT NULL DEFAULT '';
+  ALTER TABLE suppliers ADD COLUMN category TEXT NOT NULL DEFAULT '';
+  ALTER TABLE suppliers ADD COLUMN payment_days BIGINT;
+  ALTER TABLE suppliers ADD COLUMN bank_info TEXT NOT NULL DEFAULT '';
+  ALTER TABLE suppliers ADD COLUMN blocked BIGINT NOT NULL DEFAULT 0;
+  CREATE TABLE pur_settings (
+    org_id BIGINT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    data TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT
+  );
+  CREATE TABLE pur_counters (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    year TEXT NOT NULL,
+    n BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (org_id, kind, year)
+  );
+  CREATE TABLE pur_requests (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    number TEXT NOT NULL,
+    title TEXT NOT NULL,
+    justification TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '',
+    needed_date TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    requester_id BIGINT,
+    decided_by BIGINT,
+    decided_at TEXT,
+    reject_reason TEXT NOT NULL DEFAULT '',
+    order_id BIGINT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_pur_requests_org ON pur_requests(org_id, status);
+  CREATE TABLE pur_request_lines (
+    id BIGSERIAL PRIMARY KEY,
+    request_id BIGINT NOT NULL REFERENCES pur_requests(id) ON DELETE CASCADE,
+    item_id BIGINT,
+    description TEXT NOT NULL,
+    unit TEXT NOT NULL DEFAULT '',
+    quantity DOUBLE PRECISION NOT NULL,
+    est_price BIGINT,
+    position BIGINT NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_pur_request_lines ON pur_request_lines(request_id);
+  CREATE TABLE pur_rfqs (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    number TEXT NOT NULL,
+    title TEXT NOT NULL,
+    deadline TEXT,
+    category TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    awarded_supplier_id BIGINT,
+    awarded_total BIGINT,
+    baseline BIGINT,
+    savings BIGINT NOT NULL DEFAULT 0,
+    award_reason TEXT NOT NULL DEFAULT '',
+    cancel_reason TEXT NOT NULL DEFAULT '',
+    order_id BIGINT,
+    created_by BIGINT,
+    awarded_at TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_pur_rfqs_org ON pur_rfqs(org_id, status);
+  CREATE TABLE pur_rfq_lines (
+    id BIGSERIAL PRIMARY KEY,
+    rfq_id BIGINT NOT NULL REFERENCES pur_rfqs(id) ON DELETE CASCADE,
+    item_id BIGINT,
+    description TEXT NOT NULL,
+    unit TEXT NOT NULL DEFAULT '',
+    quantity DOUBLE PRECISION NOT NULL,
+    ref_price BIGINT,
+    position BIGINT NOT NULL DEFAULT 0
+  );
+  CREATE TABLE pur_rfq_suppliers (
+    rfq_id BIGINT NOT NULL REFERENCES pur_rfqs(id) ON DELETE CASCADE,
+    supplier_id BIGINT NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    delivery_days BIGINT,
+    payment_days BIGINT,
+    terms TEXT NOT NULL DEFAULT '',
+    valid_until TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    updated_at TEXT,
+    PRIMARY KEY (rfq_id, supplier_id)
+  );
+  CREATE TABLE pur_rfq_prices (
+    rfq_id BIGINT NOT NULL REFERENCES pur_rfqs(id) ON DELETE CASCADE,
+    supplier_id BIGINT NOT NULL,
+    line_id BIGINT NOT NULL REFERENCES pur_rfq_lines(id) ON DELETE CASCADE,
+    unit_price BIGINT NOT NULL,
+    PRIMARY KEY (supplier_id, line_id)
+  );
+  CREATE TABLE pur_orders (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    number TEXT NOT NULL,
+    supplier_id BIGINT NOT NULL REFERENCES suppliers(id),
+    status TEXT NOT NULL DEFAULT 'draft',
+    order_date TEXT NOT NULL,
+    expected_date TEXT,
+    payment_days BIGINT NOT NULL DEFAULT 30,
+    vat_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+    category TEXT NOT NULL DEFAULT '',
+    delivery_address TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    request_id BIGINT,
+    rfq_id BIGINT,
+    created_by BIGINT,
+    approved_by BIGINT,
+    approved_at TEXT,
+    sent_at TEXT,
+    sent_to TEXT NOT NULL DEFAULT '',
+    cancel_reason TEXT NOT NULL DEFAULT '',
+    closed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_pur_orders_org ON pur_orders(org_id, status);
+  CREATE TABLE pur_order_lines (
+    id BIGSERIAL PRIMARY KEY,
+    order_id BIGINT NOT NULL REFERENCES pur_orders(id) ON DELETE CASCADE,
+    item_id BIGINT,
+    description TEXT NOT NULL,
+    unit TEXT NOT NULL DEFAULT '',
+    quantity DOUBLE PRECISION NOT NULL,
+    unit_price BIGINT NOT NULL DEFAULT 0,
+    position BIGINT NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_pur_order_lines ON pur_order_lines(order_id);
+  CREATE TABLE pur_receipts (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    number TEXT NOT NULL,
+    order_id BIGINT NOT NULL REFERENCES pur_orders(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    delivery_note TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    received_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_pur_receipts_order ON pur_receipts(order_id);
+  CREATE TABLE pur_receipt_lines (
+    id BIGSERIAL PRIMARY KEY,
+    receipt_id BIGINT NOT NULL REFERENCES pur_receipts(id) ON DELETE CASCADE,
+    order_line_id BIGINT NOT NULL REFERENCES pur_order_lines(id) ON DELETE CASCADE,
+    received_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    rejected_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL DEFAULT '',
+    lot_no TEXT NOT NULL DEFAULT '',
+    expiry TEXT,
+    serials TEXT NOT NULL DEFAULT '',
+    location_id BIGINT,
+    inspection BIGINT NOT NULL DEFAULT 0,
+    insp_pending DOUBLE PRECISION NOT NULL DEFAULT 0,
+    insp_accepted DOUBLE PRECISION NOT NULL DEFAULT 0,
+    insp_rejected DOUBLE PRECISION NOT NULL DEFAULT 0,
+    insp_reason TEXT NOT NULL DEFAULT '',
+    insp_at TEXT
+  );
+  CREATE INDEX idx_pur_receipt_lines ON pur_receipt_lines(receipt_id);
+  CREATE INDEX idx_pur_receipt_lines_ol ON pur_receipt_lines(order_line_id);
+  CREATE TABLE pur_invoices (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    number TEXT NOT NULL,
+    supplier_id BIGINT NOT NULL REFERENCES suppliers(id),
+    order_id BIGINT REFERENCES pur_orders(id) ON DELETE SET NULL,
+    supplier_ref TEXT NOT NULL,
+    invoice_date TEXT NOT NULL,
+    due_date TEXT NOT NULL,
+    vat_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+    declared_total BIGINT,
+    expense_account TEXT NOT NULL DEFAULT '601',
+    notes TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'entered',
+    issues TEXT NOT NULL DEFAULT '[]',
+    override_reason TEXT NOT NULL DEFAULT '',
+    entry_id BIGINT,
+    approved_by BIGINT,
+    approved_at TEXT,
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_pur_invoices_org ON pur_invoices(org_id, status);
+  CREATE TABLE pur_invoice_lines (
+    id BIGSERIAL PRIMARY KEY,
+    invoice_id BIGINT NOT NULL REFERENCES pur_invoices(id) ON DELETE CASCADE,
+    order_line_id BIGINT,
+    description TEXT NOT NULL,
+    quantity DOUBLE PRECISION NOT NULL,
+    unit_price BIGINT NOT NULL,
+    position BIGINT NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_pur_invoice_lines ON pur_invoice_lines(invoice_id);
+  CREATE TABLE pur_payments (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    invoice_id BIGINT NOT NULL REFERENCES pur_invoices(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    method TEXT NOT NULL,
+    reference TEXT NOT NULL DEFAULT '',
+    amount BIGINT NOT NULL,
+    entry_id BIGINT,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE pur_evaluations (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    supplier_id BIGINT NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    author_id BIGINT,
+    delivery_score BIGINT NOT NULL,
+    quality_score BIGINT NOT NULL,
+    price_score BIGINT NOT NULL,
+    comment TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE pur_documents (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    supplier_id BIGINT NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size BIGINT NOT NULL,
+    data BYTEA NOT NULL,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  `,
+  // Stock entrepôt (WMS) : entrepôts, zones, emplacements, stock par emplacement (toujours égal au total de l'article), rangement,
+  // transferts entre entrepôts, réservations, listes de préparation, retours et rebuts, réceptions avec coûts d'arrivée, réglages ABC et prévisions.
+  `
+  CREATE TABLE wms_settings (
+    org_id BIGINT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    data TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE wms_warehouses (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    code TEXT NOT NULL,
+    branch_id BIGINT REFERENCES branches(id) ON DELETE SET NULL,
+    address TEXT NOT NULL DEFAULT '',
+    is_default BIGINT NOT NULL DEFAULT 0,
+    active BIGINT NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, code)
+  );
+  CREATE TABLE wms_zones (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    warehouse_id BIGINT NOT NULL REFERENCES wms_warehouses(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    code TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'storage',
+    UNIQUE (warehouse_id, code)
+  );
+  CREATE TABLE wms_locations (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    warehouse_id BIGINT NOT NULL REFERENCES wms_warehouses(id) ON DELETE CASCADE,
+    zone_id BIGINT REFERENCES wms_zones(id) ON DELETE SET NULL,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'storage',
+    aisle TEXT NOT NULL DEFAULT '',
+    rack TEXT NOT NULL DEFAULT '',
+    bin TEXT NOT NULL DEFAULT '',
+    capacity DOUBLE PRECISION,
+    active BIGINT NOT NULL DEFAULT 1,
+    is_default BIGINT NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, code)
+  );
+  CREATE INDEX idx_wms_locations_wh ON wms_locations(warehouse_id);
+  CREATE TABLE wms_stock (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    location_id BIGINT NOT NULL REFERENCES wms_locations(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    quantity DOUBLE PRECISION NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (location_id, item_id)
+  );
+  CREATE INDEX idx_wms_stock_item ON wms_stock(item_id);
+  CREATE TABLE wms_moves (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    from_location_id BIGINT,
+    to_location_id BIGINT,
+    quantity DOUBLE PRECISION NOT NULL,
+    kind TEXT NOT NULL,
+    ref_kind TEXT NOT NULL DEFAULT '',
+    ref_id BIGINT,
+    reason TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_wms_moves_org ON wms_moves(org_id, id);
+  CREATE TABLE wms_putaway_rules (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_id BIGINT REFERENCES stock_items(id) ON DELETE CASCADE,
+    tracking TEXT,
+    location_id BIGINT NOT NULL REFERENCES wms_locations(id) ON DELETE CASCADE,
+    priority BIGINT NOT NULL DEFAULT 100,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE wms_item_params (
+    item_id BIGINT PRIMARY KEY REFERENCES stock_items(id) ON DELETE CASCADE,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    lead_days BIGINT,
+    safety_stock DOUBLE PRECISION,
+    reorder_point DOUBLE PRECISION,
+    order_multiple DOUBLE PRECISION
+  );
+  CREATE TABLE wms_counters (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    n BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (org_id, kind)
+  );
+  CREATE TABLE wms_transfers (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'requested',
+    from_warehouse_id BIGINT NOT NULL REFERENCES wms_warehouses(id),
+    to_warehouse_id BIGINT NOT NULL REFERENCES wms_warehouses(id),
+    note TEXT NOT NULL DEFAULT '',
+    requested_by BIGINT,
+    shipped_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE wms_transfer_lines (
+    id BIGSERIAL PRIMARY KEY,
+    transfer_id BIGINT NOT NULL REFERENCES wms_transfers(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id),
+    quantity DOUBLE PRECISION NOT NULL,
+    shipped_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    received_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    gap_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    gap_value BIGINT NOT NULL DEFAULT 0,
+    gap_reason TEXT NOT NULL DEFAULT '',
+    origins TEXT NOT NULL DEFAULT '[]'
+  );
+  CREATE TABLE wms_transfer_log (
+    id BIGSERIAL PRIMARY KEY,
+    transfer_id BIGINT NOT NULL REFERENCES wms_transfers(id) ON DELETE CASCADE,
+    action TEXT NOT NULL,
+    by_id BIGINT,
+    note TEXT NOT NULL DEFAULT '',
+    at TEXT NOT NULL
+  );
+  CREATE TABLE wms_reservations (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    quantity DOUBLE PRECISION NOT NULL,
+    fulfilled_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    source_kind TEXT NOT NULL,
+    document_id BIGINT,
+    pick_id BIGINT,
+    label TEXT NOT NULL DEFAULT '',
+    needed_by TEXT,
+    expires_at TEXT,
+    close_reason TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_wms_res_item ON wms_reservations(item_id, status);
+  CREATE TABLE wms_picks (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    priority BIGINT NOT NULL DEFAULT 2,
+    document_id BIGINT,
+    label TEXT NOT NULL DEFAULT '',
+    assigned_to BIGINT,
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    done_at TEXT
+  );
+  CREATE TABLE wms_pick_lines (
+    id BIGSERIAL PRIMARY KEY,
+    pick_id BIGINT NOT NULL REFERENCES wms_picks(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id),
+    location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    quantity DOUBLE PRECISION NOT NULL,
+    picked_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    done BIGINT NOT NULL DEFAULT 0,
+    short BIGINT NOT NULL DEFAULT 0,
+    picked_from TEXT NOT NULL DEFAULT '[]'
+  );
+  CREATE TABLE wms_returns (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    customer_id BIGINT,
+    supplier_id BIGINT,
+    document_id BIGINT,
+    reason TEXT NOT NULL DEFAULT '',
+    credit_amount BIGINT,
+    created_by BIGINT,
+    validated_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE wms_return_lines (
+    id BIGSERIAL PRIMARY KEY,
+    return_id BIGINT NOT NULL REFERENCES wms_returns(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id),
+    quantity DOUBLE PRECISION NOT NULL,
+    reason_code TEXT NOT NULL DEFAULT 'other',
+    disposition TEXT NOT NULL,
+    final TEXT,
+    location_id BIGINT,
+    lot_no TEXT NOT NULL DEFAULT '',
+    serials TEXT NOT NULL DEFAULT '',
+    unit_value DOUBLE PRECISION NOT NULL DEFAULT 0
+  );
+  CREATE TABLE wms_receipts (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    supplier_id BIGINT,
+    reference TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE wms_receipt_lines (
+    id BIGSERIAL PRIMARY KEY,
+    receipt_id BIGINT NOT NULL REFERENCES wms_receipts(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id),
+    quantity DOUBLE PRECISION NOT NULL,
+    unit_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+    weight DOUBLE PRECISION,
+    landed_total BIGINT NOT NULL DEFAULT 0,
+    purchase_receipt_id BIGINT
+  );
+  CREATE TABLE wms_receipt_costs (
+    id BIGSERIAL PRIMARY KEY,
+    receipt_id BIGINT NOT NULL REFERENCES wms_receipts(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    amount BIGINT NOT NULL,
+    basis TEXT NOT NULL,
+    expensed BIGINT NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  `,
+
 ];
 
 

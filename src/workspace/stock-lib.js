@@ -112,6 +112,8 @@ async function adjust(req, itemOrId, delta, reason, opts = {}) {
       avg = Math.round(avg * 100) / 100;
     }
     await db.prepare('UPDATE stock_items SET quantity = ?, avg_cost = ? WHERE id = ?').run(next, avg, it.id);
+    // Stock par emplacement (WMS) : toujours égal au total de l'article.
+    await require('./wms-core').reconcile(req, it, next, { ...(opts.locationId ? { locationId: opts.locationId } : {}), ...(opts.warehouseId ? { warehouseId: opts.warehouseId } : {}) });
     await db.prepare('INSERT INTO stock_moves (org_id, item_id, delta, reason, created_by, created_at, unit_cost, ref_kind, ref_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(req.org.id, it.id, delta, String(reason).slice(0, 150), req.user ? req.user.id : null, nowISO(), opts.unitCost === undefined ? null : Number(opts.unitCost), opts.refKind || '', opts.refId || null);
     return { quantity: next, allocations, serials };
