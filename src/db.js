@@ -2917,6 +2917,18 @@ const MIGRATIONS = [
   CREATE INDEX idx_wms_pick_lines ON wms_pick_lines(pick_id, seq);
   CREATE INDEX idx_wms_pick_lines_loc ON wms_pick_lines(location_id, item_id);
   `,
+  /* STOCK WMS · lot 8 : paramètres de réapprovisionnement par article (stock de sécurité, délai fournisseur, point de commande, multiple de commande). */ `
+  CREATE TABLE wms_item_params (
+    item_id BIGINT PRIMARY KEY REFERENCES stock_items(id) ON DELETE CASCADE,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    safety_stock DOUBLE PRECISION,
+    lead_days BIGINT,
+    reorder_point DOUBLE PRECISION,
+    order_multiple DOUBLE PRECISION,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_wms_item_params_org ON wms_item_params(org_id);
+  `,
 ];
 
 

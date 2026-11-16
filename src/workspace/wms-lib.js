@@ -212,7 +212,7 @@ function allocate(total, weights) {
 // ---------- Réglages de l'entrepôt (JSON par organisation, valeurs par défaut si rien n'est enregistré) ----------
 const DEFAULTS = {
   abcA: 80, abcB: 95, abcDays: 365, cycleA: 30, cycleB: 90, cycleC: 180,
-  forecastWeeks: 8, serviceLevel: 95, defaultLeadDays: 7,
+  forecastWeeks: 8, serviceLevel: 95, defaultLeadDays: 7, reviewDays: 14,
 };
 async function settings(orgId) {
   const row = await db.prepare('SELECT data FROM wms_settings WHERE org_id = ?').get(orgId);

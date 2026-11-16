@@ -52,7 +52,7 @@ router.put('/settings', A.need('admin'), async (req, res) => {
   const num = (k, lo, hi, label) => { if (b[k] === undefined) return; const n = Number(b[k]); if (!Number.isFinite(n) || n < lo || n > hi) throw new HttpError(400, `${label} : entre ${lo} et ${hi}.`); patch[k] = Math.round(n * 10) / 10; };
   num('abcA', 1, 99, 'Seuil de la classe A (%)'); num('abcB', 2, 100, 'Seuil de la classe B (%)'); num('abcDays', 30, 1095, 'Période de calcul (jours)');
   num('cycleA', 1, 730, 'Fréquence classe A (jours)'); num('cycleB', 1, 730, 'Fréquence classe B (jours)'); num('cycleC', 1, 730, 'Fréquence classe C (jours)');
-  num('forecastWeeks', 2, 52, 'Semaines de prévision'); num('serviceLevel', 50, 99.9, 'Niveau de service (%)'); num('defaultLeadDays', 0, 365, 'Délai fournisseur par défaut (jours)');
+  num('forecastWeeks', 2, 52, 'Semaines de prévision'); num('serviceLevel', 50, 99.9, 'Niveau de service (%)'); num('defaultLeadDays', 0, 365, 'Délai fournisseur par défaut (jours)'); num('reviewDays', 1, 120, 'Jours entre deux commandes');
   const cur = { ...(await W.settings(req.org.id)), ...patch };
   if (cur.abcA >= cur.abcB) throw new HttpError(400, 'Le seuil A doit être plus petit que le seuil B.');
   res.json({ settings: await W.saveSettings(req.org.id, patch) });

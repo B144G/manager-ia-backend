@@ -4,6 +4,6 @@
 const express = require('express');
 
 const router = express.Router({ mergeParams: true });
-for (const f of ['locations', 'transfers', 'reservations', 'returns', 'receipts', 'abc', 'picking']) router.use('/', require('./stock-wms-' + f));
+for (const f of ['locations', 'transfers', 'reservations', 'returns', 'receipts', 'abc', 'picking', 'forecast']) router.use('/', require('./stock-wms-' + f));
 
 module.exports = router;

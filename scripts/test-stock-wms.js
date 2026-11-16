@@ -966,4 +966,104 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await mem('POST', `${W}/putaway`, { itemId: ranger, fromLocationId: recLoc, quantity: 99 });
   check('ranger plus que présent → 400', r.status === 400, r.status);
   await coherent('fin du lot 7');
+
+  // =====================================================================================================
+  // LOT 8 · PRÉVISION ET RÉAPPROVISIONNEMENT
+  // =====================================================================================================
+  const FC = `${W}/forecast`; const RO = `${W}/reorder`;
+  const ago = (days) => new Date(Date.now() - days * 86400000).toISOString();
+  const mkF = async (name, qty, weekly /* semaine récente d'abord */) => {
+    const id = await newItem(name, { unitCost: 100 });
+    await mgr('POST', `${S}/items/${id}/move`, { kind: 'in', quantity: qty, unitCost: 100 });
+    await dbx.prepare('UPDATE stock_items SET created_at = ? WHERE id = ?').run(ago(120), id);
+    for (let w = 0; w < weekly.length; w++) await dbx.prepare("INSERT INTO stock_moves (org_id, item_id, delta, reason, created_at, ref_kind) VALUES (?, ?, ?, 'Vente', ?, '')").run(org, id, -weekly[w], ago(w * 7 + 3));
+    return id;
+  };
+  const f1 = await mkF('Farine', 25, [20, 20, 10, 10, 20, 20, 10, 10]);
+  const f2 = await mkF('Sucre', 100, [40, 40, 40, 40, 10, 10, 10, 10]);
+  await dbx.prepare("INSERT INTO stock_moves (org_id, item_id, delta, reason, created_at, ref_kind) VALUES (?, ?, -500, 'Inventaire', ?, 'count')").run(org, f1, ago(5));
+  await dbx.prepare("INSERT INTO stock_moves (org_id, item_id, delta, reason, created_at, ref_kind) VALUES (?, ?, -90, 'Perte transfert', ?, 'transfer')").run(org, f1, ago(6));
+  r = await mem('GET', FC);
+  check('droits : la prévision est réservée aux responsables', r.status === 403, r.status);
+  r = await mgr('GET', `${FC}/${f1}`);
+  const F1 = r.json;
+  check('prévision : 8 semaines, moyenne mobile 15 par semaine (écarts d\'inventaire et pertes de transfert ignorés)', r.status === 200 && F1.weeks === 8 && F1.avgWeekly === 15 && F1.ma4 === 15 && JSON.stringify(F1.series) === JSON.stringify([10, 10, 20, 20, 10, 10, 20, 20]), F1);
+  check('prévision : écart-type hebdomadaire (échantillon) 5,35 ; tendance stable', Math.abs(F1.sdWeekly - 5.35) < 0.01 && F1.trend === 'flat' && F1.nextWeeks.length === 4 && F1.nextWeeks[0].quantity === 15, F1);
+  r = await mgr('GET', `${FC}/${f2}`);
+  check('tendance à la hausse : moyenne des 4 dernières semaines 40 contre 25 sur 8 semaines', r.json.avgWeekly === 25 && r.json.ma4 === 40 && r.json.trend === 'up', r.json);
+  r = await mgr('GET', FC);
+  const row1 = r.json.items.find((x) => x.itemId === f1);
+  check('liste : article avec demande, autonomie 11,7 jours (25 en stock à 2,14 par jour)', row1 && row1.avgWeekly === 15 && Math.abs(row1.cover - 11.7) < 0.05 && row1.nextMonth === 65.18, row1);
+  const young = await newItem('Article récent', { unitCost: 10 });
+  await mgr('POST', `${S}/items/${young}/move`, { kind: 'in', quantity: 100 });
+  await mem('POST', `${S}/items/${young}/move`, { kind: 'out', quantity: 14, reason: 'Vente' });
+  r = await mgr('GET', `${FC}/${young}`);
+  check('article créé aujourd\'hui : moyenné sur 1 semaine (14), pas sur 8', r.json.weeks === 1 && r.json.avgWeekly === 14, r.json);
+
+  // Réapprovisionnement : point de commande = demande pendant le délai + stock de sécurité
+  r = await mgr('PUT', `${W}/items/${f1}/params`, { leadDays: 10 });
+  check('délai fournisseur fixé sur l\'article', r.status === 200 && r.json.params.leadDays === 10, r.json);
+  r = await mgr('GET', RO);
+  let sg = r.json.suggestions.find((x) => x.itemId === f1);
+  const sdw = Math.sqrt((8 * 25) / 7); const safety = 1.6449 * sdw * Math.sqrt(10 / 7); const rop = (15 / 7) * 10 + safety;
+  check('suggestion : stock de sécurité calculé 10,5 ; point de commande 31,9 ; délai de l\'article', sg && sg.safetyStock === Math.round(safety * 10) / 10 && sg.reorderPoint === Math.round(rop * 10) / 10 && sg.leadDays === 10 && sg.leadSource === 'article' && sg.safetySource === 'calculé', sg);
+  check('suggestion : commander jusqu\'à ROP + 14 jours de demande = ⌈61,9 − 25⌉ = 37, urgence « bientôt »', sg.toOrder === Math.ceil(rop + (15 / 7) * 14 - 25) && sg.toOrder === 37 && sg.urgency === 'soon', sg);
+  r = await mgr('PUT', `${W}/items/${f1}/params`, { orderMultiple: 12 });
+  r = await mgr('GET', RO);
+  sg = r.json.suggestions.find((x) => x.itemId === f1);
+  check('multiple de commande 12 : 37 → 48', sg.toOrder === 48, sg.toOrder);
+  r = await mgr('PUT', `${W}/items/${f1}/params`, { orderMultiple: null, safetyStock: 0 });
+  r = await mgr('GET', RO);
+  check('stock de sécurité fixé à 0 : point de commande 21,4 < position 25 → plus de suggestion', !r.json.suggestions.some((x) => x.itemId === f1), r.json.suggestions.map((x) => x.name));
+  r = await mgr('PUT', `${W}/items/${f1}/params`, { safetyStock: null });
+  // stock réservé : disponible à promettre diminue la position
+  const rsF = (await mgr('POST', RS, { itemId: f1, quantity: 10, label: 'Boulangerie', kind: 'manual' })).json.id;
+  r = await mgr('GET', RO);
+  sg = r.json.suggestions.find((x) => x.itemId === f1);
+  check('la réservation (10) réduit la position : 15 disponibles, à commander 47', sg.available === 15 && sg.reserved === 10 && sg.toOrder === 47, sg);
+  await mgr('POST', `${RS}/${rsF}/release`, {});
+  // déjà commandé
+  await mgr('POST', `${S}/orders`, { orders: [{ itemId: f1, quantity: 20, unitPrice: 100 }] });
+  r = await mgr('GET', RO);
+  check('déjà commandé 20 : position 45 > point de commande → plus de suggestion', !r.json.suggestions.some((x) => x.itemId === f1), r.json.suggestions.map((x) => [x.name, x.onOrder]));
+  await dbx.prepare("DELETE FROM purchase_orders WHERE item_id = ?").run(f1);
+  // urgence critique : autonomie plus courte que le délai
+  await mgr('POST', `${S}/items/${f1}/move`, { kind: 'out', quantity: 20, reason: 'Vente' });
+  r = await mgr('GET', RO);
+  sg = r.json.suggestions.find((x) => x.itemId === f1);
+  check('autonomie ~2 jours < délai 10 jours → critique (la sortie du jour entre dans la demande), en tête de liste', sg.urgency === 'critical' && sg.coverDays < 3 && sg.avgWeekly === 17.5 && r.json.suggestions[0].urgency === 'critical' && r.json.critical >= 1, [sg, r.json.critical]);
+  // délai du fournisseur au meilleur prix, sinon par défaut
+  const f3 = await mkF('Café', 2, [7, 7, 7, 7, 7, 7, 7, 7]);
+  await dbx.prepare('INSERT INTO supplier_prices (org_id, item_id, supplier_id, unit_price, lead_days) VALUES (?, ?, ?, 600, 3)').run(org, f3, fourn);
+  r = await mgr('GET', RO);
+  sg = r.json.suggestions.find((x) => x.itemId === f3);
+  check('délai pris chez le fournisseur au meilleur prix (3 jours) ; montant estimé', sg.leadDays === 3 && sg.leadSource === 'fournisseur' && sg.supplier.name === 'Fournisseur Eto' && sg.estimate === sg.toOrder * 600, sg);
+  await dbx.prepare('DELETE FROM supplier_prices WHERE item_id = ?').run(f3);
+  r = await mgr('GET', RO);
+  sg = r.json.suggestions.find((x) => x.itemId === f3);
+  check('sans fournisseur ni réglage : délai par défaut (7 jours)', sg && sg.leadDays === 7 && sg.leadSource === 'défaut', sg);
+  // niveau de service
+  r = await mem('PUT', `${W}/settings`, { serviceLevel: 99 });
+  check('droits : réglages réservés', r.status === 403, r.status);
+  r = await owner('PUT', `${W}/settings`, { serviceLevel: 99 });
+  check('niveau de service 99 % accepté', r.status === 200 && r.json.settings.serviceLevel === 99, r.json);
+  r = await mgr('GET', RO);
+  sg = r.json.suggestions.find((x) => x.itemId === f1);
+  check('niveau de service 99 % (z = 2,33) : stock de sécurité plus grand', sg.safetyStock > Math.round(safety * 10) / 10 + 3 && r.json.z === 2.33, [sg.safetyStock, r.json.z]);
+  r = await owner('PUT', `${W}/settings`, { serviceLevel: 95, forecastWeeks: 4 });
+  r = await mgr('GET', `${FC}/${f1}`);
+  check('fenêtre réglée à 4 semaines : moyenne des 4 dernières semaines (10, 10, 20, 40 → 20)', r.json.weeks === 4 && r.json.avgWeekly === 20, r.json);
+  r = await owner('PUT', `${W}/settings`, { forecastWeeks: 8 });
+  // validation
+  for (const [lab, body] of [['délai non entier', { leadDays: 2.5 }], ['délai négatif', { leadDays: -1 }], ['multiple nul', { orderMultiple: 0 }], ['stock de sécurité négatif', { safetyStock: -3 }]]) {
+    r = await mgr('PUT', `${W}/items/${f1}/params`, body);
+    check(`paramètre refusé : ${lab}`, r.status === 400, [r.status, r.json]);
+  }
+  r = await mem('PUT', `${W}/items/${f1}/params`, { leadDays: 1 });
+  check('droits : les paramètres d\'article sont réservés aux responsables', r.status === 403, r.status);
+  r = await other('GET', `${W2}/forecast/${f1}`);
+  check('isolation : prévision d\'un article d\'une autre organisation → 404', r.status === 404, r.status);
+  r = await other('GET', `${W2}/reorder`);
+  check('isolation : suggestions de l\'autre organisation sans nos articles', r.status === 200 && !r.json.suggestions.some((x) => x.itemId === f1), r.status);
+  await coherent('fin du lot 8');
 });
