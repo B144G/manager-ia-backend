@@ -11,7 +11,7 @@ const { HttpError } = require('../util');
 
 const router = express.Router({ mergeParams: true });
 const mgrOf = (req) => A.can(req, 'manager');
-const KINDS = { internal: 'Demande interne', manual: 'Réservation libre', document: 'Commande ou devis client' };
+const KINDS = { internal: 'Demande interne', pick: 'Liste de préparation', manual: 'Réservation libre', document: 'Commande ou devis client' };
 
 const itemOf = async (req, id) => {
   const it = await db.prepare('SELECT * FROM stock_items WHERE id = ? AND org_id = ?').get(A.id(id, 'Article invalide.'), req.org.id);
@@ -91,41 +91,7 @@ router.post('/reservations/from-document', A.need('manager'), async (req, res) =
   if (!['order', 'quote', 'invoice'].includes(d.kind)) throw new HttpError(400, 'Seule une commande, un devis ou une facture peut réserver du stock.');
   if (['cancelled', 'refused', 'credited', 'paid'].includes(d.status) && d.kind !== 'order') throw new HttpError(400, 'Ce document est terminé ou refusé : il ne réserve plus de stock.');
   if (['cancelled', 'refused'].includes(d.status)) throw new HttpError(400, 'Cette commande est annulée : elle ne réserve plus de stock.');
-  const partial = b.partial === true || b.partial === 'true';
-  // Quantité voulue par article (les lignes sans article du stock sont ignorées ; plusieurs lignes du même article s'additionnent).
-  const want = new Map(); let ignored = 0;
-  for (const l of JSON.parse(d.lines)) {
-    if (!l.itemId) { ignored++; continue; }
-    want.set(Number(l.itemId), W.round3((want.get(Number(l.itemId)) || 0) + Number(l.quantity)));
-  }
-  if (!want.size) throw new HttpError(400, "Aucune ligne de ce document n'est rattachée à un article du stock.");
-  const out = []; const short = [];
-  await db.transaction(async () => {
-    const ids = [...want.keys()].sort((x, y) => x - y);
-    for (const itemId of ids) {
-      const it0 = await db.prepare('SELECT * FROM stock_items WHERE id = ? AND org_id = ?').get(itemId, req.org.id);
-      if (!it0 || !A.visible(req, it0)) { ignored++; continue; }
-      const it = await W.lockItem(req.org.id, itemId);
-      await W.reconcile(req.org.id, it);
-      const a = (await W.availabilityMap(req.org.id)).get(itemId);
-      const cur = await db.prepare("SELECT * FROM wms_reservations WHERE org_id = ? AND item_id = ? AND source_kind = 'document' AND source_id = ? AND status = 'active' FOR UPDATE").get(req.org.id, itemId, d.id);
-      const have = cur ? W.round3(cur.quantity - cur.fulfilled_qty) : 0;
-      const target = want.get(itemId);
-      const room = W.round3(a.available + have); // ce que cette commande peut au plus réserver
-      const get = partial ? Math.min(target, room) : target;
-      if (get - room > W.EPS) { short.push({ itemId, name: it.name, wanted: target, available: room }); continue; }
-      if (cur) {
-        if (Math.abs(get - have) > W.EPS) await db.prepare('UPDATE wms_reservations SET quantity = ? WHERE id = ?').run(W.round3(cur.fulfilled_qty + get), cur.id);
-        out.push({ itemId, name: it.name, reserved: get, reservationId: cur.id });
-      } else if (get > W.EPS) {
-        const rid = Number((await db.prepare("INSERT INTO wms_reservations (org_id, item_id, quantity, source_kind, source_id, label, needed_by, created_by, created_at) VALUES (?, ?, ?, 'document', ?, ?, ?, ?, ?)")
-          .run(req.org.id, itemId, get, d.id, `${d.number} · ${d.customer}`.slice(0, 150), A.date(b.neededBy) || d.due || null, req.user.id, nowISO())).lastInsertRowid);
-        out.push({ itemId, name: it.name, reserved: get, reservationId: rid });
-      }
-      if (partial && get + W.EPS < target) short.push({ itemId, name: it.name, wanted: target, available: room });
-    }
-    if (short.length && !partial) throw new HttpError(409, `Stock à promettre insuffisant : ${short.map((x) => `« ${x.name} » ${x.available} disponible(s) pour ${x.wanted}`).join(' ; ')}. Rien n'a été réservé (réservez partiellement ou réapprovisionnez).`);
-  })();
+  const { reserved: out, short, ignoredLines: ignored } = await W.reserveDocument(req, d, { partial: b.partial === true || b.partial === 'true', neededBy: A.date(b.neededBy) });
   await A.logActivity(req.org.id, req.user.id, 'stock', `Stock réservé pour ${d.number} (${out.length} article(s))`);
   res.status(201).json({ reserved: out, short, ignoredLines: ignored });
 });

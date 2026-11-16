@@ -301,6 +301,10 @@ async function takeOut(req, it, qty, opts = {}) {
     const d = await db.prepare('SELECT doc_id FROM logistics_deliveries WHERE id = ? AND org_id = ?').get(opts.refId, orgId);
     if (d && d.doc_id) rows = await db.prepare("SELECT * FROM wms_reservations WHERE org_id = ? AND item_id = ? AND status = 'active' AND source_kind = 'document' AND source_id = ? ORDER BY id FOR UPDATE").all(orgId, it.id, d.doc_id);
   }
+  else if (opts.refKind === 'pick' && opts.refId) {
+    const pk = await db.prepare('SELECT source_kind, source_id FROM wms_picks WHERE id = ? AND org_id = ?').get(opts.refId, orgId);
+    if (pk) rows = await db.prepare("SELECT * FROM wms_reservations WHERE org_id = ? AND item_id = ? AND status = 'active' AND source_kind = ? AND source_id = ? ORDER BY id FOR UPDATE").all(orgId, it.id, pk.source_kind === 'document' ? 'document' : 'pick', pk.source_kind === 'document' ? pk.source_id : opts.refId);
+  }
   let left = qty;
   for (const r of rows) {
     if (left <= EPS) break;
@@ -314,6 +318,47 @@ async function takeOut(req, it, qty, opts = {}) {
     await db.prepare('UPDATE wms_reservations SET fulfilled_qty = ?, status = ?, closed_at = ?, close_reason = ? WHERE id = ?').run(done, full ? 'fulfilled' : 'active', full ? stamp() : null, full ? 'Livrée' : '', u.r.id);
   }
   return covered;
+}
+
+/**
+ * Réserve (ou met à jour) le stock d'une commande / devis / facture : une réservation par article, quantités des lignes rattachées à un article du stock.
+ * Rejouable (n'ajoute jamais deux fois). `partial` : réserve ce qui est disponible au lieu de tout refuser.
+ */
+async function reserveDocument(req, d, { partial = false, neededBy = null, minimum = null } = {}) {
+  const want = new Map(); let ignored = 0;
+  if (minimum) for (const [k, v] of minimum) want.set(k, v);
+  else for (const l of JSON.parse(d.lines)) {
+    if (!l.itemId) { ignored++; continue; }
+    want.set(Number(l.itemId), round3((want.get(Number(l.itemId)) || 0) + Number(l.quantity)));
+  }
+  if (!want.size) throw new HttpError(400, "Aucune ligne de ce document n'est rattachée à un article du stock.");
+  const out = []; const short = [];
+  await db.transaction(async () => {
+    for (const itemId of [...want.keys()].sort((x, y) => x - y)) {
+      const it0 = await db.prepare('SELECT * FROM stock_items WHERE id = ? AND org_id = ?').get(itemId, req.org.id);
+      if (!it0 || !A.visible(req, it0)) { ignored++; continue; }
+      const it = await lockItem(req.org.id, itemId);
+      await reconcile(req.org.id, it);
+      const a = (await availabilityMap(req.org.id)).get(itemId);
+      const cur = await db.prepare("SELECT * FROM wms_reservations WHERE org_id = ? AND item_id = ? AND source_kind = 'document' AND source_id = ? AND status = 'active' FOR UPDATE").get(req.org.id, itemId, d.id);
+      const have = cur ? round3(cur.quantity - cur.fulfilled_qty) : 0;
+      const target = minimum ? Math.max(want.get(itemId), have) : want.get(itemId);
+      const room = round3(a.available + have); // ce que cette commande peut au plus réserver
+      const get = partial ? Math.min(target, room) : target;
+      if (get - room > EPS) { short.push({ itemId, name: it.name, wanted: target, available: room }); continue; }
+      if (cur) {
+        if (Math.abs(get - have) > EPS) await db.prepare('UPDATE wms_reservations SET quantity = ? WHERE id = ?').run(round3(cur.fulfilled_qty + get), cur.id);
+        out.push({ itemId, name: it.name, reserved: get, reservationId: cur.id });
+      } else if (get > EPS) {
+        const rid = Number((await db.prepare("INSERT INTO wms_reservations (org_id, item_id, quantity, source_kind, source_id, label, needed_by, created_by, created_at) VALUES (?, ?, ?, 'document', ?, ?, ?, ?, ?)")
+          .run(req.org.id, itemId, get, d.id, `${d.number} · ${d.customer || ''}`.slice(0, 150), neededBy || d.due || null, req.user.id, stamp())).lastInsertRowid);
+        out.push({ itemId, name: it.name, reserved: get, reservationId: rid });
+      }
+      if (partial && get + EPS < target) short.push({ itemId, name: it.name, wanted: target, available: room });
+    }
+    if (short.length && !partial) throw new HttpError(409, `Stock à promettre insuffisant : ${short.map((x) => `« ${x.name} » ${x.available} disponible(s) pour ${x.wanted}`).join(' ; ')}. Rien n'a été réservé (réservez partiellement ou réapprovisionnez).`);
+  })();
+  return { reserved: out, short, ignoredLines: ignored };
 }
 
 /** Libère les réservations d'un document (commande annulée ou supprimée). Renvoie le nombre de réservations libérées. */
@@ -335,4 +380,4 @@ async function integrity(orgId) {
     FROM stock_items i WHERE i.org_id = ? AND ABS(i.quantity - COALESCE((SELECT SUM(v.quantity) FROM wms_levels v WHERE v.item_id = i.id), 0)) > 0.0005`).all(orgId);
 }
 
-module.exports = { DEFAULTS, settings, saveSettings, allocate, ensureReturns, sweep, reservedQty, availabilityMap, takeOut, releaseForDocument, nextCode, warehouseDefault, planFromWarehouse, reservedGuard, locationFor, LOCATION_KINDS, ZONE_KINDS, USABLE_KINDS, isUsable, ensureDefault, ensureTransit, locationOf, levelRows, levelAt, usableQty, bump, reconcile, room, putawayParts, plan, applyPlan, logMove, relocate, lockItem, integrity, round3, EPS };
+module.exports = { reserveDocument, DEFAULTS, settings, saveSettings, allocate, ensureReturns, sweep, reservedQty, availabilityMap, takeOut, releaseForDocument, nextCode, warehouseDefault, planFromWarehouse, reservedGuard, locationFor, LOCATION_KINDS, ZONE_KINDS, USABLE_KINDS, isUsable, ensureDefault, ensureTransit, locationOf, levelRows, levelAt, usableQty, bump, reconcile, room, putawayParts, plan, applyPlan, logMove, relocate, lockItem, integrity, round3, EPS };

@@ -2881,6 +2881,42 @@ const MIGRATIONS = [
   CREATE INDEX idx_wms_item_class_org ON wms_item_class(org_id, class);
   ALTER TABLE stock_counts ADD COLUMN cycle_class TEXT NOT NULL DEFAULT '';
   `,
+  /* STOCK WMS · lot 7 : listes de préparation (picking) avec parcours dans l'entrepôt ; le rangement (putaway) réutilise wms_putaway_rules du lot 1. */ `
+  CREATE TABLE wms_picks (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    source_kind TEXT NOT NULL DEFAULT 'manual',
+    source_id BIGINT,
+    warehouse_id BIGINT REFERENCES wms_warehouses(id) ON DELETE SET NULL,
+    label TEXT NOT NULL DEFAULT '',
+    priority BIGINT NOT NULL DEFAULT 2,
+    assigned_to BIGINT,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    picked_at TEXT,
+    issued_at TEXT,
+    cancelled_at TEXT,
+    UNIQUE (org_id, code)
+  );
+  CREATE INDEX idx_wms_picks_org ON wms_picks(org_id, status);
+  CREATE TABLE wms_pick_lines (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    pick_id BIGINT NOT NULL REFERENCES wms_picks(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE RESTRICT,
+    location_id BIGINT NOT NULL REFERENCES wms_locations(id) ON DELETE RESTRICT,
+    seq BIGINT NOT NULL DEFAULT 0,
+    quantity DOUBLE PRECISION NOT NULL,
+    picked_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    issued_qty DOUBLE PRECISION NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_wms_pick_lines ON wms_pick_lines(pick_id, seq);
+  CREATE INDEX idx_wms_pick_lines_loc ON wms_pick_lines(location_id, item_id);
+  `,
 ];
 
 
