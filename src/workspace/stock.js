@@ -31,10 +31,11 @@ const supplierOf = async (req, id) => {
 const bestPrice = async (itemId) => await db.prepare('SELECT p.supplier_id AS supplierId, s.name AS supplier, p.unit_price AS unitPrice, p.lead_days AS leadDays FROM supplier_prices p JOIN suppliers s ON s.id = p.supplier_id WHERE p.item_id = ? ORDER BY p.unit_price, COALESCE(p.lead_days, 999) LIMIT 1').get(itemId) || null;
 
 const stateOf = (it) => (it.quantity <= 0 ? 'out' : it.quantity <= it.min_quantity && it.min_quantity > 0 ? 'low' : it.max_quantity > 0 && it.quantity > it.max_quantity ? 'over' : 'ok');
-const view = async (it, mgr) => ({
+const view = async (it, mgr, av) => ({
   id: it.id, name: it.name, unit: it.unit, quantity: it.quantity, minQuantity: it.min_quantity, maxQuantity: it.max_quantity, unitCost: it.unit_cost, avgCost: mgr ? Math.round(L.unitValue(it) * 100) / 100 : undefined,
   value: mgr ? Math.round(it.quantity * L.unitValue(it)) : undefined, sku: it.sku, barcode: it.barcode, tracking: it.tracking, pickRule: it.pick_rule, branchId: it.branch_id,
   state: stateOf(it), best: await bestPrice(it.id),
+  reserved: av ? av.reserved : undefined, available: av ? av.available : undefined, // WMS : disponible à promettre = stock utilisable − réservé
 });
 
 /** Articles du stock visibles (filtrés par antenne). */
@@ -68,7 +69,8 @@ async function suggestions(req) {
 router.get('/', async (req, res) => {
   const list = await items(req);
   const mgr = A.can(req, 'manager');
-  const v = await amap(list, (it) => view(it, mgr));
+  const av = await W.availabilityMap(req.org.id);
+  const v = await amap(list, (it) => view(it, mgr, av.get(it.id)));
   const exp = await expiringLots(req, 30);
   res.json({
     items: v,
@@ -86,7 +88,7 @@ router.get('/lookup', async (req, res) => {
   const code = A.text(req.query.code, 60, { required: true, msg: 'Indiquez un code-barres ou un SKU.' });
   const it = await db.prepare('SELECT * FROM stock_items WHERE org_id = ? AND (barcode = ? OR sku = ?)').get(req.org.id, code, code);
   if (!it || !A.visible(req, it)) throw new HttpError(404, 'Aucun article avec ce code.');
-  res.json({ item: await view(it, A.can(req, 'manager')) });
+  res.json({ item: await view(it, A.can(req, 'manager'), (await W.availabilityMap(req.org.id)).get(it.id)) });
 });
 
 /** Champs d'un article validés (création ou modification). */

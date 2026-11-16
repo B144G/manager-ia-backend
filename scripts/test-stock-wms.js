@@ -385,4 +385,160 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   check('liste filtrée par statut', r.status === 200 && r.json.transfers.every((x) => x.status === 'received') && r.json.transfers.length >= 2, r.json.transfers.length);
   r = await mgr('DELETE', `${W}/warehouses/${whDlaId}`);
   check('entrepôt qui a des transferts : suppression refusée', r.status === 409, r.status);
+
+  // =====================================================================================================
+  // LOT 3 · RÉSERVATIONS
+  // =====================================================================================================
+  const RS = `${W}/reservations`;
+  const mkItem = async (name, qty, cost = 100) => { const id = await newItem(name, { unitCost: cost }); await mgr('POST', `${S}/items/${id}/move`, { kind: 'in', quantity: qty, unitCost: cost }); return id; };
+  const avail = async (id) => (await mem('GET', `${W}/items/${id}/availability`)).json;
+  const clou = await mkItem('Clou 70', 20);
+  let a = await avail(clou);
+  check('disponibilité de départ : 20 en stock, 0 réservé, 20 à promettre', a.quantity === 20 && a.usable === 20 && a.reserved === 0 && a.available === 20, a);
+  r = await mem('POST', RS, { itemId: clou, quantity: 5 });
+  check('demande interne sans motif → 400', r.status === 400, r.json);
+  r = await mem('POST', RS, { itemId: clou, quantity: 5, label: 'Atelier menuiserie' });
+  const rsv1 = r.json.id;
+  check('un membre réserve pour une demande interne', r.status === 201 && rsv1 > 0, r.json);
+  r = await mem('POST', RS, { itemId: clou, quantity: 1, label: 'x', kind: 'manual' });
+  check('droits : réservation libre réservée aux responsables', r.status === 403, r.status);
+  r = await mem('POST', RS, { itemId: clou, quantity: 16, label: 'Trop' });
+  check('réserver plus que le disponible à promettre (15) → 409', r.status === 409, r.json);
+  a = await avail(clou);
+  check('disponible à promettre = 20 − 5 = 15 ; la quantité en stock ne change pas', a.reserved === 5 && a.available === 15 && a.quantity === 20, a);
+  r = await mem('GET', S);
+  const cv = r.json.items.find((i) => i.id === clou);
+  check('liste du stock : réservé et disponible visibles', cv.reserved === 5 && cv.available === 15 && cv.quantity === 20, cv);
+  r = await mem('POST', `${S}/items/${clou}/move`, { kind: 'out', quantity: 16 });
+  check('sortie libre qui mord sur le réservé (16 > 15) → 409', r.status === 409 && /réserv/.test(r.json.error) && (await qtyOf(clou)) === 20, r.json);
+  r = await mem('POST', `${S}/items/${clou}/move`, { kind: 'out', quantity: 15, reason: 'Vente comptoir' });
+  check('sortie libre des 15 disponibles acceptée', r.status === 200 && (await qtyOf(clou)) === 5, r.json);
+  await mgr('POST', `${S}/items/${clou}/move`, { kind: 'in', quantity: 15, unitCost: 100 });
+  const valRes = await itemsValue(org);
+  r = await owner('GET', `${O}/accounting/stock-valuation?date=${shift(0)}&nature=goods`);
+  check('une réservation ne change pas la valeur du stock (comptabilité)', Math.abs(r.json.totalValue - valRes) <= r.json.items.length && Math.abs(r.json.totalValue - (await valueOf(org))) <= r.json.items.length, [r.json.totalValue, valRes]);
+  r = await mem('POST', `${RS}/${rsv1}/release`, {});
+  check('l\'auteur libère sa demande interne', r.status === 200, r.json);
+  r = await mem('POST', `${RS}/${rsv1}/release`, {});
+  check('libérer deux fois → 409', r.status === 409, r.status);
+  a = await avail(clou);
+  check('libération : tout redevient disponible', a.reserved === 0 && a.available === 20, a);
+
+  // Concurrence : deux réservations simultanées de 12 sur 20
+  const rr3 = await Promise.all([mgr('POST', RS, { itemId: clou, quantity: 12, label: 'A', kind: 'manual' }), mgr('POST', RS, { itemId: clou, quantity: 12, label: 'B', kind: 'manual' }), owner('POST', RS, { itemId: clou, quantity: 12, label: 'C', kind: 'manual' })]);
+  check('concurrence : trois réservations de 12 sur 20 → une seule passe', rr3.filter((x) => x.status === 201).length === 1, rr3.map((x) => x.status));
+  a = await avail(clou);
+  check('concurrence : jamais plus de réservé que de stock', a.reserved === 12 && a.available === 8, a);
+  await owner('POST', `${RS}/${rr3.find((x) => x.status === 201).json.id}/release`, {});
+
+  // Commande client : réservation depuis un document
+  r = await owner('POST', `${O}/crm/customers`, { name: 'Client Ndi' });
+  const cust = r.json.id;
+  const planche = await mkItem('Planche', 10, 2000); const colle = await mkItem('Colle', 3, 1500);
+  const mkOrder = async (lines, num) => Number((await dbx.prepare("INSERT INTO documents (org_id, customer_id, kind, number, status, lines, total, issued, created_by, created_at, updated_at) VALUES (?, ?, 'order', ?, 'pending', ?, 1000, ?, 1, ?, ?)").run(org, cust, num, JSON.stringify(lines), shift(0), new Date().toISOString(), new Date().toISOString())).lastInsertRowid);
+  const ord1 = await mkOrder([{ itemId: planche, label: 'Planche', quantity: 6, price: 2000 }, { itemId: colle, label: 'Colle', quantity: 4, price: 1500 }, { label: 'Livraison', quantity: 1, price: 500 }], 'C-T-0001');
+  r = await mem('POST', `${RS}/from-document`, { documentId: ord1 });
+  check('droits : réserver pour une commande = responsable', r.status === 403, r.status);
+  r = await mgr('POST', `${RS}/from-document`, { documentId: ord1 });
+  check('commande avec stock insuffisant (colle : 3 pour 4) → 409, rien de réservé', r.status === 409 && /Colle/.test(r.json.error) && (await avail(planche)).reserved === 0, r.json);
+  r = await mgr('POST', `${RS}/from-document`, { documentId: ord1, partial: true });
+  check('réservation partielle : planches 6, colle 3 ; manque signalé ; ligne sans article ignorée', r.status === 201 && r.json.reserved.length === 2 && r.json.short.length === 1 && r.json.short[0].name === 'Colle' && r.json.ignoredLines === 1, r.json);
+  a = await avail(planche);
+  check('planches : 6 réservées, 4 à promettre', a.reserved === 6 && a.available === 4, a);
+  r = await mgr('POST', `${RS}/from-document`, { documentId: ord1, partial: true });
+  a = await avail(planche);
+  check('rejouer la réservation ne double rien (6 réservées)', r.status === 201 && a.reserved === 6, a);
+  r = await mgr('GET', `${W}/documents/${ord1}/reservations`);
+  check('réservations de la commande listées avec son numéro', r.json.reservations.length === 2 && r.json.reservations[0].documentNumber === 'C-T-0001', r.json);
+  r = await other('POST', `${W2}/reservations/from-document`, { documentId: ord1 });
+  check('isolation : document d\'une autre organisation → 404', r.status === 404, r.status);
+  r = await other('GET', `${W2}/reservations`);
+  check('isolation : l\'autre organisation ne voit aucune réservation', r.json.reservations.length === 0, r.json);
+  r = await mgr('GET', `${RS}?status=active`);
+  const rsPl = r.json.reservations.find((x) => x.itemId === planche);
+  r = await other('POST', `${W2}/reservations/${rsPl.id}/release`, {});
+  check('isolation : libérer la réservation d\'une autre organisation → 404', r.status === 404, r.status);
+
+  // Livrer une partie de la réservation
+  r = await mgr('POST', `${RS}/${rsPl.id}/fulfill`, { quantity: 2 });
+  check('livraison partielle de la réservation (2 sur 6)', r.status === 200 && r.json.status === 'active' && r.json.remaining === 4 && r.json.quantity === 8, r.json);
+  a = await avail(planche);
+  check('après livraison : 8 en stock, 4 réservées, 4 à promettre', a.quantity === 8 && a.reserved === 4 && a.available === 4, a);
+  r = await mgr('POST', `${RS}/${rsPl.id}/fulfill`, { quantity: 5 });
+  check('livrer plus que le reste de la réservation → 400', r.status === 400, r.json);
+  await coherent('livraison de réservation');
+
+  // Livraison (module Logistique) liée à la commande : consomme la réservation de la commande
+  r = await owner('POST', `${O}/logistics/deliveries`, { docId: ord1, customerName: 'Client Ndi', items: [{ itemId: planche, quantity: 4 }] });
+  const dlv = r.json.id;
+  check('livraison créée pour la commande', r.status === 201 && dlv > 0, r.json);
+  r = await owner('PUT', `${O}/logistics/deliveries/${dlv}/status`, { status: 'shipped' });
+  a = await avail(planche);
+  check('expédition de la livraison : la réservation de la commande est consommée (4 sorties, plus rien de réservé sur les planches)', r.status === 200 && a.quantity === 4 && a.reserved === 0 && a.available === 4, [r.json, a]);
+  r = await mgr('GET', `${RS}?itemId=${planche}`);
+  check('réservation soldée : statut « livrée »', r.json.reservations[0].status === 'fulfilled', r.json.reservations[0]);
+
+  // Annulation automatique
+  r = await owner('PUT', `${O}/sales/orders/${ord1}/status`, { status: 'cancelled' });
+  check('commande refusée dans le module ventes', r.status === 200, r.json);
+  a = await avail(colle);
+  check('annulation de la commande : réservation de colle libérée automatiquement', a.reserved === 0 && a.available === 3, a);
+  r = await mgr('GET', `${RS}?itemId=${colle}`);
+  check('la réservation libérée garde son motif', r.json.reservations[0].status === 'released' && /refusée|annulé/.test(r.json.reservations[0].closeReason), r.json.reservations[0]);
+  r = await mgr('POST', `${RS}/from-document`, { documentId: ord1 });
+  check('une commande annulée ne réserve plus → 400', r.status === 400, r.json);
+  // Devis (CRM) refusé / supprimé
+  r = await owner('POST', `${O}/crm/documents`, { kind: 'quote', customerId: cust, lines: [{ itemId: colle, label: 'Colle', quantity: 2, price: 1500 }] });
+  const qt = r.json.id;
+  r = await mgr('POST', `${RS}/from-document`, { documentId: qt });
+  check('un devis réserve du stock', r.status === 201 && (await avail(colle)).reserved === 2, r.json);
+  r = await owner('PUT', `${O}/crm/documents/${qt}`, { status: 'refused' });
+  check('devis refusé : réservation libérée', (await avail(colle)).reserved === 0, await avail(colle));
+  r = await owner('POST', `${O}/crm/documents`, { kind: 'quote', customerId: cust, lines: [{ itemId: colle, label: 'Colle', quantity: 1, price: 1500 }] });
+  const qt2 = r.json.id;
+  await mgr('POST', `${RS}/from-document`, { documentId: qt2 });
+  r = await owner('DELETE', `${O}/crm/documents/${qt2}`);
+  check('devis supprimé : réservation libérée', r.status === 200 && (await avail(colle)).reserved === 0, [r.status, await avail(colle)]);
+  // Document supprimé directement en base (sans passer par l'écran) : nettoyé au prochain calcul
+  const ord2 = await mkOrder([{ itemId: colle, label: 'Colle', quantity: 1, price: 1500 }], 'C-T-0002');
+  await mgr('POST', `${RS}/from-document`, { documentId: ord2 });
+  await dbx.prepare("UPDATE documents SET status = 'cancelled' WHERE id = ?").run(ord2);
+  check('commande annulée en base : libération automatique au prochain calcul', (await avail(colle)).reserved === 0, await avail(colle));
+
+  // Date limite
+  r = await mgr('POST', RS, { itemId: colle, quantity: 1, label: 'Chantier', kind: 'manual', expiresAt: shift(5) });
+  const rsExp = r.json.id;
+  await dbx.prepare('UPDATE wms_reservations SET expires_at = ? WHERE id = ?').run(shift(-1), rsExp);
+  check('réservation à date limite dépassée : libérée automatiquement', (await avail(colle)).reserved === 0, await avail(colle));
+
+  // Transfert et déplacement ne mordent pas sur le réservé
+  const tubes = await mkItem('Tube PVC', 10);
+  r = await mgr('POST', RS, { itemId: tubes, quantity: 8, label: 'Plomberie', kind: 'manual' });
+  const rsTube = r.json.id;
+  r = await mem('POST', T, { fromWarehouseId: whPrinc, toWarehouseId: whDlaId, lines: [{ itemId: tubes, quantity: 5 }] });
+  const trT = r.json.id;
+  r = await mgr('POST', `${T}/${trT}/ship`, {});
+  check('transfert : expédier du stock réservé (5 > 2 disponibles) → 409', r.status === 409 && (await qtyOf(tubes)) === 10, r.json);
+  await mgr('POST', `${T}/${trT}/cancel`, {});
+  const tubeLoc = (await levels(tubes)).levels[0];
+  r = await mem('POST', `${W}/move`, { itemId: tubes, fromLocationId: tubeLoc.locationId, toLocationId: locQua, quantity: 5 });
+  check('déplacement vers la quarantaine de stock réservé → 409', r.status === 409, r.json);
+  r = await mem('POST', `${W}/move`, { itemId: tubes, fromLocationId: tubeLoc.locationId, toLocationId: locQua, quantity: 2 });
+  check('déplacement vers la quarantaine du seul stock libre (2) → ok', r.status === 200, r.json);
+  a = await avail(tubes);
+  check('quarantaine : 8 utilisables, 8 réservés, 0 à promettre, 10 en stock', a.quantity === 10 && a.usable === 8 && a.reserved === 8 && a.available === 0, a);
+  // Inventaire : une perte constatée reste possible, le manque est signalé
+  r = await mgr('POST', `${S}/counts`, { note: 'Contrôle' });
+  const cnt = r.json.id;
+  r = await mgr('GET', `${S}/counts/${cnt}`);
+  const cl = r.json.count.items.map((x) => ({ itemId: x.itemId, counted: x.itemId === tubes ? 4 : x.expected }));
+  await mgr('PUT', `${S}/counts/${cnt}/lines`, { lines: cl });
+  await mgr('POST', `${S}/counts/${cnt}/submit`, {});
+  r = await owner('POST', `${S}/counts/${cnt}/validate`, {});
+  check('inventaire : l\'écart de −6 est appliqué malgré la réservation', r.status === 200 && (await qtyOf(tubes)) === 4, r.json);
+  a = await avail(tubes);
+  check('inventaire : réservation en défaut signalée (short = 4), plus rien à promettre', a.available === 0 && a.short > 0, a);
+  r = await mgr('GET', `${W}/availability?onlyReserved=1`);
+  check('liste de disponibilité : articles en défaut de réservation comptés', r.json.shortItems >= 1 && r.json.items.some((x) => x.itemId === tubes), r.json.shortItems);
+  await coherent('fin du lot 3');
 });

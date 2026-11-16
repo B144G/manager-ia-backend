@@ -212,10 +212,76 @@ async function planFromWarehouse(it, whId, qty) {
   return parts;
 }
 
-/** Garde-fou « stock réservé » : remplacé au lot 3 (réservations). */
-let guardImpl = async () => {};
-const reservedGuard = (...a) => guardImpl(...a);
-const setReservedGuard = (fn) => { guardImpl = fn; };
+// ---------- Réservations ----------
+/** Libère les réservations dont la commande est annulée ou supprimée, ou dont la date limite est passée (appelé avant tout calcul de disponible). */
+async function sweep(orgId) {
+  const now = stamp();
+  await db.prepare(`UPDATE wms_reservations SET status = 'released', closed_at = ?, close_reason = 'Commande annulée ou supprimée'
+    WHERE org_id = ? AND status = 'active' AND source_kind = 'document' AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.id = wms_reservations.source_id AND d.org_id = wms_reservations.org_id AND d.status NOT IN ('cancelled','refused'))`).run(now, orgId);
+  await db.prepare("UPDATE wms_reservations SET status = 'released', closed_at = ?, close_reason = 'Date limite dépassée' WHERE org_id = ? AND status = 'active' AND expires_at IS NOT NULL AND expires_at < ?").run(now, orgId, now.slice(0, 10));
+}
+/** Quantité encore réservée (non livrée) d'un article. */
+const reservedQty = async (itemId) => round3((await db.prepare("SELECT COALESCE(SUM(quantity - fulfilled_qty), 0) q FROM wms_reservations WHERE item_id = ? AND status = 'active'").get(itemId)).q);
+
+/** Disponibilité de tous les articles d'une organisation : { quantity, usable, reserved, available } par article. */
+async function availabilityMap(orgId) {
+  await sweep(orgId);
+  const rows = await db.prepare(`SELECT i.id, i.quantity,
+      COALESCE((SELECT SUM(v.quantity) FROM wms_levels v JOIN wms_locations l ON l.id = v.location_id WHERE v.item_id = i.id AND l.kind IN ('storage','picking','reception')), 0) AS usable,
+      COALESCE((SELECT SUM(r.quantity - r.fulfilled_qty) FROM wms_reservations r WHERE r.item_id = i.id AND r.status = 'active'), 0) AS reserved
+    FROM stock_items i WHERE i.org_id = ?`).all(orgId);
+  const m = new Map();
+  for (const r of rows) {
+    m.set(r.id, { quantity: r.quantity, usable: round3(r.usable), reserved: round3(r.reserved), available: Math.max(round3(r.usable - r.reserved), 0), short: round3(r.reserved - r.usable) > EPS ? round3(r.reserved - r.usable) : 0 });
+  }
+  return m;
+}
+
+/** Refuse qu'une sortie / un déplacement entame du stock réservé. `covered` = part de la sortie qui consomme justement une réservation. */
+async function reservedGuard(it, qty, covered = 0) {
+  await sweep(it.org_id);
+  const usable = await usableQty(it.id);
+  const reserved = await reservedQty(it.id);
+  if (usable - reserved + covered + EPS < qty) {
+    const free = Math.max(round3(usable - reserved + covered), 0);
+    throw new HttpError(409, `« ${it.name} » : ${free} ${it.unit} disponible(s) à promettre seulement (${usable} en stock utilisable, dont ${round3(reserved - covered)} réservé(s)). Libérez une réservation ou réduisez la quantité.`);
+  }
+}
+
+/**
+ * Sortie de stock disponible : consomme les réservations visées (réservation précisée, ou commande liée à la livraison) puis vérifie
+ * que le reste ne mord pas sur d'autres réservations. Appelée par adjust() ; la ligne de réservation est verrouillée.
+ */
+async function takeOut(req, it, qty, opts = {}) {
+  const orgId = req.org.id;
+  await sweep(orgId);
+  const uses = []; let covered = 0;
+  let rows = [];
+  if (opts.reservationId) rows = await db.prepare("SELECT * FROM wms_reservations WHERE id = ? AND org_id = ? AND item_id = ? AND status = 'active' FOR UPDATE").all(opts.reservationId, orgId, it.id);
+  else if (opts.refKind === 'delivery' && opts.refId) {
+    const d = await db.prepare('SELECT doc_id FROM logistics_deliveries WHERE id = ? AND org_id = ?').get(opts.refId, orgId);
+    if (d && d.doc_id) rows = await db.prepare("SELECT * FROM wms_reservations WHERE org_id = ? AND item_id = ? AND status = 'active' AND source_kind = 'document' AND source_id = ? ORDER BY id FOR UPDATE").all(orgId, it.id, d.doc_id);
+  }
+  let left = qty;
+  for (const r of rows) {
+    if (left <= EPS) break;
+    const take = round3(Math.min(left, r.quantity - r.fulfilled_qty));
+    if (take > EPS) { uses.push({ r, take }); covered = round3(covered + take); left = round3(left - take); }
+  }
+  await reservedGuard(it, qty, covered);
+  for (const u of uses) {
+    const done = round3(u.r.fulfilled_qty + u.take);
+    const full = done + EPS >= u.r.quantity;
+    await db.prepare('UPDATE wms_reservations SET fulfilled_qty = ?, status = ?, closed_at = ?, close_reason = ? WHERE id = ?').run(done, full ? 'fulfilled' : 'active', full ? stamp() : null, full ? 'Livrée' : '', u.r.id);
+  }
+  return covered;
+}
+
+/** Libère les réservations d'un document (commande annulée ou supprimée). Renvoie le nombre de réservations libérées. */
+async function releaseForDocument(orgId, docId, reason, userId) {
+  const r = await db.prepare("UPDATE wms_reservations SET status = 'released', closed_at = ?, closed_by = ?, close_reason = ? WHERE org_id = ? AND status = 'active' AND source_kind = 'document' AND source_id = ?").run(stamp(), userId || null, String(reason || 'Commande annulée').slice(0, 150), orgId, docId);
+  return r.changes;
+}
 
 /** Verrouille un article (pour une opération qui ne passe pas par adjust). */
 async function lockItem(orgId, id) {
@@ -230,4 +296,4 @@ async function integrity(orgId) {
     FROM stock_items i WHERE i.org_id = ? AND ABS(i.quantity - COALESCE((SELECT SUM(v.quantity) FROM wms_levels v WHERE v.item_id = i.id), 0)) > 0.0005`).all(orgId);
 }
 
-module.exports = { nextCode, warehouseDefault, planFromWarehouse, reservedGuard, setReservedGuard, locationFor, LOCATION_KINDS, ZONE_KINDS, USABLE_KINDS, isUsable, ensureDefault, ensureTransit, locationOf, levelRows, levelAt, usableQty, bump, reconcile, room, putawayParts, plan, applyPlan, logMove, relocate, lockItem, integrity, round3, EPS };
+module.exports = { sweep, reservedQty, availabilityMap, takeOut, releaseForDocument, nextCode, warehouseDefault, planFromWarehouse, reservedGuard, locationFor, LOCATION_KINDS, ZONE_KINDS, USABLE_KINDS, isUsable, ensureDefault, ensureTransit, locationOf, levelRows, levelAt, usableQty, bump, reconcile, room, putawayParts, plan, applyPlan, logMove, relocate, lockItem, integrity, round3, EPS };

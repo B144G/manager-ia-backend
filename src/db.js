@@ -2744,6 +2744,29 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_wms_transfer_events ON wms_transfer_events(transfer_id, id);
   `,
+  /* STOCK WMS · lot 3 : réservations de stock (commande client, demande interne, réservation libre). Disponible à promettre = disponible − réservé. */ `
+  CREATE TABLE wms_reservations (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    quantity DOUBLE PRECISION NOT NULL,
+    fulfilled_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    source_kind TEXT NOT NULL DEFAULT 'manual',
+    source_id BIGINT,
+    label TEXT NOT NULL DEFAULT '',
+    needed_by TEXT,
+    expires_at TEXT,
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    closed_at TEXT,
+    closed_by BIGINT,
+    close_reason TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX idx_wms_resv_item ON wms_reservations(item_id, status);
+  CREATE INDEX idx_wms_resv_org ON wms_reservations(org_id, status);
+  CREATE INDEX idx_wms_resv_source ON wms_reservations(org_id, source_kind, source_id);
+  `,
 ];
 
 

@@ -62,7 +62,8 @@ async function addToLot(orgId, it, { lotNo, expiry, quantity, unitCost, lotId })
  *  opts : unitCost (valorise l'entrée : met à jour le CUMP), lotNo / expiry (article suivi par lot), serials (article suivi par série),
  *         allocations (retour : remet les quantités dans les lots d'origine), strict (réclame lot / séries : saisie manuelle),
  *         refKind / refId (origine : livraison, inventaire…), allowExpired,
- *         locationId (emplacement d'entrée ou de sortie ; sinon règles de rangement / emplacements disponibles).
+ *         locationId (emplacement d'entrée ou de sortie ; sinon règles de rangement / emplacements disponibles),
+ *         reservationId (la sortie livre cette réservation ; une livraison liée à une commande consomme les réservations de la commande).
  * Renvoie { quantity, allocations, serials }.
  */
 async function adjust(req, itemOrId, delta, reason, opts = {}) {
@@ -76,6 +77,8 @@ async function adjust(req, itemOrId, delta, reason, opts = {}) {
     if (next < 0) throw new HttpError(400, `Stock insuffisant pour « ${it.name} » : il reste ${it.quantity} ${it.unit}.`);
     // Emplacements : où entre / d'où sort la quantité (la somme des emplacements reste égale à la quantité de l'article).
     const parts = await W.plan(req, it, delta, opts);
+    // Réservations : une sortie de stock disponible ne mord pas sur le stock réservé (sauf inventaire : une perte constatée est une réalité).
+    if (delta < 0 && opts.refKind !== 'count' && parts.some((p) => W.isUsable(p.kind))) await W.takeOut(req, it, -delta, opts);
     let allocations = []; let serials = [];
     if (it.tracking === 'lot') {
       if (delta > 0) {

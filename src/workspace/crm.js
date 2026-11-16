@@ -183,6 +183,7 @@ router.put('/documents/:id', A.need('manager'), async (req, res) => {
     if (d.kind === 'invoice' && st === 'draft' && (d.paid > 0 || d.credited > 0)) throw new HttpError(400, 'Cette facture a déjà reçu un paiement ou un avoir.');
     if (d.kind === 'invoice' && st === 'cancelled' && d.paid > 0) throw new HttpError(400, 'Cette facture a reçu un paiement : émettez un avoir pour l\'annuler.');
     await db.prepare('UPDATE documents SET status = ? WHERE id = ?').run(st, d.id);
+    if (['cancelled', 'refused'].includes(st)) await require('./wms-lib').releaseForDocument(req.org.id, d.id, `${d.number} ${st === 'refused' ? 'refusé' : 'annulé'}`, req.user.id); // stock réservé libéré
   }
   await db.prepare('UPDATE documents SET updated_at = ? WHERE id = ?').run(nowISO(), d.id);
   res.json({ ok: true });
@@ -205,6 +206,7 @@ router.delete('/documents/:id', A.need('manager'), async (req, res) => {
       }
     }
     await db.prepare('DELETE FROM documents WHERE id = ?').run(d.id);
+    await require('./wms-lib').releaseForDocument(req.org.id, d.id, `${d.number} supprimé`, req.user.id);
   })();
   res.json({ ok: true });
 });
