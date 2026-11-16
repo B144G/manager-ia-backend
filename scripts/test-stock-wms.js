@@ -765,4 +765,77 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await other('POST', `${W2}/receipts/${rec1}/costs`, { kind: 'transport', amount: 10 });
   check('isolation : coût sur la réception d\'une autre organisation → 404', r.status === 404, r.status);
   await coherent('fin du lot 5');
+
+  // =====================================================================================================
+  // LOT 6 · CLASSEMENT ABC ET INVENTAIRES TOURNANTS
+  // =====================================================================================================
+  // On repart d'une organisation « neuve » côté mouvements : on isole l'analyse sur des articles dédiés en passant par la 2e organisation.
+  const A2 = `${W2}`; const S2 = `${ws(org2)}/stock`;
+  const o2 = (m, u, b) => other(m, u, b);
+  const mk2 = async (name, qty, cost) => { const id = (await o2('POST', `${S2}/items`, { name, unitCost: cost })).json.id; await o2('POST', `${S2}/items/${id}/move`, { kind: 'in', quantity: qty, unitCost: cost }); return id; };
+  const i1 = await mk2('Produit vedette', 1000, 100); const i2 = await mk2('Produit courant', 1000, 50); const i3 = await mk2('Produit moyen', 1000, 20); const i4 = await mk2('Produit lent', 1000, 10); const i5 = await mk2('Produit rare', 1000, 4); const i6 = await mk2('Produit dormant', 10, 1000);
+  for (const [id, q] of [[i1, 70], [i2, 30], [i3, 40], [i4, 50], [i5, 50]]) await o2('POST', `${S2}/items/${id}/move`, { kind: 'out', quantity: q, reason: 'Vente' });
+  // consommation : i1 7 000, i2 1 500, i3 800, i4 500, i5 200 (total 10 000)
+  r = await other('GET', `${A2}/abc`);
+  check('droits : le propriétaire de l\'autre organisation voit le classement', r.status === 200, r.status);
+  const abc = Object.fromEntries(r.json.items.map((x) => [x.name, x]));
+  check('ABC : total de consommation 10 000, partage 70 / 15 / 8 / 5 / 2 %', r.json.totalConsumption === 10000 && abc['Produit vedette'].share === 70 && abc['Produit courant'].share === 15 && abc['Produit rare'].share === 2, r.json.items.map((x) => [x.name, x.share]));
+  check('ABC : vedette et courant = A (jusqu\'à 80 %), moyen et lent = B (jusqu\'à 95 %), rare = C', abc['Produit vedette'].class === 'A' && abc['Produit courant'].class === 'A' && abc['Produit moyen'].class === 'B' && abc['Produit lent'].class === 'B' && abc['Produit rare'].class === 'C', r.json.items.map((x) => [x.name, x.class]));
+  check('ABC : article sans sortie → C, signalé sans mouvement', abc['Produit dormant'].class === 'C' && abc['Produit dormant'].noMovement === true && abc['Produit dormant'].stockValue === 10000, abc['Produit dormant']);
+  check('ABC : cumul croissant jusqu\'à 100 %, rangs 1 à 6', abc['Produit vedette'].rank === 1 && abc['Produit rare'].cumShare === 100, [abc['Produit vedette'].rank, abc['Produit rare'].cumShare]);
+  check('ABC : résumé par classe (A : 2 articles, 85 % de la consommation)', r.json.classes[0].class === 'A' && r.json.classes[0].items === 2 && r.json.classes[0].share === 85 && r.json.classes.reduce((a, c) => a + c.items, 0) === 7, r.json.classes);
+  r = await mem('GET', `${W}/abc`);
+  check('droits : un membre ne voit pas le classement', r.status === 403, r.status);
+  r = await mgr('GET', `${W}/abc`);
+  check('isolation : le classement de la 1re organisation ne contient pas les articles de la 2e', r.status === 200 && !r.json.items.some((x) => x.name === 'Produit vedette'), r.status);
+  // Les écarts d'inventaire, pertes de transfert, retours ne sont pas de la consommation
+  await dbx.prepare("INSERT INTO stock_moves (org_id, item_id, delta, reason, created_at, ref_kind) VALUES (?, ?, -500, 'Inventaire test', ?, 'count')").run(org2, i6, new Date().toISOString());
+  await dbx.prepare("INSERT INTO stock_moves (org_id, item_id, delta, reason, created_at, ref_kind) VALUES (?, ?, -300, 'Ancienne vente', ?, '')").run(org2, i6, new Date(Date.now() - 400 * 86400000).toISOString());
+  r = await other('GET', `${A2}/abc`);
+  check('ABC : ni les écarts d\'inventaire ni les sorties plus vieilles que la période ne comptent', r.json.items.find((x) => x.itemId === i6).consumption === 0, r.json.items.find((x) => x.itemId === i6));
+  r = await other('PUT', `${A2}/settings`, { abcA: 90, abcB: 99, abcDays: 100 });
+  check('seuils réglables', r.status === 200 && r.json.settings.abcA === 90, r.json);
+  r = await other('GET', `${A2}/abc`);
+  check('seuils 90 / 99 : le produit moyen passe en A', r.json.items.find((x) => x.itemId === i3).class === 'A', r.json.items.map((x) => [x.name, x.class]));
+  r = await other('PUT', `${A2}/settings`, { abcA: 95, abcB: 90 });
+  check('seuils incohérents (A ≥ B) → 400', r.status === 400, r.status);
+  r = await other('PUT', `${A2}/settings`, { abcA: 80, abcB: 95, abcDays: 365, cycleA: 30, cycleB: 90, cycleC: 180 });
+  r = await mem('PUT', `${A2}/settings`, { abcA: 10 });
+  check('droits : réglages réservés aux administrateurs (et isolation)', r.status === 403 || r.status === 404, r.status);
+  r = await other('POST', `${A2}/abc/refresh`, {});
+  check('classement enregistré', r.status === 200 && r.json.items === 7 && r.json.counts.A === 2 && r.json.counts.B === 2 && r.json.counts.C === 3, r.json);
+
+  // Plan tournant
+  r = await other('GET', `${A2}/cycle-counts/plan`);
+  check('plan : tout est à compter au départ (jamais compté), fréquences 30 / 90 / 180', r.status === 200 && r.json.due === 7 && r.json.classes[0].everyDays === 30 && r.json.classes[2].everyDays === 180, r.json.classes);
+  r = await other('POST', `${A2}/cycle-counts`, { classes: ['Z'] });
+  check('classe inconnue → 400', r.status === 400, r.status);
+  r = await other('POST', `${A2}/cycle-counts`, { classes: ['A'] });
+  const cyc = r.json.id;
+  check('inventaire tournant de la classe A : 2 articles', r.status === 201 && r.json.items === 2, r.json);
+  r = await other('POST', `${A2}/cycle-counts`, { classes: ['B'] });
+  check('un autre inventaire en cours → 409', r.status === 409, r.status);
+  r = await other('GET', `${S2}/counts/${cyc}`);
+  check('c\'est un inventaire normal : lignes attendues, classe indiquée', r.status === 200 && r.json.count.lines === 2 && r.json.count.cycleClass === 'A', r.json.count);
+  // comptage : vedette 1 unité de moins (−100), courant exact
+  await other('PUT', `${S2}/counts/${cyc}/lines`, { lines: r.json.count.items.map((x) => ({ itemId: x.itemId, counted: x.itemId === i1 ? x.expected - 1 : x.expected })) });
+  await other('POST', `${S2}/counts/${cyc}/submit`, {});
+  r = await other('POST', `${S2}/counts/${cyc}/validate`, {});
+  check('inventaire tournant validé (par le propriétaire, administrateur) : 1 ajustement, écart −100', r.status === 200 && r.json.adjusted === 1 && r.json.gapValue === -100, r.json);
+  r = await other('GET', `${A2}/cycle-counts/plan`);
+  check('plan : les articles A comptés ne sont plus à compter, B et C oui', r.json.classes[0].due === 0 && r.json.classes[1].due === 2 && r.json.classes[2].due === 3 && r.json.due === 5, r.json.classes);
+  check('plan : prochaine échéance des A dans 30 jours', r.json.classes[0].nextDue === shift(30), r.json.classes[0]);
+  r = await other('GET', `${A2}/cycle-counts/variance`);
+  const va = r.json.classes[0];
+  check('écarts valorisés, classe A : 2 lignes, 1 écart, précision 50 %, manque 100', r.status === 200 && va.lines === 2 && va.withGap === 1 && va.accuracy === 50 && va.shortValue === -100 && va.netValue === -100 && r.json.netValue === -100, r.json.classes);
+  check('écarts valorisés : le détail cite l\'article, le comptage et le manque', r.json.gaps.length === 1 && r.json.gaps[0].name === 'Produit vedette' && r.json.gaps[0].gap === -1, r.json.gaps);
+  r = await other('POST', `${A2}/cycle-counts`, { classes: ['A'] });
+  check('classe A à jour : rien à compter → 400', r.status === 400, r.status);
+  r = await other('POST', `${A2}/cycle-counts`, { classes: ['C'], limit: 1 });
+  check('limite d\'articles respectée (1 article de classe C)', r.status === 201 && r.json.items === 1, r.json);
+  await other('DELETE', `${S2}/counts/${r.json.id}`);
+  r = await mem('POST', `${W}/cycle-counts`, { classes: ['A'] });
+  check('droits : un membre ne planifie pas d\'inventaire tournant', r.status === 403, r.status);
+  check('cohérence des quantités après inventaire tournant', (await dbx.prepare('SELECT quantity FROM stock_items WHERE id = ?').get(i1)).quantity === 929, (await dbx.prepare('SELECT quantity FROM stock_items WHERE id = ?').get(i1)).quantity);
+  await coherent('fin du lot 6');
 });

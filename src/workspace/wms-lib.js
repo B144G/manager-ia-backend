@@ -209,6 +209,23 @@ function allocate(total, weights) {
   return out;
 }
 
+// ---------- Réglages de l'entrepôt (JSON par organisation, valeurs par défaut si rien n'est enregistré) ----------
+const DEFAULTS = {
+  abcA: 80, abcB: 95, abcDays: 365, cycleA: 30, cycleB: 90, cycleC: 180,
+  forecastWeeks: 8, serviceLevel: 95, defaultLeadDays: 7,
+};
+async function settings(orgId) {
+  const row = await db.prepare('SELECT data FROM wms_settings WHERE org_id = ?').get(orgId);
+  let d = {}; try { d = JSON.parse((row && row.data) || '{}'); } catch { d = {}; }
+  return { ...DEFAULTS, ...d };
+}
+async function saveSettings(orgId, patch) {
+  const cur = await settings(orgId);
+  const next = { ...cur, ...patch };
+  await db.prepare('INSERT INTO wms_settings (org_id, data, updated_at) VALUES (?, ?, ?) ON CONFLICT (org_id) DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at').run(orgId, JSON.stringify(next), stamp());
+  return next;
+}
+
 /** Numéro de document suivant (TR-2026-001…), par organisation, type et année : sans trou ni doublon (même en cas de demandes simultanées). Dans la transaction du document. */
 async function nextCode(orgId, kind, prefix) {
   const year = nowISO().slice(0, 4);
@@ -318,4 +335,4 @@ async function integrity(orgId) {
     FROM stock_items i WHERE i.org_id = ? AND ABS(i.quantity - COALESCE((SELECT SUM(v.quantity) FROM wms_levels v WHERE v.item_id = i.id), 0)) > 0.0005`).all(orgId);
 }
 
-module.exports = { allocate, ensureReturns, sweep, reservedQty, availabilityMap, takeOut, releaseForDocument, nextCode, warehouseDefault, planFromWarehouse, reservedGuard, locationFor, LOCATION_KINDS, ZONE_KINDS, USABLE_KINDS, isUsable, ensureDefault, ensureTransit, locationOf, levelRows, levelAt, usableQty, bump, reconcile, room, putawayParts, plan, applyPlan, logMove, relocate, lockItem, integrity, round3, EPS };
+module.exports = { DEFAULTS, settings, saveSettings, allocate, ensureReturns, sweep, reservedQty, availabilityMap, takeOut, releaseForDocument, nextCode, warehouseDefault, planFromWarehouse, reservedGuard, locationFor, LOCATION_KINDS, ZONE_KINDS, USABLE_KINDS, isUsable, ensureDefault, ensureTransit, locationOf, levelRows, levelAt, usableQty, bump, reconcile, room, putawayParts, plan, applyPlan, logMove, relocate, lockItem, integrity, round3, EPS };

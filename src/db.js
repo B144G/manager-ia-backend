@@ -2864,6 +2864,23 @@ const MIGRATIONS = [
     PRIMARY KEY (cost_id, line_id)
   );
   `,
+  /* STOCK WMS · lot 6 : classement ABC (valeur de consommation) et inventaires tournants planifiés par classe. */ `
+  CREATE TABLE wms_settings (
+    org_id BIGINT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    data TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE wms_item_class (
+    item_id BIGINT PRIMARY KEY REFERENCES stock_items(id) ON DELETE CASCADE,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    class TEXT NOT NULL,
+    consumption BIGINT NOT NULL DEFAULT 0,
+    rank BIGINT NOT NULL DEFAULT 0,
+    computed_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_wms_item_class_org ON wms_item_class(org_id, class);
+  ALTER TABLE stock_counts ADD COLUMN cycle_class TEXT NOT NULL DEFAULT '';
+  `,
 ];
 
 
