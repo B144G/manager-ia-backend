@@ -3055,6 +3055,262 @@ const MIGRATIONS = [
     max_file_mb BIGINT NOT NULL DEFAULT 0
   );
   `,
+  // Module « Achats » : demandes, appels d'offres, bons de commande, réceptions, factures fournisseurs, fiches et évaluations.
+  `
+  CREATE TABLE pur_settings (
+    org_id BIGINT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    tol_qty_pct DOUBLE PRECISION NOT NULL DEFAULT 5,
+    tol_price_pct DOUBLE PRECISION NOT NULL DEFAULT 2,
+    tol_amount BIGINT NOT NULL DEFAULT 500,
+    budget_block BIGINT NOT NULL DEFAULT 0,
+    default_terms_days BIGINT NOT NULL DEFAULT 30
+  );
+  CREATE TABLE pur_thresholds (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    min_amount BIGINT NOT NULL,
+    role TEXT NOT NULL,
+    UNIQUE (org_id, kind, min_amount)
+  );
+  CREATE TABLE pur_counters (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    year TEXT NOT NULL,
+    last BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (org_id, kind, year)
+  );
+  CREATE TABLE pur_requests (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    number TEXT NOT NULL,
+    title TEXT NOT NULL,
+    justification TEXT NOT NULL DEFAULT '',
+    needed_date TEXT,
+    category TEXT NOT NULL DEFAULT '',
+    branch_id BIGINT REFERENCES branches(id) ON DELETE SET NULL,
+    project_id BIGINT REFERENCES projects(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    total BIGINT NOT NULL DEFAULT 0,
+    required_role TEXT NOT NULL DEFAULT 'manager',
+    requested_by BIGINT NOT NULL,
+    decided_by BIGINT,
+    decided_at TEXT,
+    reject_reason TEXT NOT NULL DEFAULT '',
+    submitted_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (org_id, number)
+  );
+  CREATE INDEX idx_pur_requests_org ON pur_requests(org_id, status);
+  CREATE TABLE pur_request_lines (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    request_id BIGINT NOT NULL REFERENCES pur_requests(id) ON DELETE CASCADE,
+    item_id BIGINT REFERENCES stock_items(id) ON DELETE SET NULL,
+    description TEXT NOT NULL,
+    unit TEXT NOT NULL DEFAULT 'pièce',
+    quantity DOUBLE PRECISION NOT NULL,
+    est_price BIGINT NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_pur_request_lines ON pur_request_lines(request_id);
+  CREATE TABLE pur_orders (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    number TEXT NOT NULL,
+    supplier_id BIGINT NOT NULL,
+    supplier_name TEXT NOT NULL DEFAULT '',
+    request_id BIGINT REFERENCES pur_requests(id) ON DELETE SET NULL,
+    rfq_id BIGINT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    order_date TEXT NOT NULL,
+    expected_date TEXT,
+    payment_days BIGINT NOT NULL DEFAULT 30,
+    vat_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+    category TEXT NOT NULL DEFAULT '',
+    branch_id BIGINT REFERENCES branches(id) ON DELETE SET NULL,
+    project_id BIGINT REFERENCES projects(id) ON DELETE SET NULL,
+    delivery_address TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    total_ht BIGINT NOT NULL DEFAULT 0,
+    vat_amount BIGINT NOT NULL DEFAULT 0,
+    total_ttc BIGINT NOT NULL DEFAULT 0,
+    required_role TEXT NOT NULL DEFAULT 'manager',
+    created_by BIGINT NOT NULL,
+    approved_by BIGINT,
+    approved_at TEXT,
+    sent_at TEXT,
+    sent_to TEXT NOT NULL DEFAULT '',
+    closed_at TEXT,
+    cancel_reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (org_id, number)
+  );
+  CREATE INDEX idx_pur_orders_org ON pur_orders(org_id, status);
+  CREATE TABLE pur_order_lines (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    order_id BIGINT NOT NULL REFERENCES pur_orders(id) ON DELETE CASCADE,
+    item_id BIGINT REFERENCES stock_items(id) ON DELETE SET NULL,
+    description TEXT NOT NULL,
+    unit TEXT NOT NULL DEFAULT 'pièce',
+    quantity DOUBLE PRECISION NOT NULL,
+    unit_price BIGINT NOT NULL,
+    received_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    rejected_qty DOUBLE PRECISION NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_pur_order_lines ON pur_order_lines(order_id);
+  CREATE TABLE pur_receipts (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    order_id BIGINT NOT NULL REFERENCES pur_orders(id) ON DELETE CASCADE,
+    number TEXT NOT NULL,
+    receipt_date TEXT NOT NULL,
+    delivery_note TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, number)
+  );
+  CREATE INDEX idx_pur_receipts_order ON pur_receipts(order_id);
+  CREATE TABLE pur_receipt_lines (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    receipt_id BIGINT NOT NULL REFERENCES pur_receipts(id) ON DELETE CASCADE,
+    order_line_id BIGINT NOT NULL REFERENCES pur_order_lines(id) ON DELETE CASCADE,
+    received_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    rejected_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL DEFAULT '',
+    lot_no TEXT NOT NULL DEFAULT '',
+    expiry TEXT,
+    location_id BIGINT,
+    qc_pending DOUBLE PRECISION NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_pur_receipt_lines ON pur_receipt_lines(receipt_id);
+  CREATE TABLE pur_invoices (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    number TEXT NOT NULL,
+    supplier_id BIGINT NOT NULL,
+    supplier_name TEXT NOT NULL DEFAULT '',
+    order_id BIGINT REFERENCES pur_orders(id) ON DELETE SET NULL,
+    supplier_ref TEXT NOT NULL DEFAULT '',
+    invoice_date TEXT NOT NULL,
+    due_date TEXT NOT NULL,
+    vat_rate DOUBLE PRECISION NOT NULL DEFAULT 0,
+    total_ht BIGINT NOT NULL DEFAULT 0,
+    vat_amount BIGINT NOT NULL DEFAULT 0,
+    total_ttc BIGINT NOT NULL DEFAULT 0,
+    declared_total BIGINT,
+    expense_account TEXT NOT NULL DEFAULT '601',
+    status TEXT NOT NULL DEFAULT 'entered',
+    issues TEXT NOT NULL DEFAULT '[]',
+    override_reason TEXT NOT NULL DEFAULT '',
+    attempts BIGINT NOT NULL DEFAULT 0,
+    bill_id BIGINT,
+    acc_entry_id BIGINT,
+    approved_by BIGINT,
+    approved_at TEXT,
+    notes TEXT NOT NULL DEFAULT '',
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (org_id, number)
+  );
+  CREATE INDEX idx_pur_invoices_org ON pur_invoices(org_id, status);
+  CREATE TABLE pur_invoice_lines (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    invoice_id BIGINT NOT NULL REFERENCES pur_invoices(id) ON DELETE CASCADE,
+    order_line_id BIGINT REFERENCES pur_order_lines(id) ON DELETE SET NULL,
+    description TEXT NOT NULL,
+    quantity DOUBLE PRECISION NOT NULL,
+    unit_price BIGINT NOT NULL
+  );
+  CREATE INDEX idx_pur_invoice_lines ON pur_invoice_lines(invoice_id);
+  CREATE TABLE pur_rfqs (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    number TEXT NOT NULL,
+    title TEXT NOT NULL,
+    request_id BIGINT REFERENCES pur_requests(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    deadline TEXT,
+    notes TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '',
+    awarded_supplier_id BIGINT,
+    award_reason TEXT NOT NULL DEFAULT '',
+    order_id BIGINT,
+    baseline BIGINT NOT NULL DEFAULT 0,
+    awarded_total BIGINT NOT NULL DEFAULT 0,
+    savings BIGINT NOT NULL DEFAULT 0,
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    closed_at TEXT,
+    UNIQUE (org_id, number)
+  );
+  CREATE TABLE pur_rfq_lines (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    rfq_id BIGINT NOT NULL REFERENCES pur_rfqs(id) ON DELETE CASCADE,
+    item_id BIGINT REFERENCES stock_items(id) ON DELETE SET NULL,
+    description TEXT NOT NULL,
+    unit TEXT NOT NULL DEFAULT 'pièce',
+    quantity DOUBLE PRECISION NOT NULL,
+    ref_price BIGINT NOT NULL DEFAULT 0
+  );
+  CREATE TABLE pur_rfq_suppliers (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    rfq_id BIGINT NOT NULL REFERENCES pur_rfqs(id) ON DELETE CASCADE,
+    supplier_id BIGINT NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'invited',
+    delivery_days BIGINT,
+    payment_days BIGINT,
+    terms TEXT NOT NULL DEFAULT '',
+    valid_until TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    quoted_at TEXT,
+    UNIQUE (rfq_id, supplier_id)
+  );
+  CREATE TABLE pur_quote_lines (
+    id BIGSERIAL PRIMARY KEY,
+    rfq_supplier_id BIGINT NOT NULL REFERENCES pur_rfq_suppliers(id) ON DELETE CASCADE,
+    rfq_line_id BIGINT NOT NULL REFERENCES pur_rfq_lines(id) ON DELETE CASCADE,
+    unit_price BIGINT NOT NULL,
+    UNIQUE (rfq_supplier_id, rfq_line_id)
+  );
+  CREATE TABLE pur_supplier_profiles (
+    supplier_id BIGINT PRIMARY KEY REFERENCES suppliers(id) ON DELETE CASCADE,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    email TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    address TEXT NOT NULL DEFAULT '',
+    city TEXT NOT NULL DEFAULT '',
+    tax_id TEXT NOT NULL DEFAULT '',
+    rccm TEXT NOT NULL DEFAULT '',
+    contact_person TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '',
+    payment_days BIGINT NOT NULL DEFAULT 30,
+    bank_info TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE pur_evaluations (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    supplier_id BIGINT NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    order_id BIGINT REFERENCES pur_orders(id) ON DELETE SET NULL,
+    delivery_score BIGINT NOT NULL,
+    quality_score BIGINT NOT NULL,
+    price_score BIGINT NOT NULL,
+    comment TEXT NOT NULL DEFAULT '',
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_pur_evaluations ON pur_evaluations(org_id, supplier_id);
+  `,
 ];
 
 

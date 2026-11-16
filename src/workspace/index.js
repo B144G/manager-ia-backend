@@ -243,6 +243,7 @@ orgRouter.use('/share', require('./share'));
 orgRouter.use('/budget', require('./budget'));
 orgRouter.use('/stock/wms', require('./stock-wms')); // entrepôt : emplacements, transferts, réservations… (avant /stock)
 orgRouter.use('/stock', require('./stock'));
+orgRouter.use('/purchasing', require('./purchasing'));
 orgRouter.use('/crm', require('./crm'));
 orgRouter.use('/mail', require('./mail'));
 orgRouter.use('/sales', require('./sales').router);
