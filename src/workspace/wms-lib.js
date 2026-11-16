@@ -392,6 +392,13 @@ async function releaseForDocument(orgId, docId, reason, userId) {
   return r.changes;
 }
 
+/** Ce qui a été prélevé pour une liste mais n'est pas encore dans un colis : [{ itemId, name, q }]. */
+async function unpackedOf(pickId) {
+  const rows = await db.prepare(`SELECT l.item_id, i.name, SUM(l.picked_qty) AS picked, COALESCE((SELECT SUM(pi.quantity) FROM wms_package_items pi JOIN wms_packages pk ON pk.id = pi.package_id WHERE pk.pick_id = l.pick_id AND pi.item_id = l.item_id), 0) AS packed
+    FROM wms_pick_lines l JOIN stock_items i ON i.id = l.item_id WHERE l.pick_id = ? GROUP BY l.item_id, l.pick_id, i.name`).all(pickId);
+  return rows.filter((r) => r.picked - r.packed > EPS).map((r) => ({ itemId: r.item_id, name: r.name, q: round3(r.picked - r.packed) }));
+}
+
 /** Verrouille un article (pour une opération qui ne passe pas par adjust). */
 async function lockItem(orgId, id) {
   const it = await db.prepare('SELECT * FROM stock_items WHERE id = ? AND org_id = ? FOR UPDATE').get(id, orgId);
@@ -405,4 +412,4 @@ async function integrity(orgId) {
     FROM stock_items i WHERE i.org_id = ? AND ABS(i.quantity - COALESCE((SELECT SUM(v.quantity) FROM wms_levels v WHERE v.item_id = i.id), 0)) > 0.0005`).all(orgId);
 }
 
-module.exports = { whUsable, whReserved, whGuard, reserveDocument, DEFAULTS, settings, saveSettings, allocate, ensureReturns, sweep, reservedQty, availabilityMap, takeOut, releaseForDocument, nextCode, warehouseDefault, planFromWarehouse, reservedGuard, locationFor, LOCATION_KINDS, ZONE_KINDS, USABLE_KINDS, isUsable, ensureDefault, ensureTransit, locationOf, levelRows, levelAt, usableQty, bump, reconcile, room, putawayParts, plan, applyPlan, logMove, relocate, lockItem, integrity, round3, EPS };
+module.exports = { unpackedOf, whUsable, whReserved, whGuard, reserveDocument, DEFAULTS, settings, saveSettings, allocate, ensureReturns, sweep, reservedQty, availabilityMap, takeOut, releaseForDocument, nextCode, warehouseDefault, planFromWarehouse, reservedGuard, locationFor, LOCATION_KINDS, ZONE_KINDS, USABLE_KINDS, isUsable, ensureDefault, ensureTransit, locationOf, levelRows, levelAt, usableQty, bump, reconcile, room, putawayParts, plan, applyPlan, logMove, relocate, lockItem, integrity, round3, EPS };

@@ -76,8 +76,8 @@ router.get('/picks', async (req, res) => {
 router.get('/picks/:id', async (req, res) => res.json({ pick: await view(req, await pickOf(req, req.params.id), true) }));
 
 // ---------- Création ----------
-router.post('/picks', A.need('manager'), async (req, res) => {
-  const b = req.body || {};
+/** Crée une liste de préparation (depuis un document ou des lignes libres) : stock affecté, parcours, mise de côté. Renvoie son identifiant. */
+async function createPick(req, b, waveId) {
   let doc = null; const need = new Map();
   if (b.documentId) {
     doc = await db.prepare("SELECT d.*, c.name AS customer FROM documents d JOIN customers c ON c.id = d.customer_id WHERE d.id = ? AND d.org_id = ? AND d.kind IN ('order','invoice','quote')").get(A.id(b.documentId, 'Document invalide.'), req.org.id);
@@ -101,15 +101,15 @@ router.post('/picks', A.need('manager'), async (req, res) => {
     if (it.tracking === 'serial' && !Number.isInteger(q)) throw new HttpError(400, `« ${it.name} » est suivi par numéro de série : la quantité est un nombre entier.`);
     needs.push({ it, q });
   }
-  const id = await db.transaction(async () => {
+  return await db.transaction(async () => {
     // Le stock est mis de côté d'abord (un article verrouillé à la fois) : si ce n'est pas possible, rien n'est créé.
     for (const n of [...needs].sort((x, y) => x.it.id - y.it.id)) await W.lockItem(req.org.id, n.it.id);
     const { lines, short } = await allocate(req, needs, wh ? wh.id : null);
     if (short.length && !partial) throw new HttpError(409, `Stock insuffisant pour préparer : ${short.map((x) => `« ${x.name} » manque ${x.missing} sur ${x.wanted}`).join(' ; ')}.`);
     if (!lines.length) throw new HttpError(409, 'Rien à préparer : aucun stock disponible.');
     const code = await W.nextCode(req.org.id, 'wms_pick', 'PREP');
-    const pid = Number((await db.prepare('INSERT INTO wms_picks (org_id, code, status, source_kind, source_id, warehouse_id, label, priority, assigned_to, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(req.org.id, code, 'open', doc ? 'document' : 'manual', doc ? doc.id : null, wh ? wh.id : null, doc ? `${doc.number} · ${doc.customer}`.slice(0, 150) : A.text(b.label, 150), priority, assignedTo, A.text(b.note, 300), req.user.id, nowISO())).lastInsertRowid);
+    const pid = Number((await db.prepare('INSERT INTO wms_picks (org_id, code, status, source_kind, source_id, warehouse_id, label, priority, assigned_to, note, created_by, created_at, wave_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(req.org.id, code, 'open', doc ? 'document' : 'manual', doc ? doc.id : null, wh ? wh.id : null, doc ? `${doc.number} · ${doc.customer}`.slice(0, 150) : A.text(b.label, 150), priority, assignedTo, A.text(b.note, 300), req.user.id, nowISO(), waveId || null)).lastInsertRowid);
     let seq = 0;
     for (const l of lines) await db.prepare('INSERT INTO wms_pick_lines (org_id, pick_id, item_id, location_id, seq, quantity) VALUES (?, ?, ?, ?, ?, ?)').run(req.org.id, pid, l.it.id, l.locationId, ++seq, l.q);
     // mise de côté : la commande réserve (rejouable) ; une liste libre réserve pour elle-même
@@ -125,7 +125,11 @@ router.post('/picks', A.need('manager'), async (req, res) => {
     }
     return pid;
   })();
-  await A.logActivity(req.org.id, req.user.id, 'stock', `Liste de préparation créée${doc ? ` pour ${doc.number}` : ''}`);
+}
+
+router.post('/picks', A.need('manager'), async (req, res) => {
+  const id = await createPick(req, req.body || {});
+  await A.logActivity(req.org.id, req.user.id, 'stock', 'Liste de préparation créée');
   res.status(201).json({ id });
 });
 
@@ -140,14 +144,12 @@ router.post('/picks/:id/start', async (req, res) => {
   res.json({ ok: true });
 });
 
-router.post('/picks/:id/lines/:lineId/confirm', async (req, res) => {
-  const p = await pickOf(req, req.params.id);
-  canWork(req, p);
-  const b = req.body || {};
+/** Confirme le prélèvement d'une ligne (scans facultatifs, prise dans un autre emplacement permise). */
+async function confirmLine(req, p, lineId, b) {
   await db.transaction(async () => {
     const pk = await db.prepare('SELECT * FROM wms_picks WHERE id = ? FOR UPDATE').get(p.id);
     if (!['open', 'in_progress'].includes(pk.status)) throw new HttpError(409, 'Cette liste est terminée ou annulée.');
-    const l = await db.prepare('SELECT * FROM wms_pick_lines WHERE id = ? AND pick_id = ? FOR UPDATE').get(A.id(req.params.lineId), p.id);
+    const l = await db.prepare('SELECT * FROM wms_pick_lines WHERE id = ? AND pick_id = ? FOR UPDATE').get(A.id(lineId), p.id);
     if (!l) throw new HttpError(404, 'Ligne introuvable.');
     const it = await db.prepare('SELECT * FROM stock_items WHERE id = ?').get(l.item_id);
     // Scans facultatifs : le code lu doit correspondre à l'article et à l'emplacement attendus (ou à celui où le préparateur a réellement pris).
@@ -174,13 +176,17 @@ router.post('/picks/:id/lines/:lineId/confirm', async (req, res) => {
     await db.prepare('UPDATE wms_pick_lines SET picked_qty = ?, location_id = ? WHERE id = ?').run(W.round3(l.picked_qty + q), loc.id, l.id);
     await db.prepare("UPDATE wms_picks SET status = 'in_progress', started_at = COALESCE(started_at, ?), assigned_to = COALESCE(assigned_to, ?) WHERE id = ?").run(nowISO(), req.user.id, p.id);
   })();
+}
+
+router.post('/picks/:id/lines/:lineId/confirm', async (req, res) => {
+  const p = await pickOf(req, req.params.id);
+  canWork(req, p);
+  await confirmLine(req, p, req.params.lineId, req.body || {});
   res.json({ ok: true });
 });
 
-router.post('/picks/:id/complete', async (req, res) => {
-  const p = await pickOf(req, req.params.id);
-  canWork(req, p);
-  const allowShort = (req.body || {}).allowShort === true || (req.body || {}).allowShort === 'true';
+/** Termine la préparation (un manque n'est accepté que si allowShort). */
+async function completePick(req, p, allowShort) {
   await db.transaction(async () => {
     const pk = await db.prepare('SELECT * FROM wms_picks WHERE id = ? FOR UPDATE').get(p.id);
     if (!['open', 'in_progress'].includes(pk.status)) throw new HttpError(409, 'Cette liste est terminée ou annulée.');
@@ -190,18 +196,27 @@ router.post('/picks/:id/complete', async (req, res) => {
     if (missing.length && !allowShort) throw new HttpError(409, `${missing.length} ligne(s) incomplète(s) : prélevez le reste ou terminez en acceptant le manque.`);
     await db.prepare("UPDATE wms_picks SET status = 'picked', picked_at = ? WHERE id = ?").run(nowISO(), p.id);
   })();
+}
+
+router.post('/picks/:id/complete', async (req, res) => {
+  const p = await pickOf(req, req.params.id);
+  canWork(req, p);
+  await completePick(req, p, (req.body || {}).allowShort === true || (req.body || {}).allowShort === 'true');
   res.json({ ok: true });
 });
 
 /** Expédition : la sortie de stock a lieu ici, emplacement par emplacement, en consommant la réservation de la liste ou de la commande. */
-router.post('/picks/:id/issue', A.need('manager'), async (req, res) => {
-  const p = await pickOf(req, req.params.id);
-  const b = req.body || {};
+async function issuePick(req, p, b) {
   const serialsBy = b.serials && typeof b.serials === 'object' ? b.serials : {};
   let issued = 0;
   await db.transaction(async () => {
     const pk = await db.prepare('SELECT * FROM wms_picks WHERE id = ? FOR UPDATE').get(p.id);
     if (pk.status !== 'picked') throw new HttpError(409, pk.status === 'issued' ? 'Cette liste est déjà expédiée.' : "La liste doit d'abord être préparée.");
+    // Colisage : si des colis ont été faits, tout ce qui est prélevé doit être emballé
+    if ((await db.prepare('SELECT COUNT(*) c FROM wms_packages WHERE pick_id = ?').get(pk.id)).c > 0 && !b.allowUnpacked) {
+      const rest = await W.unpackedOf(pk.id);
+      if (rest.length) throw new HttpError(409, `Colisage incomplet : ${rest.map((x) => `${x.q} × « ${x.name} »`).join(', ')} pas encore emballé(s).`);
+    }
     const lines = (await db.prepare('SELECT * FROM wms_pick_lines WHERE pick_id = ? AND picked_qty > issued_qty ORDER BY item_id, id').all(p.id));
     const perItemSerials = new Map();
     for (const l of lines) {
@@ -223,6 +238,12 @@ router.post('/picks/:id/issue', A.need('manager'), async (req, res) => {
     if (pk.source_kind !== 'document') await db.prepare("UPDATE wms_reservations SET status = CASE WHEN fulfilled_qty > 0 THEN 'fulfilled' ELSE 'released' END, closed_at = ?, close_reason = 'Liste expédiée' WHERE org_id = ? AND source_kind = 'pick' AND source_id = ? AND status = 'active'").run(nowISO(), req.org.id, pk.id);
     await db.prepare("UPDATE wms_picks SET status = 'issued', issued_at = ? WHERE id = ?").run(nowISO(), pk.id);
   })();
+  return issued;
+}
+
+router.post('/picks/:id/issue', A.need('manager'), async (req, res) => {
+  const p = await pickOf(req, req.params.id);
+  const issued = await issuePick(req, p, req.body || {});
   await A.logActivity(req.org.id, req.user.id, 'stock', `Liste de préparation ${p.code} expédiée`);
   res.json({ ok: true, lines: issued });
 });
@@ -272,3 +293,9 @@ router.post('/putaway', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.createPick = createPick;
+module.exports.confirmLine = confirmLine;
+module.exports.completePick = completePick;
+module.exports.issuePick = issuePick;
+module.exports.canWork = canWork;
+module.exports.pickOf = pickOf;
