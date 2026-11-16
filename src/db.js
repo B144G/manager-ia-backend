@@ -2608,6 +2608,132 @@ const MIGRATIONS = [
     UNIQUE (loan_id, n)
   );
   `,
+  // Bibliothèque : blocs protégés par le mot de passe de la personne, droits par bloc, documents versionnés, corbeille, autorisations temporaires, journal.
+  `
+  CREATE TABLE lib_blocks (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    slug TEXT NOT NULL,
+    name TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT '#2f6f5e',
+    icon TEXT NOT NULL DEFAULT 'folder',
+    position BIGINT NOT NULL DEFAULT 0,
+    hidden BIGINT NOT NULL DEFAULT 0,
+    personal BIGINT NOT NULL DEFAULT 0,
+    builtin BIGINT NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, slug)
+  );
+  CREATE TABLE lib_perms (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    block_id BIGINT NOT NULL REFERENCES lib_blocks(id) ON DELETE CASCADE,
+    subject TEXT NOT NULL,
+    can_view BIGINT NOT NULL DEFAULT 0,
+    can_read BIGINT NOT NULL DEFAULT 0,
+    can_add BIGINT NOT NULL DEFAULT 0,
+    can_edit BIGINT NOT NULL DEFAULT 0,
+    can_delete BIGINT NOT NULL DEFAULT 0,
+    UNIQUE (block_id, subject)
+  );
+  CREATE TABLE lib_folders (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    block_id BIGINT NOT NULL REFERENCES lib_blocks(id) ON DELETE CASCADE,
+    parent_id BIGINT REFERENCES lib_folders(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_lib_folders_block ON lib_folders(block_id, parent_id);
+  CREATE TABLE lib_docs (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    block_id BIGINT NOT NULL REFERENCES lib_blocks(id) ON DELETE CASCADE,
+    folder_id BIGINT REFERENCES lib_folders(id) ON DELETE SET NULL,
+    name TEXT NOT NULL,
+    tags TEXT NOT NULL DEFAULT '',
+    mime TEXT NOT NULL,
+    size BIGINT NOT NULL,
+    version BIGINT NOT NULL DEFAULT 1,
+    link_type TEXT NOT NULL DEFAULT '',
+    link_id BIGINT,
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_by BIGINT,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT,
+    deleted_by BIGINT
+  );
+  CREATE INDEX idx_lib_docs_block ON lib_docs(org_id, block_id, deleted_at);
+  CREATE TABLE lib_versions (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    doc_id BIGINT NOT NULL REFERENCES lib_docs(id) ON DELETE CASCADE,
+    n BIGINT NOT NULL,
+    name TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size BIGINT NOT NULL,
+    data BYTEA NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (doc_id, n)
+  );
+  CREATE INDEX idx_lib_versions_org ON lib_versions(org_id);
+  CREATE TABLE lib_favs (
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    doc_id BIGINT NOT NULL REFERENCES lib_docs(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, doc_id)
+  );
+  CREATE TABLE lib_recent (
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    doc_id BIGINT NOT NULL REFERENCES lib_docs(id) ON DELETE CASCADE,
+    at TEXT NOT NULL,
+    PRIMARY KEY (user_id, doc_id)
+  );
+  CREATE TABLE lib_grants (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    block_id BIGINT NOT NULL REFERENCES lib_blocks(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    pass_stamp TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    last_used_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    hard_expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    revoked_reason TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX idx_lib_grants_user ON lib_grants(user_id, session_id, block_id);
+  CREATE TABLE lib_attempts (
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    block_id BIGINT NOT NULL,
+    fails BIGINT NOT NULL DEFAULT 0,
+    window_start TEXT NOT NULL,
+    locked_until TEXT,
+    PRIMARY KEY (user_id, block_id)
+  );
+  CREATE TABLE lib_audit (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    user_id BIGINT,
+    block_id BIGINT,
+    doc_id BIGINT,
+    action TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    ip TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_lib_audit_org ON lib_audit(org_id, id DESC);
+  CREATE TABLE lib_settings (
+    org_id BIGINT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    grant_minutes BIGINT NOT NULL DEFAULT 15,
+    grant_max_minutes BIGINT NOT NULL DEFAULT 120,
+    max_file_mb BIGINT NOT NULL DEFAULT 0
+  );
+  `,
 ];
 
 

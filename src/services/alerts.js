@@ -21,6 +21,8 @@ const thresholds = () => ({
   aiPerDay: int('ALERT_AI_PER_DAY', 800),              // messages IA d'un même compte en 24 heures
   payRejects: int('ALERT_PAY_REJECTS', 3),             // paiements refusés / échoués sur un compte...
   payWindowD: int('ALERT_PAY_WINDOW_D', 30),           // ...en cette durée (jours)
+  libFails: int('ALERT_LIBRARY_FAILS', 5),            // mots de passe de la bibliothèque ratés par une même personne...
+  libWindowMin: int('ALERT_LIBRARY_WINDOW_MIN', 60),  // ...en cette durée (minutes)
   abuseWindowH: int('ALERT_ABUSE_WINDOW_H', 3),        // blocages automatiques d'adresses récents (limites de débit, abus)
   cooldownH: int('ALERT_COOLDOWN_HOURS', 24),
 });
@@ -30,6 +32,7 @@ const SEVERITY_LABEL = { low: 'Faible', medium: 'Moyenne', high: 'Haute' };
 const KIND_LABEL = {
   login_fails: 'Échecs de connexion répétés', many_devices: 'Connexions depuis beaucoup d\'adresses', signups_same_ip: 'Nombreuses inscriptions depuis une même adresse',
   ai_spike: 'Pic de messages IA', payment_rejects: 'Paiements refusés répétés', abuse_block: 'Adresse bloquée pour abus (limites de débit)',
+  library_fails: 'Mots de passe de la bibliothèque ratés à répétition',
 };
 const hash = (v) => crypto.createHash('sha1').update(String(v)).digest('hex').slice(0, 12);
 const ago = (ms) => new Date(Date.now() - ms).toISOString();
@@ -61,6 +64,15 @@ const RULES = {
     const out = [];
     for (const r of rows) out.push({ kind: 'login_fails', severity: Number(r.locked) > 0 || Number(r.n) >= T.loginFails * 3 ? 'high' : 'medium', userId: Number(r.uid), key: `login_fails:${r.uid}`,
       title: `${await nameOf(r.uid)} : ${r.n} échecs de connexion en ${T.loginWindowMin} min`, detail: Number(r.locked) > 0 ? 'Le compte a été verrouillé 15 minutes.' : 'Quelqu\'un essaie peut-être de deviner le mot de passe.' });
+    return out;
+  },
+  async library_fails(T) {
+    // Échecs de déverrouillage des blocs de la bibliothèque (journal d'audit central) : quelqu'un essaie peut-être le mot de passe depuis une session ouverte.
+    const rows = await db.prepare("SELECT actor_id AS uid, COUNT(*) AS n, SUM(CASE WHEN action = 'library.unlock_locked' THEN 1 ELSE 0 END) AS locked FROM audit_trail WHERE actor_type = 'user' AND actor_id IS NOT NULL AND action IN ('library.unlock_fail', 'library.unlock_locked') AND at >= ? GROUP BY actor_id HAVING COUNT(*) >= ?")
+      .all(ago(T.libWindowMin * 60000), T.libFails);
+    const out = [];
+    for (const r of rows) out.push({ kind: 'library_fails', severity: Number(r.locked) > 0 ? 'high' : 'medium', userId: Number(r.uid), key: `library_fails:${r.uid}`,
+      title: `${await nameOf(r.uid)} : ${r.n} mots de passe ratés sur la bibliothèque en ${T.libWindowMin} min`, detail: 'Quelqu\'un utilise peut-être une session ouverte pour deviner le mot de passe. Les blocs concernés ont été bloqués 15 minutes.' });
     return out;
   },
   async many_devices(T) {
