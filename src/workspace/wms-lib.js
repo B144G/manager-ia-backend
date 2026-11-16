@@ -77,6 +77,21 @@ async function bump(orgId, itemId, locId, delta) {
     const r = await db.prepare('UPDATE wms_levels SET quantity = quantity + ? WHERE item_id = ? AND location_id = ? AND quantity + ? >= -0.0005').run(delta, itemId, locId, delta);
     if (!r.changes) throw new HttpError(400, "Pas assez de stock dans cet emplacement.");
     await db.prepare('DELETE FROM wms_levels WHERE item_id = ? AND location_id = ? AND quantity <= 0.0005').run(itemId, locId);
+    await trimUnits(itemId, locId);
+  }
+}
+
+/** Une palette ne peut pas contenir plus que ce qui est réellement là : si du stock est sorti autrement, le contenu des palettes de l'emplacement diminue (les plus récentes d'abord). */
+async function trimUnits(itemId, locId) {
+  const rows = await db.prepare('SELECT ui.unit_id, ui.quantity FROM wms_unit_items ui JOIN wms_units u ON u.id = ui.unit_id WHERE ui.item_id = ? AND u.location_id = ? ORDER BY u.id DESC').all(itemId, locId);
+  if (!rows.length) return;
+  let over = round3(rows.reduce((a, r) => a + r.quantity, 0) - await levelAt(itemId, locId));
+  for (const r of rows) {
+    if (over <= EPS) break;
+    const cut = round3(Math.min(r.quantity, over));
+    if (cut >= r.quantity - EPS) await db.prepare('DELETE FROM wms_unit_items WHERE unit_id = ? AND item_id = ?').run(r.unit_id, itemId);
+    else await db.prepare('UPDATE wms_unit_items SET quantity = quantity - ? WHERE unit_id = ? AND item_id = ?').run(cut, r.unit_id, itemId);
+    over = round3(over - cut);
   }
 }
 

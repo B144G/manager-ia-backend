@@ -155,11 +155,16 @@ router.get('/scan', async (req, res) => {
   if (it && A.visible(req, it)) return res.json({ type: 'item', id: it.id, label: it.name, code });
   const loc = await db.prepare('SELECT l.*, w.branch_id AS branch_id FROM wms_locations l JOIN wms_warehouses w ON w.id = l.warehouse_id WHERE l.org_id = ? AND l.code = ?').get(req.org.id, up);
   if (loc && A.visible(req, loc)) return res.json({ type: 'location', id: loc.id, label: loc.name || loc.code, code: loc.code });
-  const docs = [['PREP-', 'pick', 'wms_picks'], ['TR-', 'transfer', 'wms_transfers'], ['RET-', 'return', 'wms_returns'], ['REC-', 'receipt', 'wms_receipts']];
+  const docs = [['PREP-', 'pick', 'wms_picks'], ['TR-', 'transfer', 'wms_transfers'], ['RET-', 'return', 'wms_returns'], ['REC-', 'receipt', 'wms_receipts'], ['VAG-', 'wave', 'wms_waves'], ['COL-', 'package', 'wms_packages']];
   for (const [prefix, type, table] of docs) {
     if (!up.startsWith(prefix)) continue;
     const d = await db.prepare(`SELECT id, code FROM ${table} WHERE org_id = ? AND code = ?`).get(req.org.id, up);
     if (d) return res.json({ type, id: d.id, label: d.code, code: d.code });
+  }
+  for (const pre of ['PAL-', 'CAR-', 'CAI-']) {
+    if (!up.startsWith(pre)) continue;
+    const u = await db.prepare('SELECT id, code FROM wms_units WHERE org_id = ? AND code = ?').get(req.org.id, up);
+    if (u) return res.json({ type: 'unit', id: u.id, label: u.code, code: u.code });
   }
   throw new HttpError(404, 'Code inconnu : ni article, ni emplacement, ni document.');
 });
