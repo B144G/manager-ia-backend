@@ -1164,6 +1164,34 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   check('scan : code inconnu → 404', r.status === 404, r.status);
   r = await other('GET', `${W2}/scan?code=SAV-0001`);
   check('isolation : un code d\'une autre organisation n\'est pas résolu', r.status === 404, r.status);
+  // Retour fournisseur lié à une commande d'achat : pas plus que reçu
+  {
+    const poi = await newItem('Article commande', { unitCost: 100 });
+    await mgr('POST', `${S}/orders`, { orders: [{ itemId: poi, quantity: 6, supplierId: fourn, unitPrice: 100 }] });
+    const po2 = (await dbx.prepare('SELECT id FROM purchase_orders WHERE org_id = ? ORDER BY id DESC LIMIT 1').get(org)).id;
+    await owner('PUT', `${S}/orders/${po2}/status`, { status: 'ordered' });
+    await mgr('POST', `${S}/orders/${po2}/receive`, { quantity: 4 });
+    r = await mgr('POST', `${RT}`, { kind: 'supplier', supplierId: fourn, orderId: po2, validate: true, lines: [{ itemId: poi, quantity: 5 }] });
+    check('retour fournisseur : plus que reçu sur la commande (5 > 4) → 400', r.status === 400 && /reçu/.test(r.json.error), r.json);
+    r = await mgr('POST', `${RT}`, { kind: 'supplier', supplierId: fourn, orderId: po2, validate: true, lines: [{ itemId: poi, quantity: 3 }] });
+    check('retour de 3 sur 4 reçus accepté', r.status === 201, r.json);
+    r = await mgr('POST', `${RT}`, { kind: 'supplier', supplierId: fourn, orderId: po2, validate: true, lines: [{ itemId: poi, quantity: 2 }] });
+    check('retours cumulés (3 + 2 > 4) → 400', r.status === 400, r.json);
+    r = await mgr('POST', `${RT}`, { kind: 'supplier', supplierId: fourn, orderId: po2, validate: true, lines: [{ itemId: sac, quantity: 1 }] });
+    check('article absent de la commande → 400', r.status === 400, r.json);
+  }
+  // Saisonnalité : plus de 14 mois d'historique, forte demande à la même période l'an dernier
+  {
+    const sea = await newItem('Article saisonnier', { unitCost: 50 });
+    await mgr('POST', `${S}/items/${sea}/move`, { kind: 'in', quantity: 1000, unitCost: 50 });
+    await dbx.prepare('UPDATE stock_items SET created_at = ? WHERE id = ?').run(ago(430), sea);
+    for (let w = 0; w < 52; w++) await dbx.prepare("INSERT INTO stock_moves (org_id, item_id, delta, reason, created_at, ref_kind) VALUES (?, ?, -10, 'Vente', ?, '')").run(org, sea, ago(w * 7 + 3));
+    for (let w = 50; w < 55; w++) await dbx.prepare("INSERT INTO stock_moves (org_id, item_id, delta, reason, created_at, ref_kind) VALUES (?, ?, -40, 'Vente', ?, '')").run(org, sea, ago(w * 7 + 3));
+    r = await mgr('GET', `${FC}/${sea}`);
+    check('saisonnalité : même période l\'an dernier 4 fois plus forte → indice borné à 2, prévision relevée', r.status === 200 && r.json.seasonalIndex !== null && r.json.seasonalIndex > 1.5 && r.json.avgWeekly >= 20, r.json);
+    r = await mgr('GET', `${FC}/${f1}`);
+    check('sans 14 mois d\'historique : pas d\'indice saisonnier', r.json.seasonalIndex === null, r.json.seasonalIndex);
+  }
   await coherent('fin du lot 10');
 
   // =====================================================================================================
