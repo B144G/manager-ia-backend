@@ -57,14 +57,14 @@ router.post('/blocks/:bid/unlock', unlockLimit, async (req, res) => {
   const sec = require('../security');
   if (ms) {
     await C.logAudit(req, { blockId: block.id, action: 'unlock_locked' });
-    throw new HttpError(429, `Trop d'essais. Réessayez dans ${Math.max(Math.ceil(ms / 60000), 1)} minute(s).`);
+    throw new HttpError(429, 'Trop d’essais : ce bloc est fermé pour votre compte pendant 15 minutes.');
   }
   if (!password) throw new HttpError(400, 'Saisissez votre mot de passe.');
   if (!(await bcrypt.compare(password, req.user.pass_hash))) {
     const r = await C.recordFail(req.user.id, block.id);
     await C.logAudit(req, { blockId: block.id, action: 'unlock_fail', detail: `${r.left} essai(s) restant(s)` });
     await sec.audit.record(req, r.locked ? 'library.unlock_locked' : 'library.unlock_fail', { orgId: req.org.id, target: `block:${block.id}`, severity: r.locked ? 'high' : 'warn' });
-    if (r.locked) throw new HttpError(429, `Trop d'essais. Réessayez dans ${Math.ceil(C.LOCK_MS / 60000)} minutes.`);
+    if (r.locked) throw new HttpError(429, 'Trop d’essais : ce bloc est fermé pour votre compte pendant 15 minutes.');
     throw new HttpError(403, 'Mot de passe incorrect.');
   }
   await C.clearFails(req.user.id, block.id);
@@ -179,14 +179,15 @@ router.put('/blocks/:bid/perms', A.need('admin'), async (req, res) => {
     seen.add(uid);
     const m = await db.prepare('SELECT role FROM org_members WHERE org_id = ? AND user_id = ?').get(req.org.id, uid);
     if (m.role === 'owner') continue; // le propriétaire garde tous les droits
-    if (m.role === 'admin' && !isOwner) throw new HttpError(403, 'Seul le propriétaire règle les droits d’un administrateur.');
+    if (m.role === 'admin' && !isOwner) continue; // les exceptions d'un administrateur ne changent que par le propriétaire (elles restent telles quelles)
     rows.push(['user:' + uid, C.norm(u)]);
   }
   const before = await db.prepare('SELECT subject, can_view, can_read, can_add, can_edit, can_delete FROM lib_perms WHERE block_id = ?').all(b.id);
   await db.transaction(async () => {
     const keepRoles = rows.filter((r) => r[0].startsWith('role:')).map((r) => r[0]);
     // Les rôles non fournis gardent leur réglage ; les exceptions personnelles sont remplacées dans leur ensemble (sauf celles d'un administrateur pour un simple administrateur).
-    await db.prepare("DELETE FROM lib_perms WHERE block_id = ? AND subject LIKE 'user:%'").run(b.id);
+    if (isOwner) await db.prepare("DELETE FROM lib_perms WHERE block_id = ? AND subject LIKE 'user:%'").run(b.id);
+    else await db.prepare("DELETE FROM lib_perms WHERE block_id = ? AND subject LIKE 'user:%' AND substr(subject, 6)::bigint NOT IN (SELECT user_id FROM org_members WHERE org_id = ? AND role IN ('admin', 'owner'))").run(b.id, req.org.id);
     for (const s of keepRoles) await db.prepare('DELETE FROM lib_perms WHERE block_id = ? AND subject = ?').run(b.id, s);
     for (const [subject, p] of rows) await db.prepare('INSERT INTO lib_perms (org_id, block_id, subject, can_view, can_read, can_add, can_edit, can_delete) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, b.id, subject, p.view ? 1 : 0, p.read ? 1 : 0, p.add ? 1 : 0, p.edit ? 1 : 0, p.delete ? 1 : 0);
   })();

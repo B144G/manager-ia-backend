@@ -457,7 +457,14 @@ run('Bibliothèque : blocs protégés, droits, documents, corbeille, journal', a
   check('administrateur : règle les droits des membres', r.status === 200, r.json);
   r = await mgr('PUT', `${L}/blocks/${ids.commercial}/perms`, { roles: { admin: { view: false } } });
   check('administrateur : ne touche pas aux droits des administrateurs', r.status === 403);
-  await owner('PUT', `${L}/blocks/${ids.commercial}/perms`, { roles: { member: { view: true, read: true } } });
+  // exception d'un autre administrateur posée par le propriétaire : conservée quand un administrateur enregistre
+  await dbx.prepare("UPDATE org_members SET role = 'admin' WHERE org_id = ? AND user_id = ?").run(org, pid);
+  await owner('PUT', `${L}/blocks/${ids.commercial}/perms`, { users: [{ userId: pid, view: true, read: true }] });
+  r = await mgr('PUT', `${L}/blocks/${ids.commercial}/perms`, { roles: { member: { view: true, read: true } }, users: [{ userId: pid, view: true, read: true, add: true, edit: true, delete: true }] });
+  const keep = await dbx.prepare("SELECT can_add FROM lib_perms WHERE block_id = ? AND subject = ?").get(ids.commercial, 'user:' + pid);
+  check('administrateur : l\'exception d\'un autre administrateur n\'est pas modifiée', r.status === 200 && Number(keep.can_add) === 0, keep);
+  await dbx.prepare("UPDATE org_members SET role = 'member' WHERE org_id = ? AND user_id = ?").run(org, pid);
+  await owner('PUT', `${L}/blocks/${ids.commercial}/perms`, { roles: { member: { view: true, read: true } }, users: [] });
 
   // ---------- Journal d'audit ----------
   r = await owner('GET', `${L}/audit?limit=300`);

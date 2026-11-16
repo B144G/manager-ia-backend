@@ -73,7 +73,7 @@ module.exports = ({ blockView, mineSql }) => {
     let parent = null;
     if ((req.body || {}).parentId !== undefined && req.body.parentId !== null && req.body.parentId !== '') {
       parent = await folderIn(req, block, req.body.parentId);
-      if (await depthOf(parent) >= C.MAX_FOLDER_DEPTH) throw new HttpError(400, `Les dossiers ne vont pas au-delà de ${C.MAX_FOLDER_DEPTH} niveaux.`);
+      if (await depthOf(parent) >= C.MAX_FOLDER_DEPTH) throw new HttpError(400, 'Les dossiers ne vont pas au-delà de 6 niveaux.');
     }
     if (Number((await db.prepare('SELECT COUNT(*) AS n FROM lib_folders WHERE block_id = ?').get(block.id)).n) >= 500) throw new HttpError(403, 'Ce bloc contient déjà 500 dossiers.');
     const id = Number((await db.prepare('INSERT INTO lib_folders (org_id, block_id, parent_id, name, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(req.org.id, block.id, parent ? parent.id : null, name, req.user.id, nowISO())).lastInsertRowid);
@@ -165,7 +165,7 @@ module.exports = ({ blockView, mineSql }) => {
     const lim = await C.limitsOf(req.org);
     req.libLimits = lim;
     const len = Number(req.get('content-length') || 0);
-    if (len > lim.maxFileBytes + 1024) throw new HttpError(413, `Fichier trop lourd (${Math.round(lim.maxFileBytes / 1048576)} Mo au plus avec votre offre).`);
+    if (len > lim.maxFileBytes + 1024) throw new HttpError(413, 'Fichier trop lourd pour votre offre.');
     next();
   };
   /** Écrit un document ou une version en respectant les quotas ; verrou par organisation pour que deux envois simultanés ne dépassent pas l'espace. */
@@ -173,8 +173,8 @@ module.exports = ({ blockView, mineSql }) => {
     await db.transaction(async () => {
       await db.prepare('SELECT pg_advisory_xact_lock(?)').get(7270200000 + Number(req.org.id));
       const lim = await C.limitsOf(req.org);
-      if (size > lim.maxFileBytes) throw new HttpError(413, `Fichier trop lourd (${Math.round(lim.maxFileBytes / 1048576)} Mo au plus avec votre offre).`);
-      if (lim.used + size > lim.quotaBytes) throw new HttpError(403, `Espace de la bibliothèque plein (${Math.round(lim.quotaBytes / 1048576)} Mo avec l’offre ${lim.plan}). Supprimez des documents ou passez à une offre supérieure.`);
+      if (size > lim.maxFileBytes) throw new HttpError(413, 'Fichier trop lourd pour votre offre.');
+      if (lim.used + size > lim.quotaBytes) throw new HttpError(403, 'Espace de la bibliothèque plein : supprimez des documents ou passez à une offre supérieure.');
       await fn();
     })();
   }
@@ -256,7 +256,7 @@ module.exports = ({ blockView, mineSql }) => {
     const f = C.checkUpload(buf, req.query.name || doc.name);
     const note = A.text(req.query.note, 200);
     const n = Number((await db.prepare('SELECT COUNT(*) AS n FROM lib_versions WHERE doc_id = ?').get(doc.id)).n);
-    if (n >= C.MAX_VERSIONS) throw new HttpError(403, `Ce document a déjà ${C.MAX_VERSIONS} versions : supprimez-en d’anciennes pour en ajouter.`);
+    if (n >= C.MAX_VERSIONS) throw new HttpError(403, 'Ce document a déjà 20 versions : supprimez-en d’anciennes pour en ajouter.');
     let next;
     await store(req, async () => {
       const cur = await db.prepare('SELECT version FROM lib_docs WHERE id = ? FOR UPDATE').get(doc.id);
@@ -272,7 +272,7 @@ module.exports = ({ blockView, mineSql }) => {
     const n = A.id(req.params.n, 'Version invalide.');
     const v = await db.prepare('SELECT * FROM lib_versions WHERE doc_id = ? AND n = ? AND org_id = ?').get(doc.id, n, req.org.id);
     if (!v) throw new HttpError(404, 'Version introuvable.');
-    if (Number((await db.prepare('SELECT COUNT(*) AS c FROM lib_versions WHERE doc_id = ?').get(doc.id)).c) >= C.MAX_VERSIONS) throw new HttpError(403, `Ce document a déjà ${C.MAX_VERSIONS} versions : supprimez-en d’anciennes d’abord.`);
+    if (Number((await db.prepare('SELECT COUNT(*) AS c FROM lib_versions WHERE doc_id = ?').get(doc.id)).c) >= C.MAX_VERSIONS) throw new HttpError(403, 'Ce document a déjà 20 versions : supprimez-en d’anciennes pour en ajouter.');
     let next;
     await store(req, async () => {
       const cur = await db.prepare('SELECT version FROM lib_docs WHERE id = ? FOR UPDATE').get(doc.id);

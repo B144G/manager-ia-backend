@@ -249,10 +249,10 @@ function checkUpload(buf, rawName) {
   const m = /\.([A-Za-z0-9]{1,8})$/.exec(name0);
   const ext = m ? m[1].toLowerCase() : '';
   const base = m ? name0.slice(0, -m[0].length) : name0;
-  if (ext && DANGEROUS.test(ext)) throw new HttpError(400, `Les fichiers « .${ext} » ne sont pas acceptés dans la bibliothèque.`);
+  if (ext && DANGEROUS.test(ext)) throw new HttpError(400, 'Ce type de fichier (programme, page web ou script) n’est pas accepté dans la bibliothèque.');
   const t = sniff(buf);
   if (!t) throw new HttpError(400, 'Fichier non reconnu : formats acceptés : PDF, images, documents Office ou OpenDocument, texte, audio et vidéo courants.');
-  if (ext && !t.exts.includes(ext)) throw new HttpError(400, `Le contenu du fichier ne correspond pas à son extension « .${ext} » : envoi refusé.`);
+  if (ext && !t.exts.includes(ext)) throw new HttpError(400, 'Le contenu du fichier ne correspond pas à son extension : envoi refusé.');
   if (t.ole && !ext) throw new HttpError(400, 'Ancien format Office : donnez au fichier son extension (.doc, .xls ou .ppt).');
   const finalExt = ext || t.exts[0];
   return { name: `${base || 'document'}.${finalExt}`.slice(0, 130), mime: t.ole ? OLE_MIME[finalExt] : t.mime, family: t.family };
