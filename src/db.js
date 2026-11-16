@@ -2608,6 +2608,93 @@ const MIGRATIONS = [
     UNIQUE (loan_id, n)
   );
   `,
+  /* STOCK WMS · lot 1 : entrepôts, zones, emplacements et stock par emplacement (l'ancien stock global devient l'emplacement « Principal »). */ `
+  CREATE TABLE wms_warehouses (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    branch_id BIGINT REFERENCES branches(id) ON DELETE SET NULL,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    address TEXT NOT NULL DEFAULT '',
+    is_default BIGINT NOT NULL DEFAULT 0,
+    active BIGINT NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, code)
+  );
+  CREATE UNIQUE INDEX uq_wms_wh_default ON wms_warehouses(org_id) WHERE is_default = 1;
+  CREATE TABLE wms_zones (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    warehouse_id BIGINT NOT NULL REFERENCES wms_warehouses(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'storage',
+    created_at TEXT NOT NULL,
+    UNIQUE (warehouse_id, code)
+  );
+  CREATE TABLE wms_locations (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    warehouse_id BIGINT NOT NULL REFERENCES wms_warehouses(id) ON DELETE CASCADE,
+    zone_id BIGINT REFERENCES wms_zones(id) ON DELETE SET NULL,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    aisle TEXT NOT NULL DEFAULT '',
+    rack TEXT NOT NULL DEFAULT '',
+    bin TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'storage',
+    is_default BIGINT NOT NULL DEFAULT 0,
+    active BIGINT NOT NULL DEFAULT 1,
+    capacity DOUBLE PRECISION,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, code)
+  );
+  CREATE UNIQUE INDEX uq_wms_loc_default ON wms_locations(org_id) WHERE is_default = 1;
+  CREATE INDEX idx_wms_loc_wh ON wms_locations(warehouse_id);
+  CREATE TABLE wms_levels (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    location_id BIGINT NOT NULL REFERENCES wms_locations(id) ON DELETE RESTRICT,
+    quantity DOUBLE PRECISION NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+    PRIMARY KEY (item_id, location_id)
+  );
+  CREATE INDEX idx_wms_levels_loc ON wms_levels(location_id);
+  CREATE INDEX idx_wms_levels_org ON wms_levels(org_id);
+  CREATE TABLE wms_moves (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    from_location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    to_location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    quantity DOUBLE PRECISION NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'move',
+    reason TEXT NOT NULL DEFAULT '',
+    ref_kind TEXT NOT NULL DEFAULT '',
+    ref_id BIGINT,
+    unit_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_wms_moves_item ON wms_moves(item_id, id);
+  CREATE INDEX idx_wms_moves_org ON wms_moves(org_id, id);
+  CREATE TABLE wms_putaway_rules (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_id BIGINT REFERENCES stock_items(id) ON DELETE CASCADE,
+    tracking TEXT,
+    location_id BIGINT NOT NULL REFERENCES wms_locations(id) ON DELETE CASCADE,
+    priority BIGINT NOT NULL DEFAULT 100,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_wms_putaway_org ON wms_putaway_rules(org_id, priority);
+  ALTER TABLE stock_moves ADD COLUMN location_id BIGINT;
+  INSERT INTO wms_warehouses (org_id, branch_id, code, name, is_default, created_at)
+    SELECT id, NULL, 'PRINC', 'Entrepôt principal', 1, to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') FROM orgs;
+  INSERT INTO wms_locations (org_id, warehouse_id, code, name, kind, is_default, created_at)
+    SELECT w.org_id, w.id, 'PRINCIPAL', 'Principal', 'storage', 1, w.created_at FROM wms_warehouses w WHERE w.is_default = 1;
+  INSERT INTO wms_levels (org_id, item_id, location_id, quantity)
+    SELECT i.org_id, i.id, l.id, i.quantity FROM stock_items i JOIN wms_locations l ON l.org_id = i.org_id AND l.is_default = 1 WHERE i.quantity > 0;
+  `,
 ];
 
 

@@ -241,6 +241,7 @@ orgRouter.use('/support', require('./support'));
 orgRouter.use('/projects', require('./projects'));
 orgRouter.use('/share', require('./share'));
 orgRouter.use('/budget', require('./budget'));
+orgRouter.use('/stock/wms', require('./stock-wms')); // entrepôt : emplacements, transferts, réservations… (avant /stock)
 orgRouter.use('/stock', require('./stock'));
 orgRouter.use('/crm', require('./crm'));
 orgRouter.use('/mail', require('./mail'));

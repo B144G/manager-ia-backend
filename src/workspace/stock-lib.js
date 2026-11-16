@@ -6,6 +6,7 @@
 // Tout passe par adjust() : la quantité de l'article, l'historique (stock_moves), les lots et les séries restent toujours d'accord.
 const { db, nowISO } = require('../db');
 const { HttpError } = require('../util');
+const W = require('./wms-lib');
 
 const round3 = (n) => Math.round(n * 1000) / 1000;
 const today = () => nowISO().slice(0, 10);
@@ -60,7 +61,8 @@ async function addToLot(orgId, it, { lotNo, expiry, quantity, unitCost, lotId })
  * Mouvement de stock d'un article (entrée si delta > 0, sortie si delta < 0). Dans une transaction.
  *  opts : unitCost (valorise l'entrée : met à jour le CUMP), lotNo / expiry (article suivi par lot), serials (article suivi par série),
  *         allocations (retour : remet les quantités dans les lots d'origine), strict (réclame lot / séries : saisie manuelle),
- *         refKind / refId (origine : livraison, inventaire…), allowExpired.
+ *         refKind / refId (origine : livraison, inventaire…), allowExpired,
+ *         locationId (emplacement d'entrée ou de sortie ; sinon règles de rangement / emplacements disponibles).
  * Renvoie { quantity, allocations, serials }.
  */
 async function adjust(req, itemOrId, delta, reason, opts = {}) {
@@ -72,6 +74,8 @@ async function adjust(req, itemOrId, delta, reason, opts = {}) {
     if (!delta) return { quantity: it.quantity, allocations: [], serials: [] };
     const next = round3(it.quantity + delta);
     if (next < 0) throw new HttpError(400, `Stock insuffisant pour « ${it.name} » : il reste ${it.quantity} ${it.unit}.`);
+    // Emplacements : où entre / d'où sort la quantité (la somme des emplacements reste égale à la quantité de l'article).
+    const parts = await W.plan(req, it, delta, opts);
     let allocations = []; let serials = [];
     if (it.tracking === 'lot') {
       if (delta > 0) {
@@ -112,8 +116,11 @@ async function adjust(req, itemOrId, delta, reason, opts = {}) {
       avg = Math.round(avg * 100) / 100;
     }
     await db.prepare('UPDATE stock_items SET quantity = ?, avg_cost = ? WHERE id = ?').run(next, avg, it.id);
-    await db.prepare('INSERT INTO stock_moves (org_id, item_id, delta, reason, created_by, created_at, unit_cost, ref_kind, ref_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(req.org.id, it.id, delta, String(reason).slice(0, 150), req.user ? req.user.id : null, nowISO(), opts.unitCost === undefined ? null : Number(opts.unitCost), opts.refKind || '', opts.refId || null);
+    await W.applyPlan(req.org.id, it.id, parts);
+    for (const p of parts) {
+      await db.prepare('INSERT INTO stock_moves (org_id, item_id, delta, reason, created_by, created_at, unit_cost, ref_kind, ref_id, location_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(req.org.id, it.id, p.quantity, String(reason).slice(0, 150), req.user ? req.user.id : null, nowISO(), opts.unitCost === undefined ? null : Number(opts.unitCost), opts.refKind || '', opts.refId || null, p.locationId);
+    }
     return { quantity: next, allocations, serials };
   })();
 }
