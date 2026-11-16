@@ -8,6 +8,7 @@ const express = require('express');
 const { db, nowISO } = require('../db');
 const A = require('./access');
 const L = require('./stock-lib');
+const W = require('./wms-lib');
 const { amap, afilter, HttpError } = require('../util');
 const P6 = require('./projects-w6');
 
@@ -30,10 +31,11 @@ const supplierOf = async (req, id) => {
 const bestPrice = async (itemId) => await db.prepare('SELECT p.supplier_id AS supplierId, s.name AS supplier, p.unit_price AS unitPrice, p.lead_days AS leadDays FROM supplier_prices p JOIN suppliers s ON s.id = p.supplier_id WHERE p.item_id = ? ORDER BY p.unit_price, COALESCE(p.lead_days, 999) LIMIT 1').get(itemId) || null;
 
 const stateOf = (it) => (it.quantity <= 0 ? 'out' : it.quantity <= it.min_quantity && it.min_quantity > 0 ? 'low' : it.max_quantity > 0 && it.quantity > it.max_quantity ? 'over' : 'ok');
-const view = async (it, mgr) => ({
+const view = async (it, mgr, av) => ({
   id: it.id, name: it.name, unit: it.unit, quantity: it.quantity, minQuantity: it.min_quantity, maxQuantity: it.max_quantity, unitCost: it.unit_cost, avgCost: mgr ? Math.round(L.unitValue(it) * 100) / 100 : undefined,
   value: mgr ? Math.round(it.quantity * L.unitValue(it)) : undefined, sku: it.sku, barcode: it.barcode, tracking: it.tracking, pickRule: it.pick_rule, branchId: it.branch_id,
   state: stateOf(it), best: await bestPrice(it.id),
+  reserved: av ? av.reserved : undefined, available: av ? av.available : undefined, // WMS : disponible à promettre = stock utilisable − réservé
 });
 
 /** Articles du stock visibles (filtrés par antenne). */
@@ -67,7 +69,8 @@ async function suggestions(req) {
 router.get('/', async (req, res) => {
   const list = await items(req);
   const mgr = A.can(req, 'manager');
-  const v = await amap(list, (it) => view(it, mgr));
+  const av = await W.availabilityMap(req.org.id);
+  const v = await amap(list, (it) => view(it, mgr, av.get(it.id)));
   const exp = await expiringLots(req, 30);
   res.json({
     items: v,
@@ -85,7 +88,7 @@ router.get('/lookup', async (req, res) => {
   const code = A.text(req.query.code, 60, { required: true, msg: 'Indiquez un code-barres ou un SKU.' });
   const it = await db.prepare('SELECT * FROM stock_items WHERE org_id = ? AND (barcode = ? OR sku = ?)').get(req.org.id, code, code);
   if (!it || !A.visible(req, it)) throw new HttpError(404, 'Aucun article avec ce code.');
-  res.json({ item: await view(it, A.can(req, 'manager')) });
+  res.json({ item: await view(it, A.can(req, 'manager'), (await W.availabilityMap(req.org.id)).get(it.id)) });
 });
 
 /** Champs d'un article validés (création ou modification). */
@@ -174,7 +177,7 @@ router.post('/items/:id/move', async (req, res) => {
   if (kind === 'in' && b.unitCost !== undefined && b.unitCost !== '' && !A.can(req, 'manager')) throw new HttpError(403, "Seul un responsable peut valoriser une entrée.");
   const projectId = kind === 'out' ? await P6.linkableProject(req, b.projectId) : null;
   const r = await L.adjust(req, it, kind === 'in' ? q : -q, A.text(b.reason, 150) || (kind === 'in' ? 'Entrée' : 'Sortie'),
-    { refKind: projectId ? 'project' : undefined, refId: projectId || undefined, strict: true, lotNo: A.text(b.lotNo, 40), expiry: A.date(b.expiry) || undefined, serials, unitCost: kind === 'in' && b.unitCost !== undefined && b.unitCost !== '' ? A.amount(b.unitCost) : undefined });
+    { refKind: projectId ? 'project' : undefined, refId: projectId || undefined, strict: true, locationId: b.locationId ? (await W.locationFor(req, b.locationId)).id : undefined, lotNo: A.text(b.lotNo, 40), expiry: A.date(b.expiry) || undefined, serials, unitCost: kind === 'in' && b.unitCost !== undefined && b.unitCost !== '' ? A.amount(b.unitCost) : undefined });
   let project = null;
   if (projectId) {
     const mv = await db.prepare("SELECT id FROM stock_moves WHERE item_id = ? AND ref_kind = 'project' AND ref_id = ? ORDER BY id DESC LIMIT 1").get(it.id, projectId);
@@ -308,7 +311,7 @@ async function receive(req, o, it, qtyIn, opts = {}) {
   const complete = done >= o.quantity - 1e-9;
   await db.transaction(async () => {
     await L.adjust(req, it, q, complete && o.received_qty === 0 ? `Commande #${o.id} reçue` : `Commande #${o.id} : réception ${complete ? 'du solde' : 'partielle'}`,
-      { unitCost: price > 0 ? price : undefined, lotNo: opts.lotNo || `CMD-${o.id}`, expiry: opts.expiry, serials: opts.serials, strict: opts.strict, refKind: 'order', refId: o.id });
+      { unitCost: price > 0 ? price : undefined, lotNo: opts.lotNo || `CMD-${o.id}`, expiry: opts.expiry, serials: opts.serials, strict: opts.strict, refKind: 'order', refId: o.id, locationId: opts.locationId }); // WMS : emplacement de réception (sinon règles de rangement)
     const receiptId = Number((await db.prepare('INSERT INTO purchase_receipts (org_id, order_id, quantity, unit_price, lot_no, expiry, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, o.id, q, price, opts.lotNo || '', opts.expiry || null, A.text(opts.note, 200), req.user.id, nowISO())).lastInsertRowid);
     await db.prepare('UPDATE purchase_orders SET status = ?, received_qty = ?, received_at = ?, decided_by = COALESCE(decided_by, ?), updated_at = ? WHERE id = ?').run(complete ? 'received' : 'partial', done, nowISO(), req.user.id, nowISO(), o.id);
     await P6.costFromReceipt(req, o, it, receiptId, q, price);
@@ -331,7 +334,7 @@ router.post('/orders/:id/receive', A.need('manager'), async (req, res) => {
   const b = req.body || {};
   if (it.tracking === 'lot' && !A.text(b.lotNo, 40)) throw new HttpError(400, `« ${it.name} » est suivi par lot : indiquez le numéro de lot reçu.`);
   const serials = it.tracking === 'serial' ? L.parseSerials(b.serials) : undefined;
-  const r = await receive(req, o, it, it.tracking === 'serial' && (b.quantity === undefined || b.quantity === '') ? serials.length : b.quantity, { lotNo: A.text(b.lotNo, 40), expiry: A.date(b.expiry) || undefined, serials, unitPrice: b.unitPrice, note: b.note, strict: true });
+  const r = await receive(req, o, it, it.tracking === 'serial' && (b.quantity === undefined || b.quantity === '') ? serials.length : b.quantity, { lotNo: A.text(b.lotNo, 40), expiry: A.date(b.expiry) || undefined, serials, unitPrice: b.unitPrice, note: b.note, strict: true, locationId: b.locationId ? (await W.locationFor(req, b.locationId)).id : undefined });
   await A.logActivity(req.org.id, req.user.id, 'stock', `Commande de « ${it.name} » : ${r.status === 'received' ? 'reçue' : 'réception partielle'} (${r.received})`);
   res.json(r);
 });
@@ -384,7 +387,7 @@ async function countView(req, c, withLines) {
   const mgr = A.can(req, 'manager');
   const lines = await db.prepare('SELECT l.*, i.name, i.unit, i.tracking FROM stock_count_lines l JOIN stock_items i ON i.id = l.item_id WHERE l.count_id = ? ORDER BY i.name COLLATE NOCASE').all(c.id);
   const gaps = lines.filter((l) => l.counted !== null).map((l) => ({ gap: Math.round((l.counted - l.expected) * 1000) / 1000, value: Math.round((l.counted - l.expected) * l.unit_value) }));
-  const out = { id: c.id, seq: c.seq, code: `INV-${c.created_at.slice(0, 4)}-${String(c.seq).padStart(3, '0')}`, status: c.status, note: c.note, createdAt: c.created_at, submittedAt: c.submitted_at, decidedAt: c.decided_at, decisionNote: c.decision_note, createdBy: c.created_by,
+  const out = { id: c.id, seq: c.seq, code: `INV-${c.created_at.slice(0, 4)}-${String(c.seq).padStart(3, '0')}`, status: c.status, cycleClass: c.cycle_class || '', note: c.note, createdAt: c.created_at, submittedAt: c.submitted_at, decidedAt: c.decided_at, decisionNote: c.decision_note, createdBy: c.created_by,
     lines: lines.length, counted: lines.filter((l) => l.counted !== null).length, withGap: gaps.filter((g) => g.gap !== 0).length,
     gapValue: mgr ? gaps.reduce((a, g) => a + g.value, 0) : undefined, shortValue: mgr ? gaps.filter((g) => g.value < 0).reduce((a, g) => a + g.value, 0) : undefined, surplusValue: mgr ? gaps.filter((g) => g.value > 0).reduce((a, g) => a + g.value, 0) : undefined };
   if (withLines) out.items = lines.map((l) => ({ itemId: l.item_id, name: l.name, unit: l.unit, tracking: l.tracking, expected: l.expected, counted: l.counted, gap: l.counted === null ? null : Math.round((l.counted - l.expected) * 1000) / 1000, unitValue: mgr ? l.unit_value : undefined, gapValue: mgr && l.counted !== null ? Math.round((l.counted - l.expected) * l.unit_value) : undefined }));

@@ -294,6 +294,7 @@ router.put('/orders/:id/status', async (req, res) => {
   if (d.status !== 'pending') throw new HttpError(400, 'Cette commande a déjà été traitée.');
   if (st === 'confirmed' && ['needed', 'rejected'].includes(d.approval)) throw new HttpError(409, d.approval === 'needed' ? `Cette commande a une remise de ${Number(d.discount_pct)} % au-dessus du seuil : elle doit d'abord être validée dans « Décisions » par un responsable.` : 'La remise de cette commande a été refusée : refusez la commande ou négociez avec le client.');
   await db.prepare('UPDATE documents SET status = ?, updated_at = ? WHERE id = ?').run(st, nowISO(), d.id);
+  if (st === 'cancelled') await require('./wms-lib').releaseForDocument(req.org.id, d.id, `Commande ${d.number} refusée`, req.user.id); // stock réservé libéré
   if (d.negotiated) await N.log(req.org.id, { docId: d.id, chatId: d.chat_id, label: d.number, actor: 'human', kind: st === 'confirmed' ? 'confirmed' : 'cancelled', userId: req.user.id, note: `commande ${st === 'confirmed' ? 'confirmée' : 'refusée'} par l'équipe` });
   await A.logActivity(req.org.id, req.user.id, 'sales', `Commande ${d.number} ${st === 'confirmed' ? 'confirmée' : 'refusée'}`);
   res.json({ ok: true });

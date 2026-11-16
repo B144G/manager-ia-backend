@@ -2608,6 +2608,327 @@ const MIGRATIONS = [
     UNIQUE (loan_id, n)
   );
   `,
+  /* STOCK WMS · lot 1 : entrepôts, zones, emplacements et stock par emplacement (l'ancien stock global devient l'emplacement « Principal »). */ `
+  CREATE TABLE wms_warehouses (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    branch_id BIGINT REFERENCES branches(id) ON DELETE SET NULL,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    address TEXT NOT NULL DEFAULT '',
+    is_default BIGINT NOT NULL DEFAULT 0,
+    active BIGINT NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, code)
+  );
+  CREATE UNIQUE INDEX uq_wms_wh_default ON wms_warehouses(org_id) WHERE is_default = 1;
+  CREATE TABLE wms_zones (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    warehouse_id BIGINT NOT NULL REFERENCES wms_warehouses(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'storage',
+    created_at TEXT NOT NULL,
+    UNIQUE (warehouse_id, code)
+  );
+  CREATE TABLE wms_locations (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    warehouse_id BIGINT NOT NULL REFERENCES wms_warehouses(id) ON DELETE CASCADE,
+    zone_id BIGINT REFERENCES wms_zones(id) ON DELETE SET NULL,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    aisle TEXT NOT NULL DEFAULT '',
+    rack TEXT NOT NULL DEFAULT '',
+    bin TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'storage',
+    is_default BIGINT NOT NULL DEFAULT 0,
+    active BIGINT NOT NULL DEFAULT 1,
+    capacity DOUBLE PRECISION,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, code)
+  );
+  CREATE UNIQUE INDEX uq_wms_loc_default ON wms_locations(org_id) WHERE is_default = 1;
+  CREATE INDEX idx_wms_loc_wh ON wms_locations(warehouse_id);
+  CREATE TABLE wms_levels (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    location_id BIGINT NOT NULL REFERENCES wms_locations(id) ON DELETE RESTRICT,
+    quantity DOUBLE PRECISION NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+    PRIMARY KEY (item_id, location_id)
+  );
+  CREATE INDEX idx_wms_levels_loc ON wms_levels(location_id);
+  CREATE INDEX idx_wms_levels_org ON wms_levels(org_id);
+  CREATE TABLE wms_moves (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    from_location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    to_location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    quantity DOUBLE PRECISION NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'move',
+    reason TEXT NOT NULL DEFAULT '',
+    ref_kind TEXT NOT NULL DEFAULT '',
+    ref_id BIGINT,
+    unit_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_wms_moves_item ON wms_moves(item_id, id);
+  CREATE INDEX idx_wms_moves_org ON wms_moves(org_id, id);
+  CREATE TABLE wms_putaway_rules (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_id BIGINT REFERENCES stock_items(id) ON DELETE CASCADE,
+    tracking TEXT,
+    location_id BIGINT NOT NULL REFERENCES wms_locations(id) ON DELETE CASCADE,
+    priority BIGINT NOT NULL DEFAULT 100,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_wms_putaway_org ON wms_putaway_rules(org_id, priority);
+  ALTER TABLE stock_moves ADD COLUMN location_id BIGINT;
+  INSERT INTO wms_warehouses (org_id, branch_id, code, name, is_default, created_at)
+    SELECT id, NULL, 'PRINC', 'Entrepôt principal', 1, to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') FROM orgs;
+  INSERT INTO wms_locations (org_id, warehouse_id, code, name, kind, is_default, created_at)
+    SELECT w.org_id, w.id, 'PRINCIPAL', 'Principal', 'storage', 1, w.created_at FROM wms_warehouses w WHERE w.is_default = 1;
+  INSERT INTO wms_levels (org_id, item_id, location_id, quantity)
+    SELECT i.org_id, i.id, l.id, i.quantity FROM stock_items i JOIN wms_locations l ON l.org_id = i.org_id AND l.is_default = 1 WHERE i.quantity > 0;
+  `,
+  /* STOCK WMS · lot 2 : transferts entre entrepôts et emplacements (demande → expédié en transit → reçu, écarts, journal). */ `
+  CREATE TABLE wms_transfers (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'requested',
+    from_warehouse_id BIGINT NOT NULL REFERENCES wms_warehouses(id) ON DELETE RESTRICT,
+    to_warehouse_id BIGINT NOT NULL REFERENCES wms_warehouses(id) ON DELETE RESTRICT,
+    note TEXT NOT NULL DEFAULT '',
+    requested_by BIGINT,
+    requested_at TEXT NOT NULL,
+    shipped_by BIGINT,
+    shipped_at TEXT,
+    received_by BIGINT,
+    received_at TEXT,
+    cancelled_by BIGINT,
+    cancelled_at TEXT,
+    cancel_reason TEXT NOT NULL DEFAULT '',
+    UNIQUE (org_id, code)
+  );
+  CREATE INDEX idx_wms_transfers_org ON wms_transfers(org_id, status);
+  CREATE TABLE wms_transfer_lines (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    transfer_id BIGINT NOT NULL REFERENCES wms_transfers(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE RESTRICT,
+    quantity DOUBLE PRECISION NOT NULL,
+    shipped_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    received_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    from_location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    to_location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    src TEXT NOT NULL DEFAULT '[]',
+    unit_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+    gap_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    gap_value BIGINT NOT NULL DEFAULT 0,
+    gap_reason TEXT NOT NULL DEFAULT '',
+    UNIQUE (transfer_id, item_id)
+  );
+  CREATE TABLE wms_transfer_events (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    transfer_id BIGINT NOT NULL REFERENCES wms_transfers(id) ON DELETE CASCADE,
+    action TEXT NOT NULL,
+    user_id BIGINT,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_wms_transfer_events ON wms_transfer_events(transfer_id, id);
+  `,
+  /* STOCK WMS · lot 3 : réservations de stock (commande client, demande interne, réservation libre). Disponible à promettre = disponible − réservé. */ `
+  CREATE TABLE wms_reservations (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    quantity DOUBLE PRECISION NOT NULL,
+    fulfilled_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    source_kind TEXT NOT NULL DEFAULT 'manual',
+    source_id BIGINT,
+    label TEXT NOT NULL DEFAULT '',
+    needed_by TEXT,
+    expires_at TEXT,
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    closed_at TEXT,
+    closed_by BIGINT,
+    close_reason TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX idx_wms_resv_item ON wms_reservations(item_id, status);
+  CREATE INDEX idx_wms_resv_org ON wms_reservations(org_id, status);
+  CREATE INDEX idx_wms_resv_source ON wms_reservations(org_id, source_kind, source_id);
+  `,
+  /* STOCK WMS · lot 4 : retours client, retours fournisseur et mises au rebut (documents liés aux mouvements de stock). */ `
+  CREATE TABLE wms_returns (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    customer_id BIGINT REFERENCES customers(id) ON DELETE SET NULL,
+    supplier_id BIGINT REFERENCES suppliers(id) ON DELETE SET NULL,
+    doc_id BIGINT REFERENCES documents(id) ON DELETE SET NULL,
+    order_id BIGINT,
+    reason TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    validated_by BIGINT,
+    validated_at TEXT,
+    cancelled_at TEXT,
+    credit_amount BIGINT NOT NULL DEFAULT 0,
+    credited_at TEXT,
+    UNIQUE (org_id, code)
+  );
+  CREATE INDEX idx_wms_returns_org ON wms_returns(org_id, kind, status);
+  CREATE TABLE wms_return_lines (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    return_id BIGINT NOT NULL REFERENCES wms_returns(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE RESTRICT,
+    quantity DOUBLE PRECISION NOT NULL,
+    reason_code TEXT NOT NULL DEFAULT 'other',
+    disposition TEXT NOT NULL,
+    final TEXT NOT NULL DEFAULT '',
+    location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    lot_no TEXT NOT NULL DEFAULT '',
+    expiry TEXT,
+    serials TEXT NOT NULL DEFAULT '[]',
+    unit_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+    value BIGINT NOT NULL DEFAULT 0,
+    resolved_at TEXT
+  );
+  CREATE INDEX idx_wms_return_lines ON wms_return_lines(return_id);
+  CREATE INDEX idx_wms_return_lines_item ON wms_return_lines(item_id);
+  `,
+  /* STOCK WMS · lot 5 : réceptions multi-lignes et coûts d'arrivée (transport, douane, manutention) répartis sur les lignes et incorporés au coût moyen pondéré. */ `
+  CREATE TABLE wms_receipts (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'direct',
+    supplier_id BIGINT REFERENCES suppliers(id) ON DELETE SET NULL,
+    reference TEXT NOT NULL DEFAULT '',
+    order_id BIGINT,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, code)
+  );
+  CREATE INDEX idx_wms_receipts_org ON wms_receipts(org_id, id);
+  CREATE TABLE wms_receipt_lines (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    receipt_id BIGINT NOT NULL REFERENCES wms_receipts(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE RESTRICT,
+    quantity DOUBLE PRECISION NOT NULL,
+    unit_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+    weight DOUBLE PRECISION NOT NULL DEFAULT 0,
+    lot_no TEXT NOT NULL DEFAULT '',
+    expiry TEXT,
+    purchase_receipt_id BIGINT,
+    landed_total BIGINT NOT NULL DEFAULT 0,
+    incorporated BIGINT NOT NULL DEFAULT 0,
+    expensed BIGINT NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_wms_receipt_lines ON wms_receipt_lines(receipt_id);
+  CREATE UNIQUE INDEX uq_wms_receipt_purchase ON wms_receipt_lines(org_id, purchase_receipt_id) WHERE purchase_receipt_id IS NOT NULL;
+  CREATE TABLE wms_landed_costs (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    receipt_id BIGINT NOT NULL REFERENCES wms_receipts(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'other',
+    label TEXT NOT NULL DEFAULT '',
+    amount BIGINT NOT NULL,
+    basis TEXT NOT NULL DEFAULT 'value',
+    incorporated BIGINT NOT NULL DEFAULT 0,
+    expensed BIGINT NOT NULL DEFAULT 0,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_wms_landed_receipt ON wms_landed_costs(receipt_id);
+  CREATE TABLE wms_landed_alloc (
+    cost_id BIGINT NOT NULL REFERENCES wms_landed_costs(id) ON DELETE CASCADE,
+    line_id BIGINT NOT NULL REFERENCES wms_receipt_lines(id) ON DELETE CASCADE,
+    amount BIGINT NOT NULL,
+    incorporated BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (cost_id, line_id)
+  );
+  `,
+  /* STOCK WMS · lot 6 : classement ABC (valeur de consommation) et inventaires tournants planifiés par classe. */ `
+  CREATE TABLE wms_settings (
+    org_id BIGINT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    data TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE wms_item_class (
+    item_id BIGINT PRIMARY KEY REFERENCES stock_items(id) ON DELETE CASCADE,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    class TEXT NOT NULL,
+    consumption BIGINT NOT NULL DEFAULT 0,
+    rank BIGINT NOT NULL DEFAULT 0,
+    computed_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_wms_item_class_org ON wms_item_class(org_id, class);
+  ALTER TABLE stock_counts ADD COLUMN cycle_class TEXT NOT NULL DEFAULT '';
+  `,
+  /* STOCK WMS · lot 7 : listes de préparation (picking) avec parcours dans l'entrepôt ; le rangement (putaway) réutilise wms_putaway_rules du lot 1. */ `
+  CREATE TABLE wms_picks (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    source_kind TEXT NOT NULL DEFAULT 'manual',
+    source_id BIGINT,
+    warehouse_id BIGINT REFERENCES wms_warehouses(id) ON DELETE SET NULL,
+    label TEXT NOT NULL DEFAULT '',
+    priority BIGINT NOT NULL DEFAULT 2,
+    assigned_to BIGINT,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    picked_at TEXT,
+    issued_at TEXT,
+    cancelled_at TEXT,
+    UNIQUE (org_id, code)
+  );
+  CREATE INDEX idx_wms_picks_org ON wms_picks(org_id, status);
+  CREATE TABLE wms_pick_lines (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    pick_id BIGINT NOT NULL REFERENCES wms_picks(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE RESTRICT,
+    location_id BIGINT NOT NULL REFERENCES wms_locations(id) ON DELETE RESTRICT,
+    seq BIGINT NOT NULL DEFAULT 0,
+    quantity DOUBLE PRECISION NOT NULL,
+    picked_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    issued_qty DOUBLE PRECISION NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_wms_pick_lines ON wms_pick_lines(pick_id, seq);
+  CREATE INDEX idx_wms_pick_lines_loc ON wms_pick_lines(location_id, item_id);
+  `,
+  /* STOCK WMS · lot 8 : paramètres de réapprovisionnement par article (stock de sécurité, délai fournisseur, point de commande, multiple de commande). */ `
+  CREATE TABLE wms_item_params (
+    item_id BIGINT PRIMARY KEY REFERENCES stock_items(id) ON DELETE CASCADE,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    safety_stock DOUBLE PRECISION,
+    lead_days BIGINT,
+    reorder_point DOUBLE PRECISION,
+    order_multiple DOUBLE PRECISION,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_wms_item_params_org ON wms_item_params(org_id);
+  `,
 ];
 
 
