@@ -2,7 +2,7 @@
 // Stock WMS · lot 8 : prévision simple de la demande (moyenne mobile sur les sorties hebdomadaires) et réapprovisionnement amélioré.
 //  - Demande = sorties de la période (ventes, livraisons, ateliers, chantiers) ; sont exclus : écarts d'inventaire, pertes de transfert, retours, rebuts.
 //  - Prévision = moyenne des N dernières semaines (N réglable, 8 par défaut) ; tendance = moyenne des 4 dernières semaines comparée à cette moyenne.
-//    Un article récent n'est moyenné que sur les semaines depuis sa création. C'est une prévision SIMPLE : elle ne voit ni saisonnalité ni promotion.
+//    Un article récent n'est moyenné que sur les semaines depuis sa création. Avec plus de 14 mois d'historique, la moyenne est corrigée par un indice saisonnier (même période l'an dernier ÷ moyenne de l'année, borné de 0,5 à 2). Aucune promotion n'est vue.
 //  - Point de commande = demande pendant le délai fournisseur + stock de sécurité. Stock de sécurité : valeur fixée sur l'article, sinon z × écart-type hebdomadaire × √(délai / 7 jours),
 //    z venant du niveau de service réglé (95 % → 1,645). Délai : celui de l'article, sinon celui du fournisseur au meilleur prix, sinon le délai par défaut.
 //  - Position de stock = disponible à promettre + déjà commandé. On propose de commander quand la position tombe au point de commande, pour remonter jusqu'au point de commande
@@ -53,6 +53,10 @@ async function load(req, cfg) {
   const sc = A.scope(req, 'i.branch_id');
   const items = await db.prepare(`SELECT i.* FROM stock_items i WHERE i.org_id = ?${sc.sql} ORDER BY i.name COLLATE NOCASE`).all(req.org.id, ...sc.args);
   const mv = await db.prepare(`SELECT m.item_id, m.created_at, -m.delta AS q FROM stock_moves m WHERE m.org_id = ? AND m.delta < 0 AND m.created_at >= ? AND m.ref_kind NOT IN (${NOT_CONSUMPTION.map(() => '?').join(',')})`).all(req.org.id, since, ...NOT_CONSUMPTION);
+  const longSince = new Date(nowMs - 400 * DAY).toISOString();
+  const lg = await db.prepare(`SELECT m.item_id, m.created_at, -m.delta AS q FROM stock_moves m WHERE m.org_id = ? AND m.delta < 0 AND m.created_at >= ? AND m.ref_kind NOT IN (${NOT_CONSUMPTION.map(() => '?').join(',')})`).all(req.org.id, longSince, ...NOT_CONSUMPTION);
+  const long = new Map();
+  for (const m of lg) { if (!long.has(m.item_id)) long.set(m.item_id, []); long.get(m.item_id).push(m); }
   const by = new Map();
   for (const m of mv) { if (!by.has(m.item_id)) by.set(m.item_id, []); by.get(m.item_id).push(m); }
   const params = new Map((await db.prepare('SELECT * FROM wms_item_params WHERE org_id = ?').all(req.org.id)).map((p) => [p.item_id, p]));
@@ -60,12 +64,26 @@ async function load(req, cfg) {
   let ordered = new Map();
   try { ordered = new Map((await db.prepare("SELECT item_id, SUM(quantity - received_qty) q FROM purchase_orders WHERE org_id = ? AND status IN ('pending','ordered','partial') GROUP BY item_id").all(req.org.id)).map((x) => [x.item_id, x.q])); } catch { ordered = new Map(); }
   const best = new Map((await db.prepare('SELECT p.item_id, p.supplier_id, s.name AS supplier, p.unit_price, p.lead_days FROM supplier_prices p JOIN suppliers s ON s.id = p.supplier_id WHERE p.org_id = ? ORDER BY p.unit_price').all(req.org.id)).reverse().reduce((m, x) => m.set(x.item_id, x), new Map()));
-  return { nowMs, items, by, params, av, ordered, best };
+  return { nowMs, long, items, by, params, av, ordered, best };
+}
+
+/** Indice saisonnier : demande moyenne des 5 semaines qui entourent la même période l'an dernier, comparée à la moyenne de l'année. Null sans 14 mois d'historique. */
+function seasonOf(it, moves, nowMs) {
+  if ((nowMs - Date.parse(it.created_at)) < 380 * DAY || !moves || !moves.length) return null;
+  const wk = new Array(58).fill(0);
+  for (const m of moves) { const k = Math.floor((nowMs - Date.parse(m.created_at)) / (7 * DAY)); if (k >= 0 && k < 58) wk[k] += m.q; }
+  const year = wk.slice(0, 52).reduce((a, x) => a + x, 0) / 52;
+  if (year <= 0) return null;
+  const ly = wk.slice(50, 55).reduce((a, x) => a + x, 0) / 5; // semaines 50 à 54 : même période, un an plus tôt
+  return Math.min(Math.max(ly / year, 0.5), 2);
 }
 
 /** Prévision et paramètres de réapprovisionnement d'un article. */
 function analyse(it, ctx, cfg) {
   const d = demandOf(it, ctx.by.get(it.id) || [], ctx.nowMs, cfg.forecastWeeks);
+  const season = seasonOf(it, ctx.long.get(it.id), ctx.nowMs);
+  if (season !== null) { d.avg *= season; d.sd *= season; }
+  d.season = season;
   const p = ctx.params.get(it.id) || {};
   const sup = ctx.best.get(it.id) || null;
   const leadDays = p.lead_days !== null && p.lead_days !== undefined ? Number(p.lead_days) : sup && sup.lead_days !== null && sup.lead_days !== undefined ? Number(sup.lead_days) : cfg.defaultLeadDays;
@@ -97,7 +115,7 @@ router.get('/forecast', async (req, res) => {
   const ctx = await load(req, cfg);
   const rows = ctx.items.filter((i) => i.tracking !== 'serial' || true).map((it) => {
     const x = analyse(it, ctx, cfg);
-    return { itemId: it.id, name: it.name, unit: it.unit, weeks: x.d.weeks, avgWeekly: r2(x.d.avg), ma4: r2(x.d.ma4), sdWeekly: r2(x.d.sd), trend: x.d.trend, nextWeeks: r2(x.d.avg), nextMonth: r2(x.d.avg * 4.345), series: x.d.series, available: x.available, cover: x.cover, stockoutOn: x.stockoutOn };
+    return { itemId: it.id, name: it.name, unit: it.unit, weeks: x.d.weeks, avgWeekly: r2(x.d.avg), ma4: r2(x.d.ma4), sdWeekly: r2(x.d.sd), trend: x.d.trend, seasonalIndex: x.d.season === null ? null : r2(x.d.season), nextWeeks: r2(x.d.avg), nextMonth: r2(x.d.avg * 4.345), series: x.d.series, available: x.available, cover: x.cover, stockoutOn: x.stockoutOn };
   });
   res.json({ weeksWindow: cfg.forecastWeeks, items: rows.filter((r) => req.query.all || r.avgWeekly > 0 || r.available > 0).sort((a, b) => b.avgWeekly - a.avgWeekly), method: 'moyenne mobile sur les sorties hebdomadaires' });
 });
@@ -108,7 +126,7 @@ router.get('/forecast/:id', async (req, res) => {
   const it = ctx.items.find((i) => i.id === A.id(req.params.id));
   if (!it) throw new HttpError(404, 'Article introuvable.');
   const x = analyse(it, ctx, cfg);
-  res.json({ itemId: it.id, name: it.name, unit: it.unit, weeks: x.d.weeks, series: x.d.series, avgWeekly: r2(x.d.avg), ma4: r2(x.d.ma4), sdWeekly: r2(x.d.sd), trend: x.d.trend, nextWeeks: [1, 2, 3, 4].map((n) => ({ week: n, quantity: r2(x.d.avg) })), cover: x.cover, stockoutOn: x.stockoutOn });
+  res.json({ itemId: it.id, name: it.name, unit: it.unit, weeks: x.d.weeks, series: x.d.series, avgWeekly: r2(x.d.avg), ma4: r2(x.d.ma4), sdWeekly: r2(x.d.sd), trend: x.d.trend, seasonalIndex: x.d.season === null ? null : r2(x.d.season), nextWeeks: [1, 2, 3, 4].map((n) => ({ week: n, quantity: r2(x.d.avg) })), cover: x.cover, stockoutOn: x.stockoutOn });
 });
 
 // ---------- Réapprovisionnement amélioré ----------

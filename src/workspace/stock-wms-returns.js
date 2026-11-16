@@ -67,7 +67,7 @@ router.post('/returns', async (req, res) => {
   const validate = b.validate === true || b.validate === 'true';
   if (validate && !mgrOf(req)) throw new HttpError(403, 'Seul un responsable valide un retour : enregistrez-le comme brouillon.');
   if (!Array.isArray(b.lines) || !b.lines.length || b.lines.length > 60) throw new HttpError(400, 'Ajoutez au moins une ligne (60 au plus).');
-  let customerId = null; let supplierId = null; let docId = null; let orderId = null; let doc = null;
+  let poRow = null; let customerId = null; let supplierId = null; let docId = null; let orderId = null; let doc = null;
   if (kind === 'customer') {
     if (b.documentId) {
       doc = await db.prepare("SELECT * FROM documents WHERE id = ? AND org_id = ? AND kind IN ('order','invoice')").get(A.id(b.documentId, 'Document invalide.'), req.org.id);
@@ -83,9 +83,9 @@ router.post('/returns', async (req, res) => {
     if (!s) throw new HttpError(404, 'Fournisseur introuvable.');
     supplierId = s.id;
     if (b.orderId) {
-      const o = await db.prepare('SELECT id FROM purchase_orders WHERE id = ? AND org_id = ?').get(A.id(b.orderId, 'Commande invalide.'), req.org.id);
+      const o = await db.prepare('SELECT * FROM purchase_orders WHERE id = ? AND org_id = ?').get(A.id(b.orderId, 'Commande invalide.'), req.org.id);
       if (!o) throw new HttpError(404, "Commande d'achat introuvable.");
-      orderId = o.id;
+      orderId = o.id; poRow = o;
     }
   }
   const seen = new Set(); const lines = [];
@@ -109,6 +109,11 @@ router.post('/returns', async (req, res) => {
       if (!sold) throw new HttpError(400, `« ${it.name} » ne figure pas sur ${doc.number}.`);
       const back = Number((await db.prepare("SELECT COALESCE(SUM(l.quantity), 0) q FROM wms_return_lines l JOIN wms_returns r ON r.id = l.return_id WHERE r.org_id = ? AND r.doc_id = ? AND r.status <> 'cancelled' AND l.item_id = ?").get(req.org.id, doc.id, it.id)).q);
       if (q + back - sold > W.EPS) throw new HttpError(400, `« ${it.name} » : ${sold} vendu(s) sur ${doc.number}, ${back} déjà rendu(s) : on ne peut rendre que ${W.round3(Math.max(sold - back, 0))}.`);
+    }
+    if (poRow && poRow.item_id !== undefined && poRow.received_qty !== undefined) { // retour lié à une commande d'achat : pas plus que reçu
+      if (Number(poRow.item_id) !== it.id) throw new HttpError(400, `« ${it.name} » ne figure pas sur la commande d'achat n° ${poRow.id}.`);
+      const back = Number((await db.prepare("SELECT COALESCE(SUM(l.quantity), 0) q FROM wms_return_lines l JOIN wms_returns r ON r.id = l.return_id WHERE r.org_id = ? AND r.order_id = ? AND r.kind = 'supplier' AND r.status <> 'cancelled' AND l.item_id = ?").get(req.org.id, poRow.id, it.id)).q);
+      if (q + back - Number(poRow.received_qty) > W.EPS) throw new HttpError(400, `« ${it.name} » : ${poRow.received_qty} reçu(s) sur la commande n° ${poRow.id}, ${back} déjà rendu(s) : on ne peut rendre que ${W.round3(Math.max(Number(poRow.received_qty) - back, 0))}.`);
     }
     if (it.tracking === 'lot' && kind === 'customer' && disposition !== 'scrap' && !A.text(x.lotNo, 40)) throw new HttpError(400, `« ${it.name} » est suivi par lot : indiquez le numéro de lot rendu.`);
     lines.push({ it, q, reasonCode, disposition, loc, lotNo: A.text(x.lotNo, 40), expiry: A.date(x.expiry), serials });
