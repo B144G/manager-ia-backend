@@ -7,6 +7,7 @@ const modules = [
   { id: 'projects', title: 'Projets et tâches', min: 'member', ai: true },
   { id: 'budget', title: 'Budget', min: 'manager', ai: true },
   { id: 'stock', title: 'Stock et achats', min: 'member', ai: true },
+  { id: 'purchasing', title: 'Achats', min: 'member', ai: false },
   { id: 'crm', title: 'Clients et ventes', min: 'member', ai: true },
   { id: 'sales', title: 'Assistant commercial', min: 'member', ai: true },
   { id: 'aifollow', title: "Suivi de l'IA", min: 'manager', ai: false },

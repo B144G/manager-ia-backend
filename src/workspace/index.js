@@ -242,6 +242,7 @@ orgRouter.use('/projects', require('./projects'));
 orgRouter.use('/share', require('./share'));
 orgRouter.use('/budget', require('./budget'));
 orgRouter.use('/stock', require('./stock'));
+orgRouter.use('/purchasing', require('./purchasing'));
 orgRouter.use('/crm', require('./crm'));
 orgRouter.use('/mail', require('./mail'));
 orgRouter.use('/sales', require('./sales').router);
