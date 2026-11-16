@@ -86,6 +86,12 @@ async function view(req, r, full) {
 }
 
 router.get('/receipts/kinds', (req, res) => res.json({ costKinds: COST_KINDS, bases: BASES }));
+/** Réceptions de commandes d'achat déjà passées en stock, auxquelles on peut encore rattacher des coûts d'arrivée (lecture seule du module Achats). */
+router.get('/receipts/purchase-candidates', async (req, res) => {
+  const rows = await db.prepare(`SELECT r.id, r.quantity, r.unit_price, r.created_at, o.id AS order_id, i.name, i.unit, s.name AS supplier FROM purchase_receipts r JOIN purchase_orders o ON o.id = r.order_id JOIN stock_items i ON i.id = o.item_id LEFT JOIN suppliers s ON s.id = o.supplier_id
+    WHERE r.org_id = ? AND NOT EXISTS (SELECT 1 FROM wms_receipt_lines l WHERE l.org_id = r.org_id AND l.purchase_receipt_id = r.id) ORDER BY r.id DESC LIMIT 100`).all(req.org.id);
+  res.json({ receipts: rows.map((r) => ({ id: r.id, orderId: r.order_id, item: r.name, unit: r.unit, quantity: r.quantity, unitPrice: Number(r.unit_price), supplier: r.supplier, at: r.created_at })) });
+});
 router.get('/receipts', async (req, res) => {
   const rows = await db.prepare('SELECT * FROM wms_receipts WHERE org_id = ? ORDER BY id DESC LIMIT 100').all(req.org.id);
   const out = []; for (const r of rows) out.push(await view(req, r, false));

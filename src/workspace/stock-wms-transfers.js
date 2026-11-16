@@ -33,7 +33,7 @@ const userNames = async (ids) => {
 
 async function view(req, t, full) {
   const mgr = mgrOf(req);
-  const lines = await db.prepare(`SELECT l.*, i.name, i.unit, fl.code AS from_code, tl.code AS to_code FROM wms_transfer_lines l JOIN stock_items i ON i.id = l.item_id
+  const lines = await db.prepare(`SELECT l.*, i.name, i.unit, i.tracking, fl.code AS from_code, tl.code AS to_code FROM wms_transfer_lines l JOIN stock_items i ON i.id = l.item_id
     LEFT JOIN wms_locations fl ON fl.id = l.from_location_id LEFT JOIN wms_locations tl ON tl.id = l.to_location_id WHERE l.transfer_id = ? ORDER BY l.id`).all(t.id);
   const names = await userNames([t.requested_by, t.shipped_by, t.received_by, t.cancelled_by]);
   const out = { id: t.id, code: t.code, status: t.status, statusLabel: STATUS[t.status], fromWarehouseId: t.from_warehouse_id, from: t.from_name, toWarehouseId: t.to_warehouse_id, to: t.to_name, note: t.note,
@@ -41,7 +41,7 @@ async function view(req, t, full) {
     cancelledAt: t.cancelled_at, cancelReason: t.cancel_reason, lineCount: lines.length,
     gapQty: lines.reduce((a, l) => a + l.gap_qty, 0), gapValue: mgr ? lines.reduce((a, l) => a + Number(l.gap_value), 0) : undefined };
   if (full) {
-    out.lines = lines.map((l) => ({ id: l.id, itemId: l.item_id, name: l.name, unit: l.unit, quantity: l.quantity, shippedQty: l.shipped_qty, receivedQty: l.received_qty, fromLocationId: l.from_location_id, from: l.from_code, toLocationId: l.to_location_id, to: l.to_code,
+    out.lines = lines.map((l) => ({ id: l.id, itemId: l.item_id, name: l.name, unit: l.unit, tracking: l.tracking, quantity: l.quantity, shippedQty: l.shipped_qty, receivedQty: l.received_qty, fromLocationId: l.from_location_id, from: l.from_code, toLocationId: l.to_location_id, to: l.to_code,
       gapQty: l.gap_qty, gapValue: mgr ? Number(l.gap_value) : undefined, gapReason: l.gap_reason }));
     const ev = await db.prepare('SELECT e.action, e.note, e.created_at AS at, u.name FROM wms_transfer_events e LEFT JOIN users u ON u.id = e.user_id WHERE e.transfer_id = ? ORDER BY e.id').all(t.id);
     out.journal = ev.map((e) => ({ action: e.action, note: e.note, at: e.at, by: e.name }));

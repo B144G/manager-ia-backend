@@ -751,11 +751,15 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await mgr('POST', `${S}/orders/${po}/receive`, { quantity: 6, locationId: B0101 });
   check('commande d\'achat reçue dans un emplacement choisi (point d\'accroche)', r.status === 200 && (await levels(plain)).levels.some((l) => l.code === 'B-01-01' && l.quantity >= 6), await levels(plain));
   const prId = (await dbx.prepare('SELECT id FROM purchase_receipts WHERE order_id = ?').get(po)).id;
+  r = await mgr('GET', `${RC}/purchase-candidates`);
+  check('réceptions d\'achat proposées pour y rattacher des frais', r.status === 200 && r.json.receipts.some((x) => x.id === prId && x.item === 'Simple' && x.supplier === 'Fournisseur Eto'), r.json);
   const avgPlain = await avg(plain);
   r = await mgr('POST', `${RC}/from-purchase`, { purchaseReceiptId: prId, costs: [{ kind: 'customs', label: 'Dédouanement', amount: 120, basis: 'quantity' }] });
   check('coût d\'arrivée sur une réception d\'achat : dossier créé, 120 incorporés au coût moyen', r.status === 201 && (await avg(plain)) > avgPlain, [r.json, await avg(plain), avgPlain]);
   const exp = Math.round(((26 * avgPlain) + 120) / 26 * 100) / 100;
   check('coût moyen : (26 × ancien + 120) / 26', Math.abs((await avg(plain)) - exp) < 0.011, [await avg(plain), exp]);
+  r = await mgr('GET', `${RC}/purchase-candidates`);
+  check('une réception d\'achat déjà rattachée n\'est plus proposée', !r.json.receipts.some((x) => x.id === prId), r.json);
   r = await mgr('POST', `${RC}/from-purchase`, { purchaseReceiptId: prId, costs: [] });
   check('même réception d\'achat rattachée deux fois → 409', r.status === 409, r.status);
   r = await mgr('POST', `${RC}/from-purchase`, { purchaseReceiptId: 99999 });
