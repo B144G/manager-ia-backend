@@ -2810,6 +2810,60 @@ const MIGRATIONS = [
   CREATE INDEX idx_wms_return_lines ON wms_return_lines(return_id);
   CREATE INDEX idx_wms_return_lines_item ON wms_return_lines(item_id);
   `,
+  /* STOCK WMS · lot 5 : réceptions multi-lignes et coûts d'arrivée (transport, douane, manutention) répartis sur les lignes et incorporés au coût moyen pondéré. */ `
+  CREATE TABLE wms_receipts (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'direct',
+    supplier_id BIGINT REFERENCES suppliers(id) ON DELETE SET NULL,
+    reference TEXT NOT NULL DEFAULT '',
+    order_id BIGINT,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, code)
+  );
+  CREATE INDEX idx_wms_receipts_org ON wms_receipts(org_id, id);
+  CREATE TABLE wms_receipt_lines (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    receipt_id BIGINT NOT NULL REFERENCES wms_receipts(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE RESTRICT,
+    quantity DOUBLE PRECISION NOT NULL,
+    unit_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+    weight DOUBLE PRECISION NOT NULL DEFAULT 0,
+    lot_no TEXT NOT NULL DEFAULT '',
+    expiry TEXT,
+    purchase_receipt_id BIGINT,
+    landed_total BIGINT NOT NULL DEFAULT 0,
+    incorporated BIGINT NOT NULL DEFAULT 0,
+    expensed BIGINT NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_wms_receipt_lines ON wms_receipt_lines(receipt_id);
+  CREATE UNIQUE INDEX uq_wms_receipt_purchase ON wms_receipt_lines(org_id, purchase_receipt_id) WHERE purchase_receipt_id IS NOT NULL;
+  CREATE TABLE wms_landed_costs (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    receipt_id BIGINT NOT NULL REFERENCES wms_receipts(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'other',
+    label TEXT NOT NULL DEFAULT '',
+    amount BIGINT NOT NULL,
+    basis TEXT NOT NULL DEFAULT 'value',
+    incorporated BIGINT NOT NULL DEFAULT 0,
+    expensed BIGINT NOT NULL DEFAULT 0,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_wms_landed_receipt ON wms_landed_costs(receipt_id);
+  CREATE TABLE wms_landed_alloc (
+    cost_id BIGINT NOT NULL REFERENCES wms_landed_costs(id) ON DELETE CASCADE,
+    line_id BIGINT NOT NULL REFERENCES wms_receipt_lines(id) ON DELETE CASCADE,
+    amount BIGINT NOT NULL,
+    incorporated BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (cost_id, line_id)
+  );
+  `,
 ];
 
 

@@ -197,6 +197,18 @@ async function ensureReturns(orgId) {
   return loc;
 }
 
+/** Répartit `total` (entier, FCFA) au prorata de `weights` : somme exacte (méthode du plus fort reste), jamais un franc perdu. */
+function allocate(total, weights) {
+  const sum = weights.reduce((a, w) => a + w, 0);
+  if (!(sum > 0)) throw new HttpError(400, 'Impossible de répartir : la base de répartition (valeur, quantité ou poids) est nulle.');
+  const raw = weights.map((w) => (total * w) / sum);
+  const out = raw.map((x) => Math.floor(x));
+  let left = total - out.reduce((a, x) => a + x, 0);
+  const order = raw.map((x, i) => ({ i, f: x - Math.floor(x) })).sort((a, b) => b.f - a.f || a.i - b.i);
+  for (let k = 0; left > 0; k++, left--) out[order[k % order.length].i]++;
+  return out;
+}
+
 /** Numéro de document suivant (TR-2026-001…), par organisation, type et année : sans trou ni doublon (même en cas de demandes simultanées). Dans la transaction du document. */
 async function nextCode(orgId, kind, prefix) {
   const year = nowISO().slice(0, 4);
@@ -306,4 +318,4 @@ async function integrity(orgId) {
     FROM stock_items i WHERE i.org_id = ? AND ABS(i.quantity - COALESCE((SELECT SUM(v.quantity) FROM wms_levels v WHERE v.item_id = i.id), 0)) > 0.0005`).all(orgId);
 }
 
-module.exports = { ensureReturns, sweep, reservedQty, availabilityMap, takeOut, releaseForDocument, nextCode, warehouseDefault, planFromWarehouse, reservedGuard, locationFor, LOCATION_KINDS, ZONE_KINDS, USABLE_KINDS, isUsable, ensureDefault, ensureTransit, locationOf, levelRows, levelAt, usableQty, bump, reconcile, room, putawayParts, plan, applyPlan, logMove, relocate, lockItem, integrity, round3, EPS };
+module.exports = { allocate, ensureReturns, sweep, reservedQty, availabilityMap, takeOut, releaseForDocument, nextCode, warehouseDefault, planFromWarehouse, reservedGuard, locationFor, LOCATION_KINDS, ZONE_KINDS, USABLE_KINDS, isUsable, ensureDefault, ensureTransit, locationOf, levelRows, levelAt, usableQty, bump, reconcile, room, putawayParts, plan, applyPlan, logMove, relocate, lockItem, integrity, round3, EPS };

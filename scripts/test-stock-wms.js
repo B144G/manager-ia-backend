@@ -678,4 +678,91 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await owner('GET', `${O}/accounting/stock-valuation?date=${shift(0)}&nature=goods`);
   check('comptabilité : valeur du stock = somme des emplacements après les retours', Math.abs(r.json.totalValue - (await valueOf(org))) <= r.json.items.length, [r.json.totalValue, await valueOf(org)]);
   await coherent('fin du lot 4');
+
+  // =====================================================================================================
+  // LOT 5 · RÉCEPTIONS ET COÛTS D'ARRIVÉE
+  // =====================================================================================================
+  const RC = `${W}/receipts`;
+  const pP = await newItem('Pneu 15"', { unitCost: 100 });
+  const pQ = await newItem('Chambre à air', { unitCost: 400 });
+  await mgr('POST', `${S}/items/${pP}/move`, { kind: 'in', quantity: 10, unitCost: 100 });
+  r = await mem('POST', RC, { lines: [{ itemId: pP, quantity: 1, unitCost: 100 }] });
+  check('droits : un membre ne reçoit pas via ce module', r.status === 403, r.status);
+  r = await mem('GET', RC);
+  check('droits : un membre ne lit pas les coûts d\'achat', r.status === 403, r.status);
+  r = await mgr('POST', `${RC}/preview`, { lines: [{ itemId: pP, quantity: 10, unitCost: 100, weight: 2 }, { itemId: pQ, quantity: 5, unitCost: 400, weight: 4 }], costs: [{ kind: 'transport', amount: 300, basis: 'value' }, { kind: 'customs', amount: 450, basis: 'quantity' }, { kind: 'handling', amount: 100, basis: 'weight' }] });
+  check('simulation : transport 300 par valeur (100/200), douane 450 par quantité (300/150), manutention 100 par poids (50/50)', r.status === 200 && r.json.lines[0].landedTotal === 450 && r.json.lines[1].landedTotal === 400 && r.json.lines[0].landedUnit === 145 && r.json.lines[1].landedUnit === 480, r.json);
+  check('simulation : rien enregistré', (await qtyOf(pQ)) === 0 && (await dbx.prepare('SELECT COUNT(*) c FROM wms_receipts').get()).c === 0, true);
+  for (const [lab, body] of [['sans ligne', { lines: [] }], ['quantité nulle', { lines: [{ itemId: pP, quantity: 0, unitCost: 1 }] }], ['coût de montant nul', { lines: [{ itemId: pP, quantity: 1, unitCost: 1 }], costs: [{ kind: 'transport', amount: 0 }] }],
+    ['type de coût inconnu', { lines: [{ itemId: pP, quantity: 1, unitCost: 1 }], costs: [{ kind: 'x', amount: 10 }] }], ['base inconnue', { lines: [{ itemId: pP, quantity: 1, unitCost: 1 }], costs: [{ kind: 'transport', amount: 10, basis: 'x' }] }],
+    ['répartition au poids sans poids', { lines: [{ itemId: pP, quantity: 1, unitCost: 1 }], costs: [{ kind: 'transport', amount: 10, basis: 'weight' }] }], ['article d\'une autre organisation', { lines: [{ itemId: leg4, quantity: 1, unitCost: 1 }] }]]) {
+    r = await mgr('POST', RC, body);
+    check(`réception refusée : ${lab}`, r.status === 400 || r.status === 404, [r.status, r.json]);
+  }
+  check('aucun reste des réceptions refusées', (await dbx.prepare('SELECT COUNT(*) c FROM wms_receipts').get()).c === 0 && (await qtyOf(pP)) === 10, true);
+  const valBeforeRec = await itemsValue(org);
+  r = await mgr('POST', RC, { reference: 'BL-778', note: 'Conteneur Douala', locationId: A0101, lines: [{ itemId: pP, quantity: 10, unitCost: 100, weight: 2 }, { itemId: pQ, quantity: 5, unitCost: 400, weight: 4 }],
+    costs: [{ kind: 'transport', label: 'Camion Douala-Yaoundé', amount: 300, basis: 'value' }, { kind: 'customs', amount: 450, basis: 'quantity' }, { kind: 'handling', amount: 100, basis: 'weight' }] });
+  const rec1 = r.json.id;
+  check('réception multi-lignes avec 3 coûts d\'arrivée', r.status === 201 && /^REC-\d{4}-001$/.test(r.json.code) && r.json.costs.length === 3, r.json);
+  check('stock : 20 pneus, 5 chambres, à l\'emplacement choisi', (await qtyOf(pP)) === 20 && (await qtyOf(pQ)) === 5 && (await levels(pQ)).levels[0].code === 'A-01-01', await levels(pQ));
+  check('coût moyen pneu : (10 × 100 + 10 × 100 + 450) / 20 = 122,5 ; chambre : (5 × 400 + 400) / 5 = 480', (await avg(pP)) === 122.5 && (await avg(pQ)) === 480, [await avg(pP), await avg(pQ)]);
+  check('valeur du stock : +3 000 de marchandises +850 de coûts incorporés', Math.abs((await itemsValue(org)) - valBeforeRec - 3850) < 0.01, [valBeforeRec, await itemsValue(org)]);
+  r = await mgr('GET', `${RC}/${rec1}`);
+  check('détail : coût de revient unitaire 145 / 480, valeur totale 3 850 + 1 000 déjà en stock', r.json.receipt.lines[0].landedUnit === 145 && r.json.receipt.lines[1].landedUnit === 480 && r.json.receipt.baseValue === 3000 && r.json.receipt.landedCost === 850 && r.json.receipt.incorporated === 850 && r.json.receipt.expensed === 0, r.json.receipt);
+  check('détail : chaque coût garde sa base et son libellé', r.json.receipt.costs.length === 3 && r.json.receipt.costs[0].label === 'Camion Douala-Yaoundé' && r.json.receipt.costs[1].basisLabel === 'Quantité', r.json.receipt.costs);
+  const mvLanded = await moveRows('landed_cost', rec1);
+  check('journal : une trace par article et par coût (valeur seulement, quantité 0)', mvLanded.length === 6 && mvLanded.every((m) => m.delta === 0), mvLanded.length);
+  r = await owner('GET', `${O}/accounting/stock-valuation?date=${shift(0)}&nature=goods`);
+  check('comptabilité : la valeur du stock (acc-stock) inclut les coûts incorporés = somme des emplacements', Math.abs(r.json.totalValue - (await valueOf(org))) <= r.json.items.length && Math.abs(r.json.totalValue - (await itemsValue(org))) <= r.json.items.length, [r.json.totalValue, await valueOf(org)]);
+  // Répartition exacte, sans franc perdu
+  const t3 = []; for (const n of ['Trois A', 'Trois B', 'Trois C']) t3.push(await newItem(n, { unitCost: 10 }));
+  r = await mgr('POST', RC, { lines: t3.map((id) => ({ itemId: id, quantity: 1, unitCost: 10 })), costs: [{ kind: 'transport', amount: 100, basis: 'quantity' }] });
+  r = await mgr('GET', `${RC}/${r.json.id}`);
+  const parts3 = r.json.receipt.lines.map((l) => l.landedTotal).sort((x, y) => y - x);
+  check('répartition de 100 sur 3 lignes égales : 34 + 33 + 33, somme exacte', JSON.stringify(parts3) === '[34,33,33]' && parts3.reduce((a, x) => a + x, 0) === 100, parts3);
+  // Coût arrivé après coup, une partie du stock est déjà sortie
+  await mgr('POST', `${S}/items/${pP}/move`, { kind: 'out', quantity: 15, reason: 'Vente' });
+  const avgBefore = await avg(pP);
+  r = await mgr('POST', `${RC}/${rec1}/costs`, { kind: 'transport', label: 'Facture du transitaire', amount: 200, basis: 'value' });
+  check('coût ajouté plus tard : accepté', r.status === 201, r.json);
+  r = await mgr('GET', `${RC}/${rec1}`);
+  const lp = r.json.receipt.lines.find((l) => l.itemId === pP); const lq = r.json.receipt.lines.find((l) => l.itemId === pQ);
+  check('après coup : pneus (5 restants sur 10 reçus) → moitié incorporée (34), moitié à passer en charge (33) ; chambres tout incorporé (133)', lp.incorporated === 450 + 34 && lp.expensed === 33 && lq.incorporated === 400 + 133 && lq.expensed === 0, [lp, lq]);
+  check('coût moyen des pneus : (5 × 122,5 + 34) / 5 = 129,3', Math.abs((await avg(pP)) - 129.3) < 0.011 && avgBefore === 122.5, [await avg(pP), avgBefore]);
+  check('le total incorporé + à passer en charge = le coût (200)', r.json.receipt.costs[3].incorporated + r.json.receipt.costs[3].expensed === 200 && r.json.receipt.costs[3].amount === 200, r.json.receipt.costs[3]);
+  // Concurrence : deux coûts simultanés sur une réception dont tout le stock est présent
+  const solo = await newItem('Palette', { unitCost: 1000 });
+  r = await mgr('POST', RC, { lines: [{ itemId: solo, quantity: 4, unitCost: 1000 }] });
+  const recS = r.json.id;
+  const cc = await Promise.all([1, 2, 3].map(() => mgr('POST', `${RC}/${recS}/costs`, { kind: 'handling', amount: 100, basis: 'quantity' })));
+  check('concurrence : trois coûts de 100 simultanés tous appliqués, coût moyen 1 000 + 300/4 = 1 075', cc.every((x) => x.status === 201) && (await avg(solo)) === 1075, [cc.map((x) => x.status), await avg(solo)]);
+  await coherent('coûts d\'arrivée');
+  // La valorisation existante n'est pas cassée : une réception sans coût = ancien comportement
+  const plain = await newItem('Simple', { unitCost: 50 });
+  await mgr('POST', `${S}/items/${plain}/move`, { kind: 'in', quantity: 10, unitCost: 50 });
+  r = await mgr('POST', RC, { lines: [{ itemId: plain, quantity: 10, unitCost: 80 }] });
+  check('réception sans coût : CUMP classique (10 × 50 + 10 × 80) / 20 = 65', r.status === 201 && (await avg(plain)) === 65, await avg(plain));
+  // Rattacher des coûts à des réceptions d'une commande d'achat (module existant)
+  const supp = fourn;
+  r = await mgr('POST', `${S}/orders`, { orders: [{ itemId: plain, quantity: 6, supplierId: supp, unitPrice: 100 }] });
+  const po = (await dbx.prepare('SELECT id FROM purchase_orders WHERE org_id = ? ORDER BY id DESC LIMIT 1').get(org)).id;
+  r = await owner('PUT', `${S}/orders/${po}/status`, { status: 'ordered' });
+  r = await mgr('POST', `${S}/orders/${po}/receive`, { quantity: 6, locationId: B0101 });
+  check('commande d\'achat reçue dans un emplacement choisi (point d\'accroche)', r.status === 200 && (await levels(plain)).levels.some((l) => l.code === 'B-01-01' && l.quantity >= 6), await levels(plain));
+  const prId = (await dbx.prepare('SELECT id FROM purchase_receipts WHERE order_id = ?').get(po)).id;
+  const avgPlain = await avg(plain);
+  r = await mgr('POST', `${RC}/from-purchase`, { purchaseReceiptId: prId, costs: [{ kind: 'customs', label: 'Dédouanement', amount: 120, basis: 'quantity' }] });
+  check('coût d\'arrivée sur une réception d\'achat : dossier créé, 120 incorporés au coût moyen', r.status === 201 && (await avg(plain)) > avgPlain, [r.json, await avg(plain), avgPlain]);
+  const exp = Math.round(((26 * avgPlain) + 120) / 26 * 100) / 100;
+  check('coût moyen : (26 × ancien + 120) / 26', Math.abs((await avg(plain)) - exp) < 0.011, [await avg(plain), exp]);
+  r = await mgr('POST', `${RC}/from-purchase`, { purchaseReceiptId: prId, costs: [] });
+  check('même réception d\'achat rattachée deux fois → 409', r.status === 409, r.status);
+  r = await mgr('POST', `${RC}/from-purchase`, { purchaseReceiptId: 99999 });
+  check('réception d\'achat inconnue → 404', r.status === 404, r.status);
+  r = await other('GET', `${W2}/receipts/${rec1}`);
+  check('isolation : réception d\'une autre organisation → 404', r.status === 404, r.status);
+  r = await other('POST', `${W2}/receipts/${rec1}/costs`, { kind: 'transport', amount: 10 });
+  check('isolation : coût sur la réception d\'une autre organisation → 404', r.status === 404, r.status);
+  await coherent('fin du lot 5');
 });
