@@ -2767,6 +2767,49 @@ const MIGRATIONS = [
   CREATE INDEX idx_wms_resv_org ON wms_reservations(org_id, status);
   CREATE INDEX idx_wms_resv_source ON wms_reservations(org_id, source_kind, source_id);
   `,
+  /* STOCK WMS · lot 4 : retours client, retours fournisseur et mises au rebut (documents liés aux mouvements de stock). */ `
+  CREATE TABLE wms_returns (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    customer_id BIGINT REFERENCES customers(id) ON DELETE SET NULL,
+    supplier_id BIGINT REFERENCES suppliers(id) ON DELETE SET NULL,
+    doc_id BIGINT REFERENCES documents(id) ON DELETE SET NULL,
+    order_id BIGINT,
+    reason TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    validated_by BIGINT,
+    validated_at TEXT,
+    cancelled_at TEXT,
+    credit_amount BIGINT NOT NULL DEFAULT 0,
+    credited_at TEXT,
+    UNIQUE (org_id, code)
+  );
+  CREATE INDEX idx_wms_returns_org ON wms_returns(org_id, kind, status);
+  CREATE TABLE wms_return_lines (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    return_id BIGINT NOT NULL REFERENCES wms_returns(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE RESTRICT,
+    quantity DOUBLE PRECISION NOT NULL,
+    reason_code TEXT NOT NULL DEFAULT 'other',
+    disposition TEXT NOT NULL,
+    final TEXT NOT NULL DEFAULT '',
+    location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    lot_no TEXT NOT NULL DEFAULT '',
+    expiry TEXT,
+    serials TEXT NOT NULL DEFAULT '[]',
+    unit_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+    value BIGINT NOT NULL DEFAULT 0,
+    resolved_at TEXT
+  );
+  CREATE INDEX idx_wms_return_lines ON wms_return_lines(return_id);
+  CREATE INDEX idx_wms_return_lines_item ON wms_return_lines(item_id);
+  `,
 ];
 
 

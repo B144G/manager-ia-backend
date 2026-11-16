@@ -541,4 +541,141 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await mgr('GET', `${W}/availability?onlyReserved=1`);
   check('liste de disponibilité : articles en défaut de réservation comptés', r.json.shortItems >= 1 && r.json.items.some((x) => x.itemId === tubes), r.json.shortItems);
   await coherent('fin du lot 3');
+
+  // =====================================================================================================
+  // LOT 4 · RETOURS CLIENT / FOURNISSEUR / REBUT
+  // =====================================================================================================
+  const RT = `${W}/returns`;
+  const avg = async (id) => Number((await dbx.prepare('SELECT avg_cost FROM stock_items WHERE id = ?').get(id)).avg_cost);
+  const moveRows = async (kind, id) => await dbx.prepare('SELECT * FROM stock_moves WHERE ref_kind = ? AND ref_id = ? ORDER BY id').all(kind, id);
+  const cable = await newItem('Câble 2,5', { unitCost: 200 });
+  await mgr('POST', `${S}/items/${cable}/move`, { kind: 'in', quantity: 10, unitCost: 200 });
+  await mgr('POST', `${S}/items/${cable}/move`, { kind: 'in', quantity: 10, unitCost: 300 });
+  check('départ : coût moyen pondéré 250', (await avg(cable)) === 250 && (await qtyOf(cable)) === 20, await avg(cable));
+  await mgr('POST', `${S}/items/${cable}/move`, { kind: 'out', quantity: 8, reason: 'Vente' });
+  const ordR = await mkOrder([{ itemId: cable, label: 'Câble', quantity: 8, price: 500 }], 'C-T-0100');
+
+  r = await mem('POST', RT, { kind: 'customer', documentId: ordR, lines: [{ itemId: cable, quantity: 9, disposition: 'restock' }] });
+  check('retour client : plus que vendu (9 > 8) → 400', r.status === 400 && /vendu/.test(r.json.error), r.json);
+  r = await mem('POST', RT, { kind: 'customer', documentId: ordR, lines: [{ itemId: cable, quantity: 3, disposition: 'restock', reasonCode: 'unwanted' }, { itemId: leg4, quantity: 1, disposition: 'restock' }] });
+  check('article d\'une autre organisation → 404', r.status === 404, r.status);
+  r = await mem('POST', RT, { kind: 'customer', documentId: ordR, lines: [{ itemId: cable, quantity: 3, disposition: 'restock', reasonCode: 'unwanted', locationId: A0102 }], validate: true });
+  check('droits : un membre ne valide pas un retour', r.status === 403, r.status);
+  r = await mem('POST', RT, { kind: 'customer', documentId: ordR, reason: 'Client revient', lines: [{ itemId: cable, quantity: 3, disposition: 'restock', reasonCode: 'unwanted', locationId: A0102 }] });
+  const ret1 = r.json.id;
+  check('un membre enregistre un brouillon de retour client', r.status === 201, r.json);
+  check('brouillon : le stock n\'a pas bougé', (await qtyOf(cable)) === 12, await qtyOf(cable));
+  r = await mem('GET', `${RT}/${ret1}`);
+  check('numéro RET-AAAA-001, lié à la commande, valeurs cachées à un membre', /^RET-\d{4}-001$/.test(r.json.return.code) && r.json.return.documentNumber === 'C-T-0100' && r.json.return.value === undefined, r.json.return);
+  r = await mem('POST', `${RT}/${ret1}/validate`, {});
+  check('droits : un membre ne valide pas (route de validation)', r.status === 403, r.status);
+  r = await mgr('POST', `${RT}/${ret1}/validate`, {});
+  check('un responsable valide : 3 câbles remis en stock', r.status === 200 && (await qtyOf(cable)) === 15, r.json);
+  check('remise en stock au coût moyen du jour : le coût moyen reste 250', (await avg(cable)) === 250, await avg(cable));
+  lv = await levels(cable);
+  check('la remise en stock va à l\'emplacement choisi (A-01-02)', lv.levels.find((l) => l.code === 'A-01-02').quantity >= 3, lv);
+  const mv1 = await moveRows('return', ret1);
+  check('le mouvement de stock porte le retour (ref_kind = return) et l\'emplacement', mv1.length === 1 && mv1[0].delta === 3 && mv1[0].location_id === A0102, mv1);
+  r = await mgr('POST', `${RT}/${ret1}/validate`, {});
+  check('valider deux fois → 409', r.status === 409, r.status);
+  r = await mgr('POST', `${RT}/${ret1}/cancel`, {});
+  check('un retour validé ne s\'annule pas → 409', r.status === 409, r.status);
+  r = await mem('POST', RT, { kind: 'customer', documentId: ordR, lines: [{ itemId: cable, quantity: 6, disposition: 'restock' }] });
+  check('retours cumulés plus grands que la vente (3 + 6 > 8) → 400', r.status === 400, r.json);
+  // quarantaine puis décision
+  r = await mgr('POST', RT, { kind: 'customer', documentId: ordR, validate: true, lines: [{ itemId: cable, quantity: 5, disposition: 'quarantine', reasonCode: 'defective' }] });
+  const ret2 = r.json.id;
+  lv = await levels(cable);
+  check('marchandise à contrôler : entrée à l\'emplacement de quarantaine, comptée mais non disponible', r.status === 201 && lv.levels.find((l) => l.code === 'QUA-1').quantity === 5 && lv.quantity === 20 && lv.usable === 15, lv);
+  r = await mgr('GET', `${RT}?status=done`);
+  check('liste : une décision en attente', r.json.toDecide === 1, r.json.toDecide);
+  const l2 = (await mgr('GET', `${RT}/${ret2}`)).json.return.lines[0];
+  r = await mem('POST', `${RT}/${ret2}/lines/${l2.id}/dispose`, { disposition: 'scrap' });
+  check('droits : décision de contrôle réservée aux responsables', r.status === 403, r.status);
+  r = await mgr('POST', `${RT}/${ret2}/lines/${l2.id}/dispose`, { disposition: 'restock', locationId: locQua });
+  check('remise en stock vers un emplacement non disponible → 400', r.status === 400, r.json);
+  r = await mgr('POST', `${RT}/${ret2}/lines/${l2.id}/dispose`, { disposition: 'restock', locationId: A0101 });
+  lv = await levels(cable);
+  check('contrôle OK : 5 câbles quittent la quarantaine vers A-01-01, quantité totale inchangée (20)', r.status === 200 && !lv.levels.some((l) => l.code === 'QUA-1') && lv.quantity === 20 && lv.usable === 20, lv);
+  r = await mgr('POST', `${RT}/${ret2}/lines/${l2.id}/dispose`, { disposition: 'scrap' });
+  check('une ligne déjà décidée → 409', r.status === 409, r.status);
+  await coherent('retours client');
+  // quarantaine puis rebut
+  r = await mgr('POST', RT, { kind: 'customer', customerId: cust, validate: true, lines: [{ itemId: cable, quantity: 2, disposition: 'quarantine', reasonCode: 'damaged' }] });
+  const ret3 = r.json.id;
+  r = await mgr('GET', `${RT}/${ret3}`);
+  const l3 = r.json.return.lines[0];
+  const valBeforeScrap = await itemsValue(org);
+  r = await mgr('POST', `${RT}/${ret3}/lines/${l3.id}/dispose`, { disposition: 'scrap', reason: 'Gaine brûlée' });
+  check('contrôle KO : 2 câbles mis au rebut, sortis du stock (20)', r.status === 200 && (await qtyOf(cable)) === 20, r.json);
+  check('valorisation : le rebut retire 2 × 250 = 500', Math.abs(valBeforeScrap - (await itemsValue(org)) - 500) < 0.01, [valBeforeScrap, await itemsValue(org)]);
+  // rebut direct (retour client sans réintégration)
+  r = await mgr('POST', RT, { kind: 'customer', customerId: cust, validate: true, lines: [{ itemId: cable, quantity: 1, disposition: 'scrap', reasonCode: 'damaged' }] });
+  check('retour client mis au rebut : aucun mouvement de stock, perte tracée', r.status === 201 && (await qtyOf(cable)) === 20 && (await moveRows('return', r.json.id)).length === 0, r.json);
+  r = await mgr('GET', `${RT}/${r.json.id}`);
+  check('rebut client : valeur de la perte 250 conservée sur la ligne', r.json.return.value === 250 && r.json.return.lines[0].final === 'scrap', r.json.return);
+  // lots
+  const lait = await newItem('Lait', { tracking: 'lot', unitCost: 400 });
+  await mgr('POST', `${S}/items/${lait}/move`, { kind: 'in', quantity: 10, lotNo: 'LT1', expiry: shift(30), unitCost: 400 });
+  r = await mgr('POST', RT, { kind: 'customer', customerId: cust, validate: true, lines: [{ itemId: lait, quantity: 2, disposition: 'restock' }] });
+  check('article suivi par lot : numéro de lot exigé → 400', r.status === 400 && /lot/.test(r.json.error), r.json);
+  r = await mgr('POST', RT, { kind: 'customer', customerId: cust, validate: true, lines: [{ itemId: lait, quantity: 2, disposition: 'restock', lotNo: 'LT1', expiry: shift(30) }] });
+  lv = (await mgr('GET', `${S}/items/${lait}/lots`)).json;
+  check('retour par lot : remis dans le lot d\'origine (12 en LT1)', r.status === 201 && lv.lots.length === 1 && lv.lots[0].quantity === 12, lv.lots);
+  // série
+  const phone = await newItem('Téléphone', { tracking: 'serial', unitCost: 50000 });
+  await mgr('POST', `${S}/items/${phone}/move`, { kind: 'in', quantity: 2, serials: 'IMEI1, IMEI2', unitCost: 50000 });
+  await mgr('POST', `${S}/items/${phone}/move`, { kind: 'out', quantity: 1, serials: 'IMEI1' });
+  r = await mgr('POST', RT, { kind: 'customer', customerId: cust, validate: true, lines: [{ itemId: phone, quantity: 1, disposition: 'restock' }] });
+  check('article suivi par numéro de série : numéro exigé → 400', r.status === 400, r.json);
+  r = await mgr('POST', RT, { kind: 'customer', customerId: cust, validate: true, lines: [{ itemId: phone, quantity: 1, disposition: 'restock', serials: 'IMEI1' }] });
+  const sr = await dbx.prepare("SELECT status FROM stock_serials WHERE serial = 'IMEI1' AND org_id = ?").get(org);
+  check('retour d\'un téléphone : IMEI1 de nouveau en stock', r.status === 201 && sr.status === 'in_stock' && (await qtyOf(phone)) === 2, [r.json, sr]);
+
+  // retour fournisseur
+  const fourn = Number((await dbx.prepare("INSERT INTO suppliers (org_id, name, created_at) VALUES (?, 'Fournisseur Eto', ?)").run(org, new Date().toISOString())).lastInsertRowid);
+  r = await mem('POST', RT, { kind: 'supplier', lines: [{ itemId: cable, quantity: 2 }] });
+  check('retour fournisseur sans fournisseur → 400', r.status === 400, r.status);
+  r = await mgr('POST', RT, { kind: 'supplier', supplierId: fourn, reason: 'Gaine fendue', validate: true, lines: [{ itemId: cable, quantity: 4, reasonCode: 'defective' }, { itemId: planche, quantity: 99 }] });
+  check('retour fournisseur : une ligne impossible (stock insuffisant) annule tout', r.status === 400 && (await qtyOf(cable)) === 20, r.json);
+  check('aucun document ni mouvement laissé par l\'échec', (await dbx.prepare("SELECT COUNT(*) c FROM wms_returns WHERE kind = 'supplier'").get()).c === 0, true);
+  r = await mgr('POST', RT, { kind: 'supplier', supplierId: fourn, reason: 'Gaine fendue', validate: true, lines: [{ itemId: cable, quantity: 4, reasonCode: 'defective' }] });
+  const ret4 = r.json.id;
+  check('retour fournisseur validé : 4 câbles sortis (16)', r.status === 201 && (await qtyOf(cable)) === 16, r.json);
+  r = await mgr('GET', `${RT}/${ret4}`);
+  check('retour fournisseur : valeur 4 × 250 = 1 000, fournisseur lié', r.json.return.value === 1000 && r.json.return.supplier === 'Fournisseur Eto' && r.json.return.lines[0].reasonLabel === 'Défectueux', r.json.return);
+  r = await mgr('POST', `${RT}/${ret4}/credit`, { amount: 1200 });
+  r = await mgr('GET', `${RT}/${ret4}`);
+  check('avoir fournisseur enregistré (1 200)', r.json.return.creditAmount === 1200 && !!r.json.return.creditedAt, r.json.return);
+  r = await mgr('POST', `${RT}/${ret1}/credit`, { amount: 10 });
+  check('avoir sur un retour client → 400', r.status === 400, r.status);
+  r = await mem('GET', `${RT}/${ret4}`);
+  check('un membre ne voit ni valeur ni avoir', r.json.return.value === undefined && r.json.return.creditAmount === undefined, r.json.return);
+  // le stock réservé ne retourne pas au fournisseur
+  r = await mgr('POST', RS, { itemId: cable, quantity: 12, label: 'Chantier', kind: 'manual' });
+  r = await mgr('POST', RT, { kind: 'supplier', supplierId: fourn, validate: true, lines: [{ itemId: cable, quantity: 5 }] });
+  check('retour fournisseur de stock réservé (5 > 4 libres) → 409', r.status === 409 && (await qtyOf(cable)) === 16, r.json);
+  await mgr('POST', `${RS}/${(await mgr('GET', `${RS}?itemId=${cable}&status=active`)).json.reservations[0].id}/release`, {});
+
+  // mise au rebut
+  r = await mem('POST', RT, { kind: 'scrap', lines: [{ itemId: cable, quantity: 1, reasonCode: 'other' }] });
+  check('rebut : motif « autre » sans précision → 400', r.status === 400, r.json);
+  r = await mgr('POST', RT, { kind: 'scrap', reason: 'Inondation du dépôt', validate: true, lines: [{ itemId: cable, quantity: 3, reasonCode: 'damaged', locationId: A0101 }] });
+  check('mise au rebut validée : 3 câbles sortis de A-01-01 (13)', r.status === 201 && (await qtyOf(cable)) === 13, r.json);
+  r = await mgr('GET', `${RT}?kind=scrap`);
+  check('liste filtrée par type', r.json.returns.length === 1 && r.json.returns[0].kind === 'scrap' && r.json.returns[0].value === 750, r.json.returns);
+  r = await mem('POST', RT, { kind: 'scrap', reason: 'Test', lines: [{ itemId: cable, quantity: 2, reasonCode: 'lost' }] });
+  const ret5 = r.json.id;
+  r = await mem('POST', `${RT}/${ret5}/cancel`, {});
+  check('l\'auteur annule son brouillon', r.status === 200 && (await qtyOf(cable)) === 13, r.json);
+  r = await mgr('POST', `${RT}/${ret5}/validate`, {});
+  check('un brouillon annulé ne se valide pas → 409', r.status === 409, r.status);
+  r = await other('GET', `${W2}/returns/${ret1}`);
+  check('isolation : retour d\'une autre organisation → 404', r.status === 404, r.status);
+  r = await other('GET', `${W2}/returns`);
+  check('isolation : liste vide pour l\'autre organisation', r.json.returns.length === 0, r.json);
+  // Comptabilité : la valeur du stock = somme des emplacements après les retours
+  r = await owner('GET', `${O}/accounting/stock-valuation?date=${shift(0)}&nature=goods`);
+  check('comptabilité : valeur du stock = somme des emplacements après les retours', Math.abs(r.json.totalValue - (await valueOf(org))) <= r.json.items.length, [r.json.totalValue, await valueOf(org)]);
+  await coherent('fin du lot 4');
 });
