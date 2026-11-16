@@ -252,4 +252,137 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   await dbx.prepare('UPDATE org_members SET branch_id = NULL WHERE org_id = ?').run(org);
 
   await coherent('fin du lot 1');
+
+  // =====================================================================================================
+  // LOT 2 · TRANSFERTS
+  // =====================================================================================================
+  const T = `${W}/transfers`;
+  const wh = async (code) => (await dbx.prepare('SELECT id FROM wms_warehouses WHERE org_id = ? AND code = ?').get(org, code)).id;
+  const whPrinc = await wh('PRINC'); const whDlaId = await wh('DLA');
+  r = await mgr('GET', `${W}/locations?warehouseId=${whDlaId}`);
+  check('un nouvel entrepôt reçoit un emplacement « Réception » par défaut', r.json.locations.some((l) => l.kind === 'reception'), r.json.locations.map((l) => l.code));
+  const sac = await newItem('Sac de ciment', { unit: 'sac', unitCost: 5000 });
+  await mgr('POST', `${S}/items/${sac}/move`, { kind: 'in', quantity: 40, unitCost: 5000 });
+  const huile = await newItem('Huile', { unit: 'litre', unitCost: 1000, tracking: 'lot' });
+  await mgr('POST', `${S}/items/${huile}/move`, { kind: 'in', quantity: 20, lotNo: 'H1', expiry: shift(100), unitCost: 1000 });
+
+  r = await mem('POST', T, { fromWarehouseId: whPrinc, toWarehouseId: whDlaId, lines: [] });
+  check('transfert sans ligne → 400', r.status === 400, r.status);
+  r = await mem('POST', T, { fromWarehouseId: whPrinc, toWarehouseId: whDlaId, lines: [{ itemId: sac, quantity: 0 }] });
+  check('quantité nulle → 400', r.status === 400, r.status);
+  r = await mem('POST', T, { fromWarehouseId: whPrinc, toWarehouseId: whDlaId, lines: [{ itemId: sac, quantity: 1 }, { itemId: sac, quantity: 2 }] });
+  check('article en double → 400', r.status === 400, r.status);
+  r = await mem('POST', T, { fromWarehouseId: whPrinc, toWarehouseId: whPrinc, lines: [{ itemId: sac, quantity: 1 }] });
+  check('même entrepôt sans emplacements précisés → 400', r.status === 400, r.status);
+  r = await mem('POST', T, { fromWarehouseId: 99999, toWarehouseId: whDlaId, lines: [{ itemId: sac, quantity: 1 }] });
+  check('entrepôt inconnu → 404', r.status === 404, r.status);
+  r = await other('POST', `${W2}/transfers`, { fromWarehouseId: whPrinc, toWarehouseId: whDlaId, lines: [{ itemId: leg4, quantity: 1 }] });
+  check('isolation : entrepôts d\'une autre organisation → 404', r.status === 404, r.status);
+
+  r = await mem('POST', T, { fromWarehouseId: whPrinc, toWarehouseId: whDlaId, note: 'Chantier Douala', lines: [{ itemId: sac, quantity: 25 }, { itemId: huile, quantity: 10 }] });
+  const tr1 = r.json.id;
+  check('demande de transfert créée par un simple membre', r.status === 201 && tr1 > 0, r.json);
+  r = await mem('GET', `${T}/${tr1}`);
+  check('numéro TR-AAAA-001, statut « demandé », journal', /^TR-\d{4}-001$/.test(r.json.transfer.code) && r.json.transfer.status === 'requested' && r.json.transfer.journal.length === 1, r.json.transfer);
+  const code1 = r.json.transfer.code;
+  r = await mem('POST', `${T}/${tr1}/ship`, {});
+  check('droits : un membre n\'expédie pas', r.status === 403, r.status);
+  r = await other('GET', `${W2}/transfers/${tr1}`);
+  check('isolation : transfert d\'une autre organisation → 404', r.status === 404, r.status);
+  r = await mgr('POST', `${T}/${tr1}/receive`, {});
+  check('réception d\'un transfert non expédié → 409', r.status === 409, r.status);
+
+  r = await mgr('POST', `${T}/${tr1}/ship`, { lines: [{ lineId: (await mgr('GET', `${T}/${tr1}`)).json.transfer.lines[0].id, quantity: 99 }] });
+  check('expédier plus que demandé → 400', r.status === 400, r.json);
+  const sacBefore = await qtyOf(sac); const valBefore = await itemsValue(org);
+  r = await mgr('POST', `${T}/${tr1}/ship`, {});
+  check('expédition par un responsable', r.status === 200, r.json);
+  check('en transit : quantité totale inchangée (le stock reste compté), valeur inchangée', (await qtyOf(sac)) === sacBefore && Math.abs((await itemsValue(org)) - valBefore) < 0.01, [await qtyOf(sac), sacBefore]);
+  lv = await levels(sac);
+  check('en transit : 25 sacs dans « TRANSIT », 15 disponibles', lv.levels.find((l) => l.code === 'TRANSIT').quantity === 25 && lv.usable === 15, lv);
+  await coherent('expédition');
+  r = await mem('POST', `${S}/items/${sac}/move`, { kind: 'out', quantity: 16 });
+  check('le stock en transit n\'est pas prélevable (16 > 15 disponibles) → 400', r.status === 400 && /transit/.test(r.json.error), r.json);
+  r = await mem('POST', `${S}/items/${sac}/move`, { kind: 'out', quantity: 15, reason: 'Vente' });
+  check('les 15 disponibles se prélèvent', r.status === 200, r.json);
+  await mgr('POST', `${S}/items/${sac}/move`, { kind: 'in', quantity: 15, unitCost: 5000 });
+  r = await mgr('POST', `${T}/${tr1}/ship`, {});
+  check('double expédition → 409', r.status === 409, r.status);
+  r = await mgr('POST', `${T}/${tr1}/receive`, {});
+  check('droits : celui qui a expédié ne reçoit pas (même responsable)', r.status === 403, r.json);
+  r = await mem('POST', `${T}/${tr1}/receive`, {});
+  check('droits : un membre ne reçoit pas', r.status === 403, r.status);
+  r = await owner('POST', `${T}/${tr1}/receive`, { lines: (await owner('GET', `${T}/${tr1}`)).json.transfer.lines.map((l) => ({ lineId: l.id, receivedQty: l.itemId === sac ? 23 : l.shippedQty })) });
+  check('écart à la réception (23 reçus sur 25) sans motif → 400, rien de reçu', r.status === 400 && /motif/.test(r.json.error) && (await qtyOf(sac)) === 40, r.json);
+  lv = await levels(sac);
+  check('refus : les 25 sacs sont toujours en transit', lv.levels.find((l) => l.code === 'TRANSIT').quantity === 25, lv);
+  const trLines = (await owner('GET', `${T}/${tr1}`)).json.transfer.lines;
+  r = await owner('POST', `${T}/${tr1}/receive`, { lines: trLines.map((l) => ({ lineId: l.id, receivedQty: l.itemId === sac ? 30 : l.shippedQty })) });
+  check('reçu plus qu\'expédié → 400', r.status === 400, r.json);
+  const dlaRec = (await mgr('GET', `${W}/locations?warehouseId=${whDlaId}`)).json.locations.find((l) => l.kind === 'reception').id;
+  const valBeforeRecv = await itemsValue(org);
+  r = await owner('POST', `${T}/${tr1}/receive`, { lines: trLines.map((l) => (l.itemId === sac ? { lineId: l.id, receivedQty: 23, reason: 'Sacs éventrés au transport', toLocationId: A0101 } : { lineId: l.id, receivedQty: l.shippedQty })) });
+  check('réception avec écart motivé (2 sacs cassés)', r.status === 200 && r.json.gapQty === 2 && r.json.gapValue === 10000, r.json);
+  check('quantité : 40 − 2 sacs perdus = 38, huile intacte (20)', (await qtyOf(sac)) === 38 && (await qtyOf(huile)) === 20, [await qtyOf(sac), await qtyOf(huile)]);
+  lv = await levels(sac);
+  check('stock arrivé : 23 sacs à A-01-01, plus rien en transit', lv.levels.find((l) => l.code === 'A-01-01').quantity >= 23 && !lv.levels.some((l) => l.code === 'TRANSIT'), lv);
+  lv = await levels(huile);
+  check('huile (par lot) : 10 reçus à l\'emplacement d\'arrivée par défaut (réception DLA)', lv.levels.some((l) => l.code === 'DLA-RECEPTION' && l.quantity === 10), lv);
+  await coherent('réception avec écart');
+  check('valorisation : la perte de 10 000 FCFA (2 × 5 000) est la seule baisse', Math.abs(valBeforeRecv - (await itemsValue(org)) - 10000) < 0.01, [valBeforeRecv, await itemsValue(org)]);
+  r = await owner('GET', `${T}/${tr1}`);
+  check('transfert : statut reçu, écart et motif conservés, journal complet (3 étapes)', r.json.transfer.status === 'received' && r.json.transfer.gapQty === 2 && r.json.transfer.gapValue === 10000 && r.json.transfer.lines.find((l) => l.itemId === sac).gapReason === 'Sacs éventrés au transport' && r.json.transfer.journal.map((e) => e.action).join() === 'requested,shipped,received', r.json.transfer);
+  r = await mgr('POST', `${T}/${tr1}/receive`, {});
+  check('double réception → 409', r.status === 409, r.status);
+  r = await mem('GET', `${T}/${tr1}`);
+  check('un membre ne voit pas la valeur de l\'écart', r.json.transfer.gapValue === undefined, r.json.transfer.gapValue);
+  r = await owner('GET', `${O}/accounting/stock-valuation?date=${shift(0)}&nature=goods`);
+  check('comptabilité : valeur du stock = somme des emplacements après transfert', Math.abs(r.json.totalValue - (await valueOf(org))) <= r.json.items.length, [r.json.totalValue, await valueOf(org)]);
+  r = await mem('GET', `${S}/items/${sac}/moves`);
+  check('journal des mouvements : la perte de transfert y figure', r.json.moves.some((m) => /Écart de transfert/.test(m.reason) && m.delta === -2), r.json.moves.slice(0, 4));
+
+  // Annulation d'une demande, d'un transfert en transit
+  r = await mem('POST', T, { fromWarehouseId: whPrinc, toWarehouseId: whDlaId, lines: [{ itemId: sac, quantity: 5 }] });
+  const tr2 = r.json.id;
+  r = await mem('POST', `${T}/${tr2}/cancel`, { reason: 'Plus besoin' });
+  check('l\'auteur annule sa demande', r.status === 200, r.json);
+  r = await mgr('POST', `${T}/${tr2}/ship`, {});
+  check('transfert annulé : plus expédiable → 409', r.status === 409, r.status);
+  r = await mem('POST', T, { fromWarehouseId: whPrinc, toWarehouseId: whDlaId, lines: [{ itemId: sac, quantity: 6 }] });
+  const tr3 = r.json.id;
+  r = await owner('POST', `${T}/${tr3}/ship`, {});
+  const sacPrincBefore = (await levels(sac)).levels.filter((l) => l.warehouseId === whPrinc).reduce((a, l) => a + l.quantity, 0);
+  r = await mgr('POST', `${T}/${tr3}/cancel`, {});
+  check('annuler un transfert en transit exige un motif → 400', r.status === 400, r.status);
+  r = await mem('POST', `${T}/${tr3}/cancel`, { reason: 'x' });
+  check('un membre n\'annule pas un transfert en transit → 403', r.status === 403, r.status);
+  r = await mgr('POST', `${T}/${tr3}/cancel`, { reason: 'Camion en panne' });
+  lv = await levels(sac);
+  check('annulation en transit : le stock retourne au départ, rien en transit', r.status === 200 && !lv.levels.some((l) => l.code === 'TRANSIT') && lv.quantity === 38, lv);
+  await coherent('annulation en transit');
+
+  // Disponibilité : transfert demandé pour plus que disponible
+  r = await mem('POST', T, { fromWarehouseId: whPrinc, toWarehouseId: whDlaId, lines: [{ itemId: vis, quantity: 500 }] });
+  const tr4 = r.json.id;
+  r = await mgr('POST', `${T}/${tr4}/ship`, {});
+  check('expédier plus que le stock du départ → 400, rien ne bouge', r.status === 400 && (await qtyOf(vis)) === 18, r.json);
+  // Entre deux emplacements d'un même entrepôt
+  r = await mem('POST', T, { fromWarehouseId: whDlaId, toWarehouseId: whDlaId, lines: [{ itemId: sac, quantity: 3, fromLocationId: A0101, toLocationId: B0101 }] });
+  const tr5 = r.json.id;
+  check('transfert entre deux emplacements d\'un même entrepôt accepté', r.status === 201, r.json);
+  await owner('POST', `${T}/${tr5}/ship`, {});
+  r = await mgr('POST', `${T}/${tr5}/receive`, {});
+  lv = await levels(sac);
+  check('même entrepôt : 3 sacs passés de A-01-01 à B-01-01', r.status === 200 && lv.levels.find((l) => l.code === 'B-01-01').quantity >= 3, lv);
+  // Concurrence : deux réceptions simultanées → une seule
+  r = await mem('POST', T, { fromWarehouseId: whDlaId, toWarehouseId: whDlaId, lines: [{ itemId: sac, quantity: 2, fromLocationId: B0101, toLocationId: A0101 }] });
+  const tr6 = r.json.id;
+  await owner('POST', `${T}/${tr6}/ship`, {});
+  const rr = await Promise.all([mgr('POST', `${T}/${tr6}/receive`, {}), mgr('POST', `${T}/${tr6}/receive`, {}), owner('POST', `${T}/${tr6}/receive`, {})]);
+  check('concurrence : trois réceptions simultanées → une seule passe', rr.filter((x) => x.status === 200).length === 1, rr.map((x) => x.status));
+  await coherent('concurrence des transferts');
+  r = await mem('GET', `${T}?status=received`);
+  check('liste filtrée par statut', r.status === 200 && r.json.transfers.every((x) => x.status === 'received') && r.json.transfers.length >= 2, r.json.transfers.length);
+  r = await mgr('DELETE', `${W}/warehouses/${whDlaId}`);
+  check('entrepôt qui a des transferts : suppression refusée', r.status === 409, r.status);
 });

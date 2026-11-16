@@ -2695,6 +2695,55 @@ const MIGRATIONS = [
   INSERT INTO wms_levels (org_id, item_id, location_id, quantity)
     SELECT i.org_id, i.id, l.id, i.quantity FROM stock_items i JOIN wms_locations l ON l.org_id = i.org_id AND l.is_default = 1 WHERE i.quantity > 0;
   `,
+  /* STOCK WMS · lot 2 : transferts entre entrepôts et emplacements (demande → expédié en transit → reçu, écarts, journal). */ `
+  CREATE TABLE wms_transfers (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'requested',
+    from_warehouse_id BIGINT NOT NULL REFERENCES wms_warehouses(id) ON DELETE RESTRICT,
+    to_warehouse_id BIGINT NOT NULL REFERENCES wms_warehouses(id) ON DELETE RESTRICT,
+    note TEXT NOT NULL DEFAULT '',
+    requested_by BIGINT,
+    requested_at TEXT NOT NULL,
+    shipped_by BIGINT,
+    shipped_at TEXT,
+    received_by BIGINT,
+    received_at TEXT,
+    cancelled_by BIGINT,
+    cancelled_at TEXT,
+    cancel_reason TEXT NOT NULL DEFAULT '',
+    UNIQUE (org_id, code)
+  );
+  CREATE INDEX idx_wms_transfers_org ON wms_transfers(org_id, status);
+  CREATE TABLE wms_transfer_lines (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    transfer_id BIGINT NOT NULL REFERENCES wms_transfers(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE RESTRICT,
+    quantity DOUBLE PRECISION NOT NULL,
+    shipped_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    received_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    from_location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    to_location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    src TEXT NOT NULL DEFAULT '[]',
+    unit_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+    gap_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    gap_value BIGINT NOT NULL DEFAULT 0,
+    gap_reason TEXT NOT NULL DEFAULT '',
+    UNIQUE (transfer_id, item_id)
+  );
+  CREATE TABLE wms_transfer_events (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    transfer_id BIGINT NOT NULL REFERENCES wms_transfers(id) ON DELETE CASCADE,
+    action TEXT NOT NULL,
+    user_id BIGINT,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_wms_transfer_events ON wms_transfer_events(transfer_id, id);
+  `,
 ];
 
 

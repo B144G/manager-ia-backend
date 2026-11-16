@@ -187,6 +187,36 @@ async function relocate(req, it, fromId, toId, qty, meta = {}) {
   await logMove(req, it, { from: from.id, to: to.id, quantity: qty, kind: meta.kind, reason: meta.reason, refKind: meta.refKind, refId: meta.refId });
 }
 
+/** Numéro de document suivant (TR-2026-001…), par organisation, type et année : sans trou ni doublon (même en cas de demandes simultanées). Dans la transaction du document. */
+async function nextCode(orgId, kind, prefix) {
+  const year = nowISO().slice(0, 4);
+  const row = await db.prepare('INSERT INTO doc_sequences (org_id, kind, year, last) VALUES (?, ?, ?, 1) ON CONFLICT (org_id, kind, year) DO UPDATE SET last = doc_sequences.last + 1 RETURNING last').get(orgId, kind, year);
+  return `${prefix}-${year}-${String(row.last).padStart(3, '0')}`;
+}
+
+/** Emplacement qui reçoit les arrivées d'un entrepôt : « Réception » d'abord, sinon un rayonnage, sinon l'emplacement par défaut. */
+async function warehouseDefault(orgId, whId) {
+  const l = await db.prepare(`SELECT * FROM wms_locations WHERE org_id = ? AND warehouse_id = ? AND active = 1 AND kind IN ('reception','storage','picking') ORDER BY (kind = 'reception') DESC, is_default DESC, id LIMIT 1`).get(orgId, whId);
+  if (!l) throw new HttpError(409, "Cet entrepôt n'a aucun emplacement actif : créez-en un avant de recevoir du stock.");
+  return l;
+}
+
+/** Prélèvement dans UN entrepôt : emplacements disponibles de cet entrepôt (préparation d'abord, puis les plus petites quantités). */
+async function planFromWarehouse(it, whId, qty) {
+  const rows = (await levelRows(it.id)).filter((l) => l.warehouse_id === whId && isUsable(l.kind));
+  rows.sort((a, b) => (a.kind === 'picking' ? 0 : 1) - (b.kind === 'picking' ? 0 : 1) || a.quantity - b.quantity || a.location_id - b.location_id);
+  const have = round3(rows.reduce((a, l) => a + l.quantity, 0));
+  if (have + EPS < qty) throw new HttpError(400, `Pas assez de « ${it.name} » disponible dans cet entrepôt : ${have} ${it.unit}.`);
+  const parts = []; let left = qty;
+  for (const l of rows) { if (left <= EPS) break; const take = round3(Math.min(l.quantity, left)); parts.push({ locationId: l.location_id, quantity: take }); left = round3(left - take); }
+  return parts;
+}
+
+/** Garde-fou « stock réservé » : remplacé au lot 3 (réservations). */
+let guardImpl = async () => {};
+const reservedGuard = (...a) => guardImpl(...a);
+const setReservedGuard = (fn) => { guardImpl = fn; };
+
 /** Verrouille un article (pour une opération qui ne passe pas par adjust). */
 async function lockItem(orgId, id) {
   const it = await db.prepare('SELECT * FROM stock_items WHERE id = ? AND org_id = ? FOR UPDATE').get(id, orgId);
@@ -200,4 +230,4 @@ async function integrity(orgId) {
     FROM stock_items i WHERE i.org_id = ? AND ABS(i.quantity - COALESCE((SELECT SUM(v.quantity) FROM wms_levels v WHERE v.item_id = i.id), 0)) > 0.0005`).all(orgId);
 }
 
-module.exports = { locationFor, LOCATION_KINDS, ZONE_KINDS, USABLE_KINDS, isUsable, ensureDefault, ensureTransit, locationOf, levelRows, levelAt, usableQty, bump, reconcile, room, putawayParts, plan, applyPlan, logMove, relocate, lockItem, integrity, round3, EPS };
+module.exports = { nextCode, warehouseDefault, planFromWarehouse, reservedGuard, setReservedGuard, locationFor, LOCATION_KINDS, ZONE_KINDS, USABLE_KINDS, isUsable, ensureDefault, ensureTransit, locationOf, levelRows, levelAt, usableQty, bump, reconcile, room, putawayParts, plan, applyPlan, logMove, relocate, lockItem, integrity, round3, EPS };

@@ -52,6 +52,7 @@ router.post('/warehouses', A.need('manager'), async (req, res) => {
   const c = code(b.code || name.slice(0, 12), "de l'entrepôt");
   if (await db.prepare('SELECT 1 FROM wms_warehouses WHERE org_id = ? AND code = ?').get(req.org.id, c)) throw new HttpError(409, 'Ce code d\'entrepôt existe déjà.');
   const id = Number((await db.prepare('INSERT INTO wms_warehouses (org_id, branch_id, code, name, address, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(req.org.id, await A.branchOf(req, b.branchId), c, name, A.text(b.address, 200), nowISO())).lastInsertRowid);
+  await db.prepare("INSERT INTO wms_locations (org_id, warehouse_id, code, name, kind, created_at) VALUES (?, ?, ?, 'Réception', 'reception', ?) ON CONFLICT DO NOTHING").run(req.org.id, id, `${c}-RECEPTION`.slice(0, 30), nowISO()); // emplacement d'arrivée par défaut
   await A.logActivity(req.org.id, req.user.id, 'stock', `Entrepôt « ${name} » créé`);
   res.status(201).json({ id });
 });
@@ -73,6 +74,7 @@ router.delete('/warehouses/:id', A.need('manager'), async (req, res) => {
   if (w.is_default) throw new HttpError(400, "L'entrepôt principal ne peut pas être supprimé.");
   const left = (await db.prepare('SELECT COALESCE(SUM(v.quantity), 0) q FROM wms_levels v JOIN wms_locations l ON l.id = v.location_id WHERE l.warehouse_id = ?').get(w.id)).q;
   if (left > 0) throw new HttpError(409, `Cet entrepôt contient encore du stock (${W.round3(left)}) : transférez-le avant de le supprimer.`);
+  if (await db.prepare('SELECT 1 FROM wms_transfers WHERE org_id = ? AND (from_warehouse_id = ? OR to_warehouse_id = ?) LIMIT 1').get(req.org.id, w.id, w.id)) throw new HttpError(409, "Cet entrepôt a des transferts dans l'historique : désactivez-le plutôt que de le supprimer.");
   await db.prepare('DELETE FROM wms_warehouses WHERE id = ?').run(w.id);
   res.json({ ok: true });
 });
