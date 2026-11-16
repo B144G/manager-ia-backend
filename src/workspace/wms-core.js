@@ -65,12 +65,40 @@ async function locationOf(orgId, id, msg = 'Emplacement introuvable.') {
 // ---------- Quantités par emplacement ----------
 const qtyAt = async (locId, itemId) => Number(((await db.prepare('SELECT quantity FROM wms_stock WHERE location_id = ? AND item_id = ?').get(locId, itemId)) || {}).quantity || 0);
 async function add(orgId, locId, itemId, delta) {
+  const r = await addRaw(orgId, locId, itemId, delta);
+  if (delta < 0) await trimHus(locId, itemId);
+  return r;
+}
+async function addRaw(orgId, locId, itemId, delta) {
   const cur = await qtyAt(locId, itemId);
   const next = round3(cur + delta);
   if (next < -EPS) throw new HttpError(400, 'Pas assez de stock dans cet emplacement.');
   if (Math.abs(next) < EPS) await db.prepare('DELETE FROM wms_stock WHERE location_id = ? AND item_id = ?').run(locId, itemId);
   else await db.prepare('INSERT INTO wms_stock (org_id, location_id, item_id, quantity, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (location_id, item_id) DO UPDATE SET quantity = excluded.quantity, updated_at = excluded.updated_at').run(orgId, locId, itemId, next, nowISO());
   return next;
+}
+/** Quantité d'un article sur les palettes (unités de manutention) d'un emplacement. */
+const huSum = async (locId, itemId) => Number((await db.prepare("SELECT COALESCE(SUM(c.quantity), 0) AS q FROM wms_hu_contents c JOIN wms_hus h ON h.id = c.hu_id WHERE h.location_id = ? AND c.item_id = ?").get(locId, itemId)).q);
+/** Stock « en vrac » (hors palettes) d'un article dans un emplacement. */
+const looseAt = async (locId, itemId) => round3(await qtyAt(locId, itemId) - await huSum(locId, itemId));
+/** Après une sortie : si le stock de l'emplacement est passé sous le contenu de ses palettes, les palettes se vident d'autant (péremption la plus proche d'abord). */
+async function trimHus(locId, itemId) {
+  let excess = round3(await huSum(locId, itemId) - await qtyAt(locId, itemId));
+  if (excess <= EPS) return;
+  const rows = await db.prepare("SELECT c.* FROM wms_hu_contents c JOIN wms_hus h ON h.id = c.hu_id WHERE h.location_id = ? AND c.item_id = ? ORDER BY c.expiry IS NULL, c.expiry, c.quantity, c.id").all(locId, itemId);
+  for (const c of rows) {
+    if (excess <= EPS) break;
+    const take = round3(Math.min(excess, Number(c.quantity)));
+    if (Number(c.quantity) - take <= EPS) await db.prepare('DELETE FROM wms_hu_contents WHERE id = ?').run(c.id);
+    else await db.prepare('UPDATE wms_hu_contents SET quantity = ? WHERE id = ?').run(round3(Number(c.quantity) - take), c.id);
+    excess = round3(excess - take);
+    await markEmpty(c.hu_id);
+  }
+}
+async function markEmpty(huId) {
+  const n = Number((await db.prepare('SELECT COUNT(*) AS c FROM wms_hu_contents WHERE hu_id = ?').get(huId)).c);
+  const kids = Number((await db.prepare("SELECT COUNT(*) AS c FROM wms_hus WHERE parent_id = ? AND status != 'empty'").get(huId)).c);
+  await db.prepare('UPDATE wms_hus SET status = ?, updated_at = ? WHERE id = ?').run(n || kids ? 'open' : 'empty', nowISO(), huId);
 }
 const locTotal = async (locId) => Number((await db.prepare('SELECT COALESCE(SUM(quantity), 0) AS q FROM wms_stock WHERE location_id = ?').get(locId)).q);
 
@@ -190,5 +218,5 @@ async function nextCode(orgId, prefix) {
 
 module.exports = {
   KINDS, ZONE_KINDS, USABLE, DEFAULTS, isUsable, round3, EPS, today, ensure, settingsOf, transitOf, quarantineOf, returnsOf, defaultOf, locationOf,
-  qtyAt, add, locTotal, putawayPlan, destinationsFor, takeFrom, reconcile, withLocation, move, expireReservations, reservedOf, usableOf, availability, nextCode,
+  qtyAt, add, locTotal, huSum, looseAt, markEmpty, putawayPlan, destinationsFor, takeFrom, reconcile, withLocation, move, expireReservations, reservedOf, usableOf, availability, nextCode,
 };

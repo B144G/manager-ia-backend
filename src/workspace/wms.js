@@ -188,7 +188,9 @@ router.get('/locations/:id', async (req, res) => {
   const m = A.can(req, 'manager');
   const rows = await db.prepare('SELECT i.*, s.quantity AS loc_qty FROM wms_stock s JOIN stock_items i ON i.id = s.item_id WHERE s.location_id = ? AND s.quantity > 0 ORDER BY i.name').all(l.id);
   const v = locView(l, m);
+  const hus = await db.prepare("SELECT h.id, h.code, h.type, (SELECT COALESCE(SUM(c.quantity), 0) FROM wms_hu_contents c WHERE c.hu_id = h.id) AS q FROM wms_hus h WHERE h.location_id = ? AND h.status != 'empty' ORDER BY h.code").all(l.id);
   res.json({
+    hus: hus.map((h) => ({ id: Number(h.id), code: h.code, type: h.type, quantity: r3(Number(h.q)) })),
     location: { id: v.id, code: v.code, name: v.name, kind: v.kind, kindLabel: v.kindLabel, warehouse: v.warehouse, zone: v.zone, capacity: v.capacity, active: v.active, isDefault: v.isDefault, usable: v.usable, quantity: v.quantity },
     content: rows.map((r) => ({ itemId: Number(r.id), name: r.name, sku: r.sku || '', quantity: r3(Number(r.loc_qty)), unit: r.unit, value: m ? Math.round(Number(r.loc_qty) * unitValue(r)) : undefined })),
   });
@@ -240,6 +242,9 @@ router.post('/move', async (req, res) => {
   const b = req.body || {};
   const it = await itemOf(req, b.itemId);
   const q = qty(b.quantity);
+  // Le stock posé sur une palette se déplace avec la palette (ou après l'avoir retiré de la palette).
+  const fromId = A.id(b.fromLocationId, 'Emplacement introuvable.');
+  if (await W.qtyAt(fromId, it.id) + W.EPS >= q && await W.looseAt(fromId, it.id) + W.EPS < q) throw new HttpError(400, 'Une partie de ce stock est sur une palette : déplacez la palette entière, ou retirez d\'abord les articles de la palette.');
   const r = await db.transaction(() => W.move(req, it.id, A.id(b.fromLocationId, 'Emplacement introuvable.'), A.id(b.toLocationId, 'Emplacement introuvable.'), q, { reason: cleanText(String(b.reason || ''), 150) }))();
   res.json({ ok: true, from: r.from.code, to: r.to.code, quantity: r.quantity });
 });
@@ -330,6 +335,8 @@ router.get('/scan', async (req, res) => {
   if (it && A.visible(req, it)) return res.json({ type: 'item', id: Number(it.id), label: it.name });
   const l = await db.prepare('SELECT * FROM wms_locations WHERE org_id = ? AND UPPER(code) = UPPER(?)').get(req.org.id, code);
   if (l) return res.json({ type: 'location', id: Number(l.id), label: l.code });
+  const hu = await db.prepare('SELECT id, code FROM wms_hus WHERE org_id = ? AND UPPER(code) = UPPER(?)').get(req.org.id, code);
+  if (hu) return res.json({ type: 'hu', id: Number(hu.id), label: hu.code });
   for (const [type, table] of [['pick', 'wms_picks'], ['transfer', 'wms_transfers'], ['return', 'wms_returns'], ['receipt', 'wms_receipts']]) {
     const x = await db.prepare(`SELECT id, code FROM ${table} WHERE org_id = ? AND UPPER(code) = UPPER(?)`).get(req.org.id, code);
     if (x) return res.json({ type, id: Number(x.id), label: x.code });
@@ -337,6 +344,7 @@ router.get('/scan', async (req, res) => {
   throw new HttpError(404, 'Code inconnu : ni article, ni emplacement, ni document.');
 });
 
+router.use('/', require('./wms-hu'));
 router.use('/', require('./wms-flows'));
 router.use('/', require('./wms-receipts'));
 router.use('/', require('./wms-analytics'));

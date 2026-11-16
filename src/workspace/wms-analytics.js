@@ -260,8 +260,8 @@ router.get('/reports/aging', mgr, async (req, res) => {
   const json = { buckets: totals, items: items.sort((a, b) => b.stockValue - a.stockValue) };
   return sendMaybeCsv(req, res, json, 'vieillissement-stock', [['Article', (i) => i.name], ['Quantité', (i) => i.quantity], ['Plus ancienne entrée', (i) => i.oldestEntry || ''], ...BUCKETS.map(([, label], k) => [label, (i) => i.buckets[k].quantity]), ['Valeur', (i) => i.stockValue]], json.items);
 });
-const REF_LABEL = { pur_receipt: 'Réception de commande', wms_receipt: 'Réception', delivery: 'Livraison', count: 'Inventaire', transfer: 'Transfert', return: 'Retour / rebut', reservation: 'Réservation livrée', pick: 'Liste de préparation', project: 'Projet', production: 'Production', maintenance: 'Maintenance', landed_cost: "Coût d'arrivée" };
-const INTERNAL_LABEL = { internal: 'Déplacement', putaway: 'Déplacement', transfer_out: 'Transfert : sortie', transfer_in: 'Transfert : arrivée', transfer_cancel: 'Transfert annulé', return_restock: 'Retour remis en stock' };
+const REF_LABEL = { pur_receipt: 'Réception de commande', wms_receipt: 'Réception', delivery: 'Livraison', count: 'Inventaire', transfer: 'Transfert', return: 'Retour / rebut', reservation: 'Réservation livrée', pick: 'Liste de préparation', project: 'Projet', production: 'Production', maintenance: 'Maintenance', landed_cost: "Coût d'arrivée", hu: 'Palette ou colis', hu_item: 'Palette ou colis' };
+const INTERNAL_LABEL = { internal: 'Déplacement', putaway: 'Déplacement', transfer_out: 'Transfert : sortie', transfer_in: 'Transfert : arrivée', transfer_cancel: 'Transfert annulé', return_restock: 'Retour remis en stock', hu_move: 'Déplacement de palette' };
 router.get('/reports/moves', async (req, res) => {
   const q = req.query || {};
   const limit = Math.max(1, Math.min(1000, Number(q.limit) || 200));

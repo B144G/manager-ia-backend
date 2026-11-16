@@ -3205,6 +3205,37 @@ const MIGRATIONS = [
   );
   `,
 
+  // Unités de manutention (palettes, colis, conteneurs, bacs) : une étiquette scannable, un emplacement, un contenu (article, lot, péremption).
+  // Le contenu d'une palette fait partie du stock de son emplacement (wms_stock) ; le reste est du stock « en vrac ».
+  `
+  CREATE TABLE wms_hus (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'pallet',
+    status TEXT NOT NULL DEFAULT 'open',
+    location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    parent_id BIGINT REFERENCES wms_hus(id) ON DELETE SET NULL,
+    weight DOUBLE PRECISION,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (org_id, code)
+  );
+  CREATE INDEX idx_wms_hus_loc ON wms_hus(location_id);
+  CREATE TABLE wms_hu_contents (
+    id BIGSERIAL PRIMARY KEY,
+    hu_id BIGINT NOT NULL REFERENCES wms_hus(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    lot_no TEXT NOT NULL DEFAULT '',
+    expiry TEXT,
+    quantity DOUBLE PRECISION NOT NULL,
+    UNIQUE (hu_id, item_id, lot_no)
+  );
+  CREATE INDEX idx_wms_hu_contents_item ON wms_hu_contents(item_id);
+  `,
+
 ];
 
 
