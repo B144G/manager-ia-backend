@@ -24,9 +24,16 @@ const resOf = async (req, id) => {
   return r;
 };
 const view = (r) => ({ id: r.id, itemId: r.item_id, item: r.item, unit: r.unit, quantity: r.quantity, fulfilledQty: r.fulfilled_qty, remaining: W.round3(r.quantity - r.fulfilled_qty), status: r.status,
-  sourceKind: r.source_kind, sourceLabel: KINDS[r.source_kind], documentId: r.source_kind === 'document' ? r.source_id : null, documentNumber: r.doc_number || null, label: r.label, neededBy: r.needed_by, expiresAt: r.expires_at,
+  warehouseId: r.warehouse_id || null, warehouse: r.warehouse_name || null, sourceKind: r.source_kind, sourceLabel: KINDS[r.source_kind], documentId: r.source_kind === 'document' ? r.source_id : null, documentNumber: r.doc_number || null, label: r.label, neededBy: r.needed_by, expiresAt: r.expires_at,
   createdBy: r.by_name || null, createdById: r.created_by, createdAt: r.created_at, closedAt: r.closed_at, closeReason: r.close_reason });
-const BASE = 'SELECT r.*, i.name AS item, i.unit, i.branch_id AS branch_id, u.name AS by_name, d.number AS doc_number FROM wms_reservations r JOIN stock_items i ON i.id = r.item_id LEFT JOIN users u ON u.id = r.created_by LEFT JOIN documents d ON d.id = r.source_id AND r.source_kind = \'document\'';
+const BASE = 'SELECT r.*, i.name AS item, i.unit, i.branch_id AS branch_id, u.name AS by_name, d.number AS doc_number, wh.name AS warehouse_name FROM wms_reservations r LEFT JOIN wms_warehouses wh ON wh.id = r.warehouse_id JOIN stock_items i ON i.id = r.item_id LEFT JOIN users u ON u.id = r.created_by LEFT JOIN documents d ON d.id = r.source_id AND r.source_kind = \'document\'';
+
+const whParam = async (req, v) => {
+  if (!v) return null;
+  const w = await db.prepare('SELECT * FROM wms_warehouses WHERE id = ? AND org_id = ?').get(A.id(v, 'Entrepôt invalide.'), req.org.id);
+  if (!w || !A.visible(req, w)) throw new HttpError(404, 'Entrepôt introuvable.');
+  return w.id;
+};
 
 // ---------- Disponible à promettre ----------
 router.get('/availability', async (req, res) => {
@@ -39,7 +46,10 @@ router.get('/availability', async (req, res) => {
 router.get('/items/:id/availability', async (req, res) => {
   const it = await itemOf(req, req.params.id);
   const m = await W.availabilityMap(req.org.id);
-  res.json({ itemId: it.id, name: it.name, unit: it.unit, ...m.get(it.id) });
+  const whs = await db.prepare('SELECT id, name FROM wms_warehouses WHERE org_id = ? ORDER BY is_default DESC, name').all(req.org.id);
+  const warehouses = [];
+  for (const w of whs) { const usable = await W.whUsable(it.id, w.id); const reserved = await W.whReserved(it.id, w.id); if (usable > 0 || reserved > 0) warehouses.push({ warehouseId: w.id, name: w.name, usable, reserved, available: Math.max(W.round3(Math.min(usable - reserved, m.get(it.id).available)), 0) }); }
+  res.json({ itemId: it.id, name: it.name, unit: it.unit, ...m.get(it.id), warehouses });
 });
 
 // ---------- Liste ----------
@@ -65,8 +75,12 @@ async function reserve(req, it0, qty, meta) {
     await W.reconcile(req.org.id, it);
     const a = (await W.availabilityMap(req.org.id)).get(it.id);
     if (qty - a.available > W.EPS) throw new HttpError(409, `« ${it.name} » : ${a.available} ${it.unit} disponible(s) à promettre (${a.usable} en stock utilisable, ${a.reserved} déjà réservé(s)).`);
-    return Number((await db.prepare('INSERT INTO wms_reservations (org_id, item_id, quantity, source_kind, source_id, label, needed_by, expires_at, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(req.org.id, it.id, qty, meta.kind, meta.sourceId || null, A.text(meta.label, 150), meta.neededBy || null, meta.expiresAt || null, req.user.id, nowISO())).lastInsertRowid);
+    if (meta.warehouseId) {
+      const free = W.round3((await W.whUsable(it.id, meta.warehouseId)) - (await W.whReserved(it.id, meta.warehouseId)));
+      if (qty - free > W.EPS) throw new HttpError(409, `« ${it.name} » : ${Math.max(free, 0)} ${it.unit} seulement disponible(s) à promettre dans cet entrepôt.`);
+    }
+    return Number((await db.prepare('INSERT INTO wms_reservations (org_id, item_id, quantity, source_kind, source_id, label, needed_by, expires_at, created_by, created_at, warehouse_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(req.org.id, it.id, qty, meta.kind, meta.sourceId || null, A.text(meta.label, 150), meta.neededBy || null, meta.expiresAt || null, req.user.id, nowISO(), meta.warehouseId || null)).lastInsertRowid);
   })();
 }
 
@@ -78,7 +92,9 @@ router.post('/reservations', async (req, res) => {
   const qty = A.qty(b.quantity);
   if (it.tracking === 'serial' && !Number.isInteger(qty)) throw new HttpError(400, `« ${it.name} » est suivi par numéro de série : la quantité est un nombre entier.`);
   const label = A.text(b.label, 150, { required: true, msg: 'Indiquez pour qui ou pour quoi (chantier, client, atelier…).' });
-  const id = await reserve(req, it, qty, { kind, label, neededBy: A.date(b.neededBy), expiresAt: A.date(b.expiresAt) });
+  const wh = b.warehouseId ? await db.prepare('SELECT * FROM wms_warehouses WHERE id = ? AND org_id = ?').get(A.id(b.warehouseId, 'Entrepôt invalide.'), req.org.id) : null;
+  if (b.warehouseId && (!wh || !A.visible(req, wh))) throw new HttpError(404, 'Entrepôt introuvable.');
+  const id = await reserve(req, it, qty, { kind, label, neededBy: A.date(b.neededBy), expiresAt: A.date(b.expiresAt), warehouseId: wh ? wh.id : null });
   await A.logActivity(req.org.id, req.user.id, 'stock', `Réservation de ${qty} ${it.unit} de « ${it.name} » : ${label}`);
   res.status(201).json({ id });
 });
@@ -91,7 +107,7 @@ router.post('/reservations/from-document', A.need('manager'), async (req, res) =
   if (!['order', 'quote', 'invoice'].includes(d.kind)) throw new HttpError(400, 'Seule une commande, un devis ou une facture peut réserver du stock.');
   if (['cancelled', 'refused', 'credited', 'paid'].includes(d.status) && d.kind !== 'order') throw new HttpError(400, 'Ce document est terminé ou refusé : il ne réserve plus de stock.');
   if (['cancelled', 'refused'].includes(d.status)) throw new HttpError(400, 'Cette commande est annulée : elle ne réserve plus de stock.');
-  const { reserved: out, short, ignoredLines: ignored } = await W.reserveDocument(req, d, { partial: b.partial === true || b.partial === 'true', neededBy: A.date(b.neededBy) });
+  const { reserved: out, short, ignoredLines: ignored } = await W.reserveDocument(req, d, { partial: b.partial === true || b.partial === 'true', neededBy: A.date(b.neededBy), warehouseId: await whParam(req, b.warehouseId) });
   await A.logActivity(req.org.id, req.user.id, 'stock', `Stock réservé pour ${d.number} (${out.length} article(s))`);
   res.status(201).json({ reserved: out, short, ignoredLines: ignored });
 });

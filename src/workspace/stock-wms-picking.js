@@ -115,13 +115,13 @@ router.post('/picks', A.need('manager'), async (req, res) => {
     // mise de côté : la commande réserve (rejouable) ; une liste libre réserve pour elle-même
     const got = new Map(); for (const l of lines) got.set(l.it.id, W.round3((got.get(l.it.id) || 0) + l.q));
     if (doc) {
-      const rv = await W.reserveDocument(req, doc, { partial: true, minimum: got });
+      const rv = await W.reserveDocument(req, doc, { partial: true, minimum: got, warehouseId: wh ? wh.id : null });
       if (rv.short.length) throw new HttpError(409, `Stock à promettre insuffisant (une partie est réservée pour d'autres) : ${rv.short.map((x) => `« ${x.name} » ${x.available} disponible(s) pour ${x.wanted}`).join(' ; ')}.`);
     }
     else for (const [itemId, q] of got) {
       const a = (await W.availabilityMap(req.org.id)).get(itemId);
       if (q - a.available > W.EPS) throw new HttpError(409, `« ${needs.find((n) => n.it.id === itemId).it.name} » : ${a.available} disponible(s) à promettre seulement (le reste est réservé).`);
-      await db.prepare("INSERT INTO wms_reservations (org_id, item_id, quantity, source_kind, source_id, label, created_by, created_at) VALUES (?, ?, ?, 'pick', ?, ?, ?, ?)").run(req.org.id, itemId, q, pid, `Préparation ${code}`, req.user.id, nowISO());
+      await db.prepare("INSERT INTO wms_reservations (org_id, item_id, quantity, source_kind, source_id, label, created_by, created_at, warehouse_id) VALUES (?, ?, ?, 'pick', ?, ?, ?, ?, ?)").run(req.org.id, itemId, q, pid, `Préparation ${code}`, req.user.id, nowISO(), wh ? wh.id : null);
     }
     return pid;
   })();

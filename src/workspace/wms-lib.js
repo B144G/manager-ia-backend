@@ -291,6 +291,20 @@ async function reservedGuard(it, qty, covered = 0) {
   }
 }
 
+/** Stock utilisable d'un article dans un entrepôt, et part réservée pour CET entrepôt (réservations qui le visent). */
+const whUsable = async (itemId, whId) => round3((await db.prepare(`SELECT COALESCE(SUM(v.quantity), 0) q FROM wms_levels v JOIN wms_locations l ON l.id = v.location_id WHERE v.item_id = ? AND l.warehouse_id = ? AND l.kind IN ('storage','picking','reception')`).get(itemId, whId)).q);
+const whReserved = async (itemId, whId) => round3((await db.prepare("SELECT COALESCE(SUM(quantity - fulfilled_qty), 0) q FROM wms_reservations WHERE item_id = ? AND warehouse_id = ? AND status = 'active'").get(itemId, whId)).q);
+/** Une sortie de `qty` de cet entrepôt ne doit pas entamer ce qui y est réservé (`covered` : part qui consomme justement une de ces réservations). */
+async function whGuard(it, whId, qty, covered = 0) {
+  const res = await whReserved(it.id, whId);
+  if (res <= EPS) return;
+  const usable = await whUsable(it.id, whId);
+  if (usable - res + covered + EPS < qty) {
+    const wh = await db.prepare('SELECT name FROM wms_warehouses WHERE id = ?').get(whId);
+    throw new HttpError(409, `« ${it.name} » : dans l'entrepôt « ${wh ? wh.name : ''} », ${Math.max(round3(usable - res + covered), 0)} ${it.unit} seulement ne sont pas réservés pour cet entrepôt (${usable} utilisables, ${round3(res - covered)} réservés). Libérez une réservation ou réduisez la quantité.`);
+  }
+}
+
 /**
  * Sortie de stock disponible : consomme les réservations visées (réservation précisée, ou commande liée à la livraison) puis vérifie
  * que le reste ne mord pas sur d'autres réservations. Appelée par adjust() ; la ligne de réservation est verrouillée.
@@ -316,6 +330,12 @@ async function takeOut(req, it, qty, opts = {}) {
     if (take > EPS) { uses.push({ r, take }); covered = round3(covered + take); left = round3(left - take); }
   }
   await reservedGuard(it, qty, covered);
+  if (opts.parts) { // réservations par entrepôt : la sortie ne mord pas sur ce qui est réservé pour l'entrepôt d'où elle part
+    const whOf = new Map((await db.prepare('SELECT id, warehouse_id FROM wms_locations WHERE org_id = ?').all(orgId)).map((l) => [l.id, l.warehouse_id]));
+    const out = new Map();
+    for (const p of opts.parts) if (p.quantity < 0 && isUsable(p.kind)) out.set(whOf.get(p.locationId), round3((out.get(whOf.get(p.locationId)) || 0) - p.quantity));
+    for (const [w, q] of out) await whGuard(it, w, q, round3(uses.filter((u) => u.r.warehouse_id === w).reduce((a, u) => a + u.take, 0)));
+  }
   for (const u of uses) {
     const done = round3(u.r.fulfilled_qty + u.take);
     const full = done + EPS >= u.r.quantity;
@@ -328,7 +348,7 @@ async function takeOut(req, it, qty, opts = {}) {
  * Réserve (ou met à jour) le stock d'une commande / devis / facture : une réservation par article, quantités des lignes rattachées à un article du stock.
  * Rejouable (n'ajoute jamais deux fois). `partial` : réserve ce qui est disponible au lieu de tout refuser.
  */
-async function reserveDocument(req, d, { partial = false, neededBy = null, minimum = null } = {}) {
+async function reserveDocument(req, d, { partial = false, neededBy = null, minimum = null, warehouseId = null } = {}) {
   const want = new Map(); let ignored = 0;
   if (minimum) for (const [k, v] of minimum) want.set(k, v);
   else for (const l of JSON.parse(d.lines)) {
@@ -347,15 +367,16 @@ async function reserveDocument(req, d, { partial = false, neededBy = null, minim
       const cur = await db.prepare("SELECT * FROM wms_reservations WHERE org_id = ? AND item_id = ? AND source_kind = 'document' AND source_id = ? AND status = 'active' FOR UPDATE").get(req.org.id, itemId, d.id);
       const have = cur ? round3(cur.quantity - cur.fulfilled_qty) : 0;
       const target = minimum ? Math.max(want.get(itemId), have) : want.get(itemId);
-      const room = round3(a.available + have); // ce que cette commande peut au plus réserver
+      let room = round3(a.available + have); // ce que cette commande peut au plus réserver
+      if (warehouseId) room = Math.min(room, round3((await whUsable(itemId, warehouseId)) - ((await whReserved(itemId, warehouseId)) - (cur && cur.warehouse_id === warehouseId ? have : 0))));
       const get = partial ? Math.min(target, room) : target;
       if (get - room > EPS) { short.push({ itemId, name: it.name, wanted: target, available: room }); continue; }
       if (cur) {
         if (Math.abs(get - have) > EPS) await db.prepare('UPDATE wms_reservations SET quantity = ? WHERE id = ?').run(round3(cur.fulfilled_qty + get), cur.id);
         out.push({ itemId, name: it.name, reserved: get, reservationId: cur.id });
       } else if (get > EPS) {
-        const rid = Number((await db.prepare("INSERT INTO wms_reservations (org_id, item_id, quantity, source_kind, source_id, label, needed_by, created_by, created_at) VALUES (?, ?, ?, 'document', ?, ?, ?, ?, ?)")
-          .run(req.org.id, itemId, get, d.id, `${d.number} · ${d.customer || ''}`.slice(0, 150), neededBy || d.due || null, req.user.id, stamp())).lastInsertRowid);
+        const rid = Number((await db.prepare("INSERT INTO wms_reservations (org_id, item_id, quantity, source_kind, source_id, label, needed_by, created_by, created_at, warehouse_id) VALUES (?, ?, ?, 'document', ?, ?, ?, ?, ?, ?)")
+          .run(req.org.id, itemId, get, d.id, `${d.number} · ${d.customer || ''}`.slice(0, 150), neededBy || d.due || null, req.user.id, stamp(), warehouseId)).lastInsertRowid);
         out.push({ itemId, name: it.name, reserved: get, reservationId: rid });
       }
       if (partial && get + EPS < target) short.push({ itemId, name: it.name, wanted: target, available: room });
@@ -384,4 +405,4 @@ async function integrity(orgId) {
     FROM stock_items i WHERE i.org_id = ? AND ABS(i.quantity - COALESCE((SELECT SUM(v.quantity) FROM wms_levels v WHERE v.item_id = i.id), 0)) > 0.0005`).all(orgId);
 }
 
-module.exports = { reserveDocument, DEFAULTS, settings, saveSettings, allocate, ensureReturns, sweep, reservedQty, availabilityMap, takeOut, releaseForDocument, nextCode, warehouseDefault, planFromWarehouse, reservedGuard, locationFor, LOCATION_KINDS, ZONE_KINDS, USABLE_KINDS, isUsable, ensureDefault, ensureTransit, locationOf, levelRows, levelAt, usableQty, bump, reconcile, room, putawayParts, plan, applyPlan, logMove, relocate, lockItem, integrity, round3, EPS };
+module.exports = { whUsable, whReserved, whGuard, reserveDocument, DEFAULTS, settings, saveSettings, allocate, ensureReturns, sweep, reservedQty, availabilityMap, takeOut, releaseForDocument, nextCode, warehouseDefault, planFromWarehouse, reservedGuard, locationFor, LOCATION_KINDS, ZONE_KINDS, USABLE_KINDS, isUsable, ensureDefault, ensureTransit, locationOf, levelRows, levelAt, usableQty, bump, reconcile, room, putawayParts, plan, applyPlan, logMove, relocate, lockItem, integrity, round3, EPS };

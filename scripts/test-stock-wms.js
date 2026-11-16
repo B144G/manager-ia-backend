@@ -1264,6 +1264,45 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   await trackCoh('sorties de séries');
 
   // =====================================================================================================
+  // RÉSERVATIONS PAR ENTREPÔT
+  // =====================================================================================================
+  const pile = await newItem('Pile', { unitCost: 100 });
+  await mgr('POST', `${S}/items/${pile}/move`, { kind: 'in', quantity: 10, unitCost: 100, locationId: PRINC });
+  await mgr('POST', `${S}/items/${pile}/move`, { kind: 'in', quantity: 10, unitCost: 100, locationId: A0101 });
+  r = await mgr('POST', RS, { itemId: pile, quantity: 8, label: 'Chantier Douala', kind: 'manual', warehouseId: whDlaId });
+  const rsW = r.json.id;
+  check('réservation pour l\'entrepôt de Douala (8 sur 10)', r.status === 201, r.json);
+  r = await mgr('POST', RS, { itemId: pile, quantity: 5, label: 'Encore Douala', kind: 'manual', warehouseId: whDlaId });
+  check('réserver 5 de plus pour Douala (2 libres seulement) → 409', r.status === 409 && /entrepôt/.test(r.json.error), r.json);
+  r = await mgr('POST', RS, { itemId: pile, quantity: 5, label: 'Siège', kind: 'manual', warehouseId: whPrinc });
+  check('réserver 5 pour l\'entrepôt principal → ok', r.status === 201, r.json);
+  const rsP = r.json.id;
+  r = await mgr('POST', RS, { itemId: pile, quantity: 1, label: 'x', kind: 'manual', warehouseId: 99999 });
+  check('entrepôt inconnu → 404', r.status === 404, r.status);
+  r = await mem('GET', `${W}/items/${pile}/availability`);
+  const aw = Object.fromEntries(r.json.warehouses.map((w) => [w.warehouseId, w]));
+  check('disponibilité par entrepôt : Douala 10 utilisables, 8 réservés, 2 libres ; principal 10, 5, 5', aw[whDlaId].usable === 10 && aw[whDlaId].reserved === 8 && aw[whDlaId].available === 2 && aw[whPrinc].reserved === 5 && aw[whPrinc].available === 5, r.json.warehouses);
+  r = await mem('POST', `${S}/items/${pile}/move`, { kind: 'out', quantity: 3, locationId: A0101 });
+  check('sortie de Douala de 3 (2 libres, 8 réservés pour Douala) → 409', r.status === 409 && /entrepôt/.test(r.json.error) && (await qtyOf(pile)) === 20, r.json);
+  r = await mem('POST', `${S}/items/${pile}/move`, { kind: 'out', quantity: 2, locationId: A0101 });
+  check('sortie de Douala de 2 → ok', r.status === 200, r.json);
+  r = await mem('POST', `${S}/items/${pile}/move`, { kind: 'out', quantity: 6, locationId: PRINC });
+  check('sortie du principal de 6 (5 libres) → 409', r.status === 409, r.json);
+  r = await mem('POST', T, { fromWarehouseId: whDlaId, toWarehouseId: whPrinc, lines: [{ itemId: pile, quantity: 1 }] });
+  const trW = r.json.id;
+  r = await owner('POST', `${T}/${trW}/ship`, {});
+  check('transfert hors de Douala du stock réservé pour Douala → 409', r.status === 409 && /entrepôt/.test(r.json.error), r.json);
+  await mgr('POST', `${T}/${trW}/cancel`, {});
+  r = await mem('POST', `${W}/move`, { itemId: pile, fromLocationId: A0101, toLocationId: PRINC, quantity: 1 });
+  check('déplacement de Douala vers le principal du stock réservé → 409', r.status === 409, r.json);
+  r = await mgr('POST', `${RS}/${rsW}/fulfill`, { quantity: 8, locationId: A0101 });
+  check('livrer la réservation de Douala depuis Douala → ok (8 sortis)', r.status === 200 && r.json.status === 'fulfilled' && (await qtyOf(pile)) === 10, r.json);
+  r = await mem('POST', `${S}/items/${pile}/move`, { kind: 'out', quantity: 5, locationId: PRINC });
+  check('une fois livrée, plus rien de réservé à Douala ; le principal garde ses 5 réservés (5 libres)', r.status === 200, r.json);
+  await mgr('POST', `${RS}/${rsP}/release`, {});
+  await coherent('réservations par entrepôt');
+
+  // =====================================================================================================
   // SUPPRESSION D'UNE ORGANISATION : tout le stock d'entrepôt part avec elle (aucune ligne orpheline, aucune erreur)
   // =====================================================================================================
   const ownerId = (await dbx.prepare('SELECT owner_id FROM orgs WHERE id = ?').get(org)).owner_id;

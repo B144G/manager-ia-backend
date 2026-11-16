@@ -111,6 +111,7 @@ router.post('/transfers/:id/ship', A.need('manager'), async (req, res) => {
       if (it.tracking === 'serial' && !Number.isInteger(q)) throw new HttpError(400, `« ${it.name} » est suivi par numéro de série : la quantité est un nombre entier.`);
       const parts = l.from_location_id ? [{ locationId: l.from_location_id, quantity: q }] : await W.planFromWarehouse(it, t.from_warehouse_id, q);
       await W.reservedGuard(it, q);
+      await W.whGuard(it, t.from_warehouse_id, q); // pas de stock réservé pour l'entrepôt de départ
       for (const p of parts) await W.relocate(req, it, p.locationId, transit.id, p.quantity, { kind: 'transfer_out', reason: `Expédition ${t.code}`, refKind: 'transfer', refId: t.id, allowTransit: true });
       await db.prepare('UPDATE wms_transfer_lines SET shipped_qty = ?, src = ?, unit_value = ? WHERE id = ?').run(q, JSON.stringify(parts), L.unitValue(it), l.id);
       any++;

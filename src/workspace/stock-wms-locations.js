@@ -255,7 +255,8 @@ router.post('/move', async (req, res) => {
     if (it.tracking === 'serial' && !Number.isInteger(qty)) throw new HttpError(400, `« ${it.name} » est suivi par numéro de série : la quantité est un nombre entier.`);
     await W.reconcile(req.org.id, it);
     // Un déplacement ne doit pas faire passer du stock réservé hors des emplacements disponibles.
-    if (W.isUsable(from.kind) && !W.isUsable(to.kind) && W.reservedGuard) await W.reservedGuard(it, qty);
+    if (W.isUsable(from.kind) && !W.isUsable(to.kind)) await W.reservedGuard(it, qty);
+    if (W.isUsable(from.kind) && (!W.isUsable(to.kind) || to.warehouse_id !== from.warehouse_id)) await W.whGuard(it, from.warehouse_id, qty); // réservations d'entrepôt
     await W.relocate(req, it, from.id, to.id, qty, { kind: 'move', reason: A.text(b.reason, 150) || 'Déplacement interne', lotId: b.lotId ? A.id(b.lotId, 'Lot invalide.') : undefined, serials: it.tracking === 'serial' && b.serials ? L.parseSerials(b.serials) : undefined });
   })();
   res.json({ ok: true });
