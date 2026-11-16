@@ -1303,6 +1303,60 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   await coherent('réservations par entrepôt');
 
   // =====================================================================================================
+  // INVENTAIRE PAR EMPLACEMENT ET À L'AVEUGLE
+  // =====================================================================================================
+  const LC = `${W}/location-counts`;
+  const cpt = await newItem('Compté ici', { unitCost: 100 }); const cpt2 = await newItem('Compté aussi', { unitCost: 50 }); const cptAbs = await newItem('Pas attendu', { unitCost: 10 });
+  await mgr('POST', `${S}/items/${cpt}/move`, { kind: 'in', quantity: 10, unitCost: 100, locationId: A0102 });
+  await mgr('POST', `${S}/items/${cpt}/move`, { kind: 'in', quantity: 7, unitCost: 100, locationId: B0101 });
+  await mgr('POST', `${S}/items/${cpt2}/move`, { kind: 'in', quantity: 4, unitCost: 50, locationId: A0102 });
+  r = await mem('POST', LC, { locationId: A0102 });
+  check('droits : un membre n\'ouvre pas d\'inventaire d\'emplacement', r.status === 403, r.status);
+  r = await other('POST', `${W2}/location-counts`, { locationId: A0102 });
+  check('isolation : emplacement d\'une autre organisation → 404', r.status === 404, r.status);
+  const emptyLoc = (await mgr('POST', `${W}/locations`, { warehouseId: whDlaId, code: 'VIDE-9' })).json.id;
+  r = await mgr('POST', LC, { locationId: emptyLoc });
+  check('emplacement vide sans article attendu → 400', r.status === 400, r.status);
+  const qtyAt = async (item, loc) => ((await levels(item)).levels.find((l) => l.locationId === loc) || { quantity: 0 }).quantity;
+  const beforeValue = await itemsValue(org);
+  r = await mgr('POST', LC, { locationId: A0102, blind: true, itemIds: [cptAbs] });
+  const lc1 = r.json.id;
+  check('inventaire de l\'emplacement A-01-02 (à l\'aveugle) ouvert, articles déjà présents ajoutés', r.status === 201 && lc1 > 0, r.json);
+  r = await mgr('POST', LC, { locationId: B0101 });
+  check('un autre inventaire en cours → 409', r.status === 409, r.status);
+  r = await mem('GET', `${S}/counts/${lc1}`);
+  const cl1 = r.json.count;
+  const mine = cl1.items.find((x) => x.itemId === cpt);
+  check('à l\'aveugle : quantité attendue et écart cachés pendant le comptage', cl1.blind === true && cl1.location === 'A-01-02' && mine.expected === null && mine.gap === null && cl1.withGap === undefined, cl1);
+  check('l\'inventaire porte les articles de l\'emplacement (pas ceux d\'ailleurs)', cl1.items.some((x) => x.itemId === cpt) && cl1.items.some((x) => x.itemId === cpt2) && cl1.items.some((x) => x.itemId === cptAbs), cl1.items.map((x) => x.name));
+  r = await mgr('POST', `${LC}/${lc1}/lines`, { itemId: bas });
+  check('ajouter un article trouvé sur place', r.status === 201 && r.json.added === 1, r.json);
+  // comptage : cpt 9 (au lieu de 10), cpt2 4 (ok), pas attendu 3 (surplus), riz 0
+  await mem('PUT', `${S}/counts/${lc1}/lines`, { lines: [{ itemId: cpt, counted: 9 }, { itemId: cpt2, counted: 4 }, { itemId: cptAbs, counted: 3 }, { itemId: bas, counted: 0 }, ...(cl1.items.some((x) => x.itemId === riz) ? [{ itemId: riz, counted: await qtyAt(riz, A0102) }] : [])] });
+  await mem('POST', `${S}/counts/${lc1}/submit`, {});
+  r = await mgr('GET', `${S}/counts/${lc1}`);
+  const cs = r.json.count;
+  check('après soumission, l\'attendu et les écarts apparaissent (−1, +3)', cs.items.find((x) => x.itemId === cpt).expected === 10 && cs.items.find((x) => x.itemId === cpt).gap === -1 && cs.items.find((x) => x.itemId === cptAbs).gap === 3, cs.items);
+  r = await mgr('POST', `${S}/counts/${lc1}/validate`, {});
+  check('un responsable qui a ouvert l\'inventaire ne le valide pas (sauf administrateur)', r.status === 403, r.status);
+  r = await owner('POST', `${S}/counts/${lc1}/validate`, {});
+  check('validation par l\'administrateur : 2 ajustements', r.status === 200 && r.json.adjusted === 2, r.json);
+  check('l\'écart ajuste l\'emplacement compté : A-01-02 : 9 et 3 ; B-01-01 (autre emplacement) inchangé à 7', (await qtyAt(cpt, A0102)) === 9 && (await qtyAt(cptAbs, A0102)) === 3 && (await qtyAt(cpt, B0101)) === 7 && (await qtyOf(cpt)) === 16, [await qtyAt(cpt, A0102), await qtyAt(cpt, B0101)]);
+  check('valorisation : −1 × 100 + 3 × 10 = −70', Math.abs((await itemsValue(org)) - beforeValue - (-100 + 30)) < 0.01, [beforeValue, await itemsValue(org)]);
+  await coherent('inventaire par emplacement');
+  // inventaire d'un emplacement pour un article suivi par lot : l'écart suit le lot présent là
+  await trackCoh('avant inventaire de lot');
+  r = await mgr('POST', LC, { locationId: PRINC, itemIds: [yog] });
+  const lc2 = r.json.id;
+  const ylines = (await mgr('GET', `${S}/counts/${lc2}`)).json.count.items;
+  await mgr('PUT', `${S}/counts/${lc2}/lines`, { lines: ylines.map((x) => ({ itemId: x.itemId, counted: x.itemId === yog ? Math.max(x.expected - 1, 0) : x.expected })) });
+  await mgr('POST', `${S}/counts/${lc2}/submit`, {});
+  r = await owner('POST', `${S}/counts/${lc2}/validate`, {});
+  check('inventaire d\'un emplacement : écart sur un article suivi par lot', r.status === 200, r.json);
+  await trackCoh('après inventaire de lot');
+  await coherent('inventaire de lot');
+
+  // =====================================================================================================
   // SUPPRESSION D'UNE ORGANISATION : tout le stock d'entrepôt part avec elle (aucune ligne orpheline, aucune erreur)
   // =====================================================================================================
   const ownerId = (await dbx.prepare('SELECT owner_id FROM orgs WHERE id = ?').get(org)).owner_id;

@@ -387,10 +387,12 @@ async function countView(req, c, withLines) {
   const mgr = A.can(req, 'manager');
   const lines = await db.prepare('SELECT l.*, i.name, i.unit, i.tracking FROM stock_count_lines l JOIN stock_items i ON i.id = l.item_id WHERE l.count_id = ? ORDER BY i.name COLLATE NOCASE').all(c.id);
   const gaps = lines.filter((l) => l.counted !== null).map((l) => ({ gap: Math.round((l.counted - l.expected) * 1000) / 1000, value: Math.round((l.counted - l.expected) * l.unit_value) }));
-  const out = { id: c.id, seq: c.seq, code: `INV-${c.created_at.slice(0, 4)}-${String(c.seq).padStart(3, '0')}`, status: c.status, cycleClass: c.cycle_class || '', note: c.note, createdAt: c.created_at, submittedAt: c.submitted_at, decidedAt: c.decided_at, decisionNote: c.decision_note, createdBy: c.created_by,
-    lines: lines.length, counted: lines.filter((l) => l.counted !== null).length, withGap: gaps.filter((g) => g.gap !== 0).length,
-    gapValue: mgr ? gaps.reduce((a, g) => a + g.value, 0) : undefined, shortValue: mgr ? gaps.filter((g) => g.value < 0).reduce((a, g) => a + g.value, 0) : undefined, surplusValue: mgr ? gaps.filter((g) => g.value > 0).reduce((a, g) => a + g.value, 0) : undefined };
-  if (withLines) out.items = lines.map((l) => ({ itemId: l.item_id, name: l.name, unit: l.unit, tracking: l.tracking, expected: l.expected, counted: l.counted, gap: l.counted === null ? null : Math.round((l.counted - l.expected) * 1000) / 1000, unitValue: mgr ? l.unit_value : undefined, gapValue: mgr && l.counted !== null ? Math.round((l.counted - l.expected) * l.unit_value) : undefined }));
+  const hide = Boolean(c.blind) && c.status === 'open'; // comptage à l'aveugle : les quantités attendues ne sont pas montrées pendant le comptage
+  const loc = c.location_id ? await db.prepare('SELECT code FROM wms_locations WHERE id = ?').get(c.location_id) : null;
+  const out = { blind: Boolean(c.blind), locationId: c.location_id || null, location: loc ? loc.code : null, id: c.id, seq: c.seq, code: `INV-${c.created_at.slice(0, 4)}-${String(c.seq).padStart(3, '0')}`, status: c.status, cycleClass: c.cycle_class || '', note: c.note, createdAt: c.created_at, submittedAt: c.submitted_at, decidedAt: c.decided_at, decisionNote: c.decision_note, createdBy: c.created_by,
+    lines: lines.length, counted: lines.filter((l) => l.counted !== null).length, withGap: hide ? undefined : gaps.filter((g) => g.gap !== 0).length,
+    gapValue: mgr && !hide ? gaps.reduce((a, g) => a + g.value, 0) : undefined, shortValue: mgr ? gaps.filter((g) => g.value < 0).reduce((a, g) => a + g.value, 0) : undefined, surplusValue: mgr ? gaps.filter((g) => g.value > 0).reduce((a, g) => a + g.value, 0) : undefined };
+  if (withLines) out.items = lines.map((l) => ({ itemId: l.item_id, name: l.name, unit: l.unit, tracking: l.tracking, expected: hide ? null : l.expected, counted: l.counted, gap: hide || l.counted === null ? null : Math.round((l.counted - l.expected) * 1000) / 1000, unitValue: mgr ? l.unit_value : undefined, gapValue: mgr && !hide && l.counted !== null ? Math.round((l.counted - l.expected) * l.unit_value) : undefined }));
   return out;
 }
 
@@ -451,7 +453,7 @@ router.post('/counts/:id/validate', A.need('manager'), async (req, res) => {
       if (!gap) continue;
       const it = await db.prepare('SELECT * FROM stock_items WHERE id = ? AND org_id = ?').get(l.item_id, req.org.id);
       if (!it || !A.visible(req, it)) continue;
-      await L.adjust(req, it, gap, `Inventaire #${c.seq} : ajustement`, { lotNo: `INV-${c.seq}`, refKind: 'count', refId: c.id, allowExpired: true });
+      await L.adjust(req, it, gap, `Inventaire #${c.seq} : ajustement`, { lotNo: `INV-${c.seq}`, refKind: 'count', refId: c.id, allowExpired: true, locationId: c.location_id || undefined });
       adjusted++; value += Math.round(gap * l.unit_value);
     }
     await db.prepare("UPDATE stock_counts SET status = 'validated', decided_by = ?, decided_at = ?, decision_note = ? WHERE id = ?").run(req.user.id, nowISO(), A.text((req.body || {}).note, 300), c.id);
