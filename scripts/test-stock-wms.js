@@ -1066,4 +1066,99 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await other('GET', `${W2}/reorder`);
   check('isolation : suggestions de l\'autre organisation sans nos articles', r.status === 200 && !r.json.suggestions.some((x) => x.itemId === f1), r.status);
   await coherent('fin du lot 8');
+
+  // =====================================================================================================
+  // LOT 10 · ÉTATS, EXPORTS CSV, CODES SCANNÉS
+  // =====================================================================================================
+  const RP = `${W}/reports`;
+  r = await mem('GET', `${RP}/valuation`);
+  check('droits : la valorisation est réservée aux responsables', r.status === 403, r.status);
+  r = await mgr('GET', `${RP}/valuation`);
+  const tv2 = await valueOf(org);
+  check('valorisation par emplacement : total = somme de tous les emplacements = valeur des articles', r.status === 200 && Math.abs(r.json.totalValue - tv2) <= r.json.lines.length && Math.abs(r.json.totalValue - r.json.itemsValue) <= r.json.lines.length, [r.json.totalValue, tv2, r.json.itemsValue]);
+  check('valorisation : sous-totaux par entrepôt et par emplacement cohérents', Math.abs(r.json.warehouses.reduce((a, w) => a + w.value, 0) - r.json.totalValue) < 1 && Math.abs(r.json.locations.reduce((a, l) => a + l.value, 0) - r.json.totalValue) < 1 && r.json.locations.some((l) => l.kind === 'transit' || l.kind === 'storage'), r.json.warehouses);
+  r = await owner('GET', `${O}/accounting/stock-valuation?date=${shift(0)}&nature=goods`);
+  const accNow = r.json.totalValue;
+  r = await mgr('GET', `${RP}/valuation`);
+  check('lien comptable : la valeur du rapport = valeur de stock de la comptabilité (à l\'arrondi par ligne près)', Math.abs(accNow - r.json.totalValue) <= r.json.lines.length, [accNow, r.json.totalValue]);
+  r = await mgr('GET', `${RP}/valuation?format=csv`);
+  check('export CSV : en-têtes, séparateur « ; », BOM, nom de fichier daté', r.status === 200 && /text\/csv/.test(r.headers.get('content-type')) && r.text.charCodeAt(0) === 0xFEFF && /^﻿Entrepôt;Emplacement;Type;Article/.test(r.text) && /attachment; filename="valorisation-stock-\d{4}-\d{2}-\d{2}\.csv"/.test(r.headers.get('content-disposition')), r.text.slice(0, 100));
+  const evil = await newItem('=HYPERLINK("http://x")', { unitCost: 5 });
+  await mgr('POST', `${S}/items/${evil}/move`, { kind: 'in', quantity: 1, unitCost: 5 });
+  r = await mgr('GET', `${RP}/valuation?format=csv`);
+  check('export CSV : une cellule qui commence par « = » est neutralisée (pas de formule)', r.text.includes(`;"'=HYPERLINK(`) && !/;"?=HYPERLINK/.test(r.text), r.text.split('\n').find((l) => /HYPERLINK/.test(l)));
+  r = await other('GET', `${W2}/reports/valuation`);
+  check('isolation : l\'autre organisation ne voit pas nos lignes', r.status === 200 && !r.json.lines.some((l) => l.item === 'Riz parfumé'), r.status);
+
+  // Rotation
+  r = await mgr('GET', `${RP}/rotation?days=365`);
+  const rotF = r.json.items.find((x) => x.itemId === f2);
+  check('rotation : Sucre (160 sortis en 8 semaines) a une rotation et une couverture calculées', rotF && rotF.consumedQty === 200 && rotF.turnover > 0 && rotF.coverDays > 0 && rotF.status !== 'dormant', rotF);
+  check('rotation : un article sans sortie est « dormant » (et compté)', r.json.items.some((x) => x.status === 'dormant' && x.quantity > 0) && r.json.dormant >= 1, r.json.dormant);
+  r = await mgr('GET', `${RP}/rotation?format=csv`);
+  check('rotation en CSV', r.status === 200 && /Rotation annuelle/.test(r.text), r.status);
+
+  // Ruptures
+  const zero = await newItem('Rupture sèche', { unitCost: 10, minQuantity: 3 });
+  const bas = await newItem('Presque fini', { unitCost: 10, minQuantity: 5 });
+  await mgr('POST', `${S}/items/${bas}/move`, { kind: 'in', quantity: 4 });
+  r = await mem('GET', `${RP}/stockouts`);
+  const so = Object.fromEntries(r.json.items.map((x) => [x.name, x]));
+  check('ruptures (même pour un membre) : rupture, sous le seuil, réservations non couvertes', r.status === 200 && so['Rupture sèche'].kind === 'out' && so['Presque fini'].kind === 'low' && so['Tube PVC'] && so['Tube PVC'].kind === 'short', Object.keys(so));
+  check('ruptures : un membre ne voit pas la valeur', so['Presque fini'].value === undefined, so['Presque fini']);
+  check('ruptures : décompte', r.json.counts.out >= 1 && r.json.counts.low >= 1 && r.json.counts.short >= 1, r.json.counts);
+  r = await mgr('GET', `${RP}/stockouts?format=csv`);
+  check('ruptures en CSV', r.status === 200 && /Rupture de stock/.test(r.text), r.status);
+
+  // Vieillissement : 10 il y a 200 jours, 5 il y a 10 jours, 3 sorties → 12 en stock : 5 récents + 7 anciens
+  const vieux = await newItem('Stock ancien', { unitCost: 100 });
+  await mgr('POST', `${S}/items/${vieux}/move`, { kind: 'in', quantity: 10, unitCost: 100 });
+  await dbx.prepare('UPDATE stock_moves SET created_at = ? WHERE item_id = ?').run(ago(200), vieux);
+  await mgr('POST', `${S}/items/${vieux}/move`, { kind: 'in', quantity: 5, unitCost: 100 });
+  const lastIn = (await dbx.prepare('SELECT MAX(id) id FROM stock_moves WHERE item_id = ?').get(vieux)).id;
+  await dbx.prepare('UPDATE stock_moves SET created_at = ? WHERE id = ?').run(ago(10), lastIn);
+  await mgr('POST', `${S}/items/${vieux}/move`, { kind: 'out', quantity: 3, reason: 'Vente' });
+  r = await mgr('GET', `${RP}/aging`);
+  const ag = r.json.items.find((x) => x.itemId === vieux);
+  check('vieillissement : 12 en stock = 5 (0-30 jours) + 7 (181-365 jours) ; valeur 1 200', r.status === 200 && ag.quantity === 12 && ag.buckets[0].quantity === 5 && ag.buckets[3].quantity === 7 && ag.stockValue === 1200, ag);
+  check('vieillissement : totaux par tranche = somme des articles', Math.abs(r.json.buckets.reduce((a, b) => a + b.value, 0) - r.json.totalValue) <= r.json.items.length, [r.json.buckets, r.json.totalValue]);
+  r = await mgr('GET', `${RP}/aging?format=csv`);
+  check('vieillissement en CSV', r.status === 200 && /Plus ancienne entrée/.test(r.text), r.status);
+  r = await mem('GET', `${RP}/aging`);
+  check('droits : vieillissement réservé aux responsables', r.status === 403, r.status);
+
+  // Journal des mouvements
+  r = await mem('GET', `${RP}/moves?itemId=${sac}`);
+  check('journal : un membre le lit, sans valeurs', r.status === 200 && r.json.moves.length > 3 && r.json.moves.every((m) => m.value === undefined), r.json.moves.length);
+  check('journal : entrées, sorties et déplacements internes réunis (transfert, perte)', r.json.moves.some((m) => m.type === 'internal' && /Transfert/.test(m.label)) && r.json.moves.some((m) => m.type === 'out' && /Écart de transfert/.test(m.reason)) && r.json.moves.some((m) => m.type === 'in'), r.json.moves.map((m) => m.label));
+  const dates = r.json.moves.map((m) => m.at); check('journal : du plus récent au plus ancien', JSON.stringify(dates) === JSON.stringify([...dates].sort().reverse()), dates.slice(0, 3));
+  r = await mgr('GET', `${RP}/moves?itemId=${sac}&kind=internal`);
+  check('journal filtré : seulement les déplacements internes, valeurs visibles pour un responsable', r.json.moves.length >= 3 && r.json.moves.every((m) => m.type === 'internal' && m.value !== undefined), r.json.moves.map((m) => m.type));
+  r = await mgr('GET', `${RP}/moves?locationId=${A0101}`);
+  check('journal filtré par emplacement', r.json.moves.length > 0 && r.json.moves.every((m) => m.from === 'A-01-01' || m.to === 'A-01-01'), r.json.moves.length);
+  r = await mgr('GET', `${RP}/moves?limit=2`);
+  check('journal : pagination', r.json.count === 2 && r.json.hasMore === true, r.json.count);
+  r = await mgr('GET', `${RP}/moves?from=2999-01-01`);
+  check('journal : filtre par date (rien dans le futur)', r.json.moves.length === 0, r.json.count);
+  r = await mgr('GET', `${RP}/moves?from=pas-une-date`);
+  check('journal : date invalide → 400', r.status === 400, r.status);
+  r = await mgr('GET', `${RP}/moves?format=csv&itemId=${sac}`);
+  check('journal en CSV', r.status === 200 && /Date;Type;Article/.test(r.text) && r.text.split('\r\n').length > 4, r.text.slice(0, 80));
+  r = await other('GET', `${W2}/reports/moves?itemId=${sac}`);
+  check('isolation : le journal de l\'autre organisation ne montre pas nos mouvements', r.status === 200 && r.json.moves.length === 0, r.json.count);
+
+  // Résolution d'un code scanné
+  r = await mem('GET', `${W}/scan?code=SAV-0001`);
+  check('scan : code-barres d\'un article', r.status === 200 && r.json.type === 'item' && r.json.id === savon, r.json);
+  r = await mem('GET', `${W}/scan?code=a-01-01`);
+  check('scan : code d\'emplacement', r.json.type === 'location' && r.json.id === A0101, r.json);
+  r = await mem('GET', `${W}/scan?code=${(await mgr('GET', `${PK}/${pk1}`)).json.pick.code}`);
+  check('scan : liste de préparation', r.json.type === 'pick' && r.json.id === pk1, r.json);
+  r = await mem('GET', `${W}/scan?code=${code1}`);
+  check('scan : transfert', r.json.type === 'transfer' && r.json.id === tr1, r.json);
+  r = await mem('GET', `${W}/scan?code=INCONNU-1`);
+  check('scan : code inconnu → 404', r.status === 404, r.status);
+  r = await other('GET', `${W2}/scan?code=SAV-0001`);
+  check('isolation : un code d\'une autre organisation n\'est pas résolu', r.status === 404, r.status);
+  await coherent('fin du lot 10');
 });
