@@ -7,6 +7,7 @@
 const { db, nowISO } = require('../db');
 const { HttpError } = require('../util');
 const W = require('./wms-lib');
+const T = require('./wms-track');
 
 const round3 = (n) => Math.round(n * 1000) / 1000;
 const today = () => nowISO().slice(0, 10);
@@ -76,26 +77,41 @@ async function adjust(req, itemOrId, delta, reason, opts = {}) {
     const next = round3(it.quantity + delta);
     if (next < 0) throw new HttpError(400, `Stock insuffisant pour « ${it.name} » : il reste ${it.quantity} ${it.unit}.`);
     // Emplacements : où entre / d'où sort la quantité (la somme des emplacements reste égale à la quantité de l'article).
-    const parts = await W.plan(req, it, delta, opts);
+    // Lots et séries suivent leur emplacement : une sortie prend les lots (FEFO / FIFO) ou les séries là où ils se trouvent.
+    let allocations = []; let serials = []; let parts; let list = null;
+    if (it.tracking !== 'none') { await W.reconcile(req.org.id, it); await T.sync(it); }
+    if (delta < 0 && it.tracking === 'lot') {
+      const lo = await T.lotsOut(it, -delta, opts);
+      parts = lo.parts; allocations = lo.allocations;
+    } else if (delta < 0 && it.tracking === 'serial') {
+      if (!Number.isInteger(delta)) throw new HttpError(400, `« ${it.name} » est suivi par numéro de série : la quantité est un nombre entier.`);
+      list = parseSerials(opts.serials);
+      if (list.length !== Math.abs(delta)) throw new HttpError(400, `« ${it.name} » est suivi par numéro de série : indiquez exactement ${Math.abs(delta)} numéro(s) (${list.length} reçu(s)).`);
+      parts = await T.serialsOutParts(req.org.id, it, list, opts);
+      if (round3(-parts.reduce((a, x) => a + x.quantity, 0)) !== -delta) parts = await W.plan(req, it, delta, opts); // série inconnue : adjust refusera avec son message
+    } else parts = await W.plan(req, it, delta, opts);
     // Réservations : une sortie de stock disponible ne mord pas sur le stock réservé (sauf inventaire : une perte constatée est une réalité).
-    if (delta < 0 && opts.refKind !== 'count' && parts.some((p) => W.isUsable(p.kind))) await W.takeOut(req, it, -delta, opts);
-    let allocations = []; let serials = [];
+    if (delta < 0 && opts.refKind !== 'count' && parts.some((p) => W.isUsable(p.kind))) await W.takeOut(req, it, -delta, { ...opts, parts });
     if (it.tracking === 'lot') {
       if (delta > 0) {
         if (opts.allocations && opts.allocations.length) {
           for (const a of opts.allocations) await addToLot(req.org.id, it, { lotId: a.lotId, lotNo: a.lotNo, expiry: a.expiry, quantity: a.quantity, unitCost: opts.unitCost });
           allocations = opts.allocations;
+          await T.lotsIn(allocations, parts);
         } else {
           if (opts.strict && !String(opts.lotNo || '').trim()) throw new HttpError(400, `« ${it.name} » est suivi par lot : indiquez le numéro de lot.`);
           if (opts.expiry && !/^\d{4}-\d{2}-\d{2}$/.test(opts.expiry)) throw new HttpError(400, 'Date de péremption invalide (AAAA-MM-JJ).');
           const lotId = await addToLot(req.org.id, it, { lotNo: String(opts.lotNo || '').trim() || 'SANS-LOT', expiry: opts.expiry, quantity: delta, unitCost: opts.unitCost });
           allocations = [{ lotId, lotNo: String(opts.lotNo || '').trim() || 'SANS-LOT', expiry: opts.expiry || null, quantity: delta }];
+          await T.lotsIn(allocations, parts);
         }
-      } else allocations = await consumeLots(it, -delta, { allowExpired: opts.allowExpired });
+      }
     } else if (it.tracking === 'serial') {
-      if (!Number.isInteger(delta)) throw new HttpError(400, `« ${it.name} » est suivi par numéro de série : la quantité est un nombre entier.`);
-      const list = parseSerials(opts.serials);
-      if (list.length !== Math.abs(delta)) throw new HttpError(400, `« ${it.name} » est suivi par numéro de série : indiquez exactement ${Math.abs(delta)} numéro(s) (${list.length} reçu(s)).`);
+      if (list === null) {
+        if (!Number.isInteger(delta)) throw new HttpError(400, `« ${it.name} » est suivi par numéro de série : la quantité est un nombre entier.`);
+        list = parseSerials(opts.serials);
+        if (list.length !== Math.abs(delta)) throw new HttpError(400, `« ${it.name} » est suivi par numéro de série : indiquez exactement ${Math.abs(delta)} numéro(s) (${list.length} reçu(s)).`);
+      }
       const now = nowISO();
       for (const s of list) {
         const row = await db.prepare('SELECT * FROM stock_serials WHERE org_id = ? AND serial = ?').get(req.org.id, s);
@@ -110,6 +126,7 @@ async function adjust(req, itemOrId, delta, reason, opts = {}) {
         }
       }
       serials = list;
+      if (delta > 0) await T.serialsIn(req.org.id, list, parts);
     }
     // Coût moyen pondéré : seulement sur une entrée valorisée.
     let avg = Number(it.avg_cost) || 0;

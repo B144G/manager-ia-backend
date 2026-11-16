@@ -182,8 +182,12 @@ async function relocate(req, it, fromId, toId, qty, meta = {}) {
   const have = await levelAt(it.id, from.id);
   if (have + EPS < qty) throw new HttpError(400, `Pas assez de « ${it.name} » à l'emplacement ${from.code} : il y en a ${have} ${it.unit}.`);
   if (qty - (await room(to)) > EPS) throw new HttpError(400, `L'emplacement ${to.code} est plein (capacité ${to.capacity}).`);
+  const T = require('./wms-track'); // lots et séries suivent le déplacement
+  if (it.tracking !== 'none') await T.sync(it);
   await bump(req.org.id, it.id, from.id, -qty);
   await bump(req.org.id, it.id, to.id, qty);
+  if (it.tracking === 'lot') await T.moveLots(it, from.id, to.id, qty, meta.lotId);
+  else if (it.tracking === 'serial') await T.moveSerials(req.org.id, it, from.id, to.id, qty, meta.serials);
   await logMove(req, it, { from: from.id, to: to.id, quantity: qty, kind: meta.kind, reason: meta.reason, refKind: meta.refKind, refId: meta.refId });
 }
 

@@ -256,9 +256,21 @@ router.post('/move', async (req, res) => {
     await W.reconcile(req.org.id, it);
     // Un déplacement ne doit pas faire passer du stock réservé hors des emplacements disponibles.
     if (W.isUsable(from.kind) && !W.isUsable(to.kind) && W.reservedGuard) await W.reservedGuard(it, qty);
-    await W.relocate(req, it, from.id, to.id, qty, { kind: 'move', reason: A.text(b.reason, 150) || 'Déplacement interne' });
+    await W.relocate(req, it, from.id, to.id, qty, { kind: 'move', reason: A.text(b.reason, 150) || 'Déplacement interne', lotId: b.lotId ? A.id(b.lotId, 'Lot invalide.') : undefined, serials: it.tracking === 'serial' && b.serials ? L.parseSerials(b.serials) : undefined });
   })();
   res.json({ ok: true });
+});
+
+/** Où se trouvent les lots et les numéros de série d'un article (par emplacement). */
+router.get('/items/:id/tracking', async (req, res) => {
+  const it = await itemOf(req, req.params.id);
+  await W.ensureDefault(req.org.id);
+  await db.transaction(async () => { await W.lockItem(req.org.id, it.id); await W.reconcile(req.org.id, it); await require('./wms-track').sync(it); })();
+  const lots = await db.prepare('SELECT l.id, l.lot_no, l.expiry, l.quantity FROM stock_lots l WHERE l.item_id = ? AND l.quantity > 0 ORDER BY l.expiry IS NULL, l.expiry, l.id').all(it.id);
+  const cells = await db.prepare('SELECT c.lot_id, c.quantity, loc.code, loc.id AS lid FROM wms_lot_levels c JOIN wms_locations loc ON loc.id = c.location_id JOIN stock_lots l ON l.id = c.lot_id WHERE l.item_id = ? AND c.quantity > 0 ORDER BY loc.code').all(it.id);
+  const ser = await db.prepare("SELECT s.serial, loc.code, loc.id AS lid FROM stock_serials s LEFT JOIN wms_locations loc ON loc.id = s.location_id WHERE s.item_id = ? AND s.status = 'in_stock' ORDER BY s.id").all(it.id);
+  res.json({ tracking: it.tracking, lots: lots.map((l) => ({ id: l.id, lotNo: l.lot_no, expiry: l.expiry, quantity: l.quantity, locations: cells.filter((c) => c.lot_id === l.id).map((c) => ({ locationId: c.lid, code: c.code, quantity: c.quantity })) })),
+    serials: ser.map((x) => ({ serial: x.serial, locationId: x.lid, location: x.code })) });
 });
 
 // ---------- Règles de rangement ----------

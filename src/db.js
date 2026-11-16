@@ -2929,6 +2929,69 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_wms_item_params_org ON wms_item_params(org_id);
   `,
+  /* STOCK WMS · lot 11 : lots et séries par emplacement, réservations par entrepôt, inventaire par emplacement (à l'aveugle), vagues de préparation, palettes (unités logistiques), colisage. */ `
+  CREATE TABLE wms_lot_levels (
+    lot_id BIGINT NOT NULL REFERENCES stock_lots(id) ON DELETE CASCADE,
+    location_id BIGINT NOT NULL REFERENCES wms_locations(id) ON DELETE CASCADE,
+    quantity DOUBLE PRECISION NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+    PRIMARY KEY (lot_id, location_id)
+  );
+  CREATE INDEX idx_wms_lot_levels_loc ON wms_lot_levels(location_id);
+  ALTER TABLE stock_serials ADD COLUMN location_id BIGINT;
+  ALTER TABLE wms_reservations ADD COLUMN warehouse_id BIGINT;
+  ALTER TABLE stock_counts ADD COLUMN location_id BIGINT;
+  ALTER TABLE stock_counts ADD COLUMN blind BIGINT NOT NULL DEFAULT 0;
+  CREATE TABLE wms_waves (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    label TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    closed_at TEXT,
+    UNIQUE (org_id, code)
+  );
+  ALTER TABLE wms_picks ADD COLUMN wave_id BIGINT REFERENCES wms_waves(id) ON DELETE SET NULL;
+  CREATE INDEX idx_wms_picks_wave ON wms_picks(wave_id);
+  CREATE TABLE wms_units (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'pallet',
+    location_id BIGINT NOT NULL REFERENCES wms_locations(id) ON DELETE CASCADE,
+    parent_id BIGINT REFERENCES wms_units(id) ON DELETE SET NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, code)
+  );
+  CREATE INDEX idx_wms_units_loc ON wms_units(location_id);
+  CREATE TABLE wms_unit_items (
+    unit_id BIGINT NOT NULL REFERENCES wms_units(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    quantity DOUBLE PRECISION NOT NULL CHECK (quantity > 0),
+    PRIMARY KEY (unit_id, item_id)
+  );
+  CREATE TABLE wms_packages (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    pick_id BIGINT NOT NULL REFERENCES wms_picks(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    weight DOUBLE PRECISION NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, code)
+  );
+  CREATE INDEX idx_wms_packages_pick ON wms_packages(pick_id);
+  CREATE TABLE wms_package_items (
+    package_id BIGINT NOT NULL REFERENCES wms_packages(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    quantity DOUBLE PRECISION NOT NULL CHECK (quantity > 0),
+    PRIMARY KEY (package_id, item_id)
+  );
+  `,
 ];
 
 

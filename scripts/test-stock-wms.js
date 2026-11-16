@@ -1195,6 +1195,75 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   await coherent('fin du lot 10');
 
   // =====================================================================================================
+  // LOT 11 · LOTS ET SÉRIES PAR EMPLACEMENT
+  // =====================================================================================================
+  const trackCoh = async (label) => {
+    const lotBad = await dbx.prepare(`SELECT l.id FROM stock_lots l WHERE ABS(l.quantity - COALESCE((SELECT SUM(c.quantity) FROM wms_lot_levels c WHERE c.lot_id = l.id), 0)) > 0.0005`).all();
+    const locBad = await dbx.prepare(`SELECT v.item_id, v.location_id FROM wms_levels v JOIN stock_items i ON i.id = v.item_id WHERE i.tracking = 'lot' AND ABS(v.quantity - COALESCE((SELECT SUM(c.quantity) FROM wms_lot_levels c JOIN stock_lots l ON l.id = c.lot_id WHERE l.item_id = v.item_id AND c.location_id = v.location_id), 0)) > 0.0005`).all();
+    const serBad = await dbx.prepare(`SELECT v.item_id, v.location_id FROM wms_levels v JOIN stock_items i ON i.id = v.item_id WHERE i.tracking = 'serial' AND v.quantity <> (SELECT COUNT(*) FROM stock_serials s WHERE s.item_id = v.item_id AND s.status = 'in_stock' AND s.location_id = v.location_id)`).all();
+    check(`lots et séries (${label}) : chaque lot et chaque emplacement concordent`, lotBad.length === 0 && locBad.length === 0 && serBad.length === 0, [lotBad, locBad, serBad]);
+  };
+  const yog = await newItem('Yaourt entrepôt', { tracking: 'lot', unitCost: 200, pickRule: 'fefo' });
+  await mgr('POST', `${S}/items/${yog}/move`, { kind: 'in', quantity: 10, lotNo: 'Y1', expiry: shift(10), unitCost: 200, locationId: A0101 });
+  await mgr('POST', `${S}/items/${yog}/move`, { kind: 'in', quantity: 10, lotNo: 'Y2', expiry: shift(40), unitCost: 200, locationId: B0101 });
+  await mgr('POST', `${S}/items/${yog}/move`, { kind: 'in', quantity: 5, lotNo: 'Y0', expiry: shift(-2), unitCost: 200, locationId: B0101 });
+  r = await mem('GET', `${W}/items/${yog}/tracking`);
+  const yl = Object.fromEntries(r.json.lots.map((l) => [l.lotNo, l]));
+  check('lots par emplacement : Y1 en A-01-01, Y2 et le périmé Y0 en B-01-01', yl.Y1.locations.length === 1 && yl.Y1.locations[0].code === 'A-01-01' && yl.Y2.locations[0].code === 'B-01-01' && yl.Y0.locations[0].quantity === 5, r.json.lots);
+  await trackCoh('entrées');
+  r = await mem('POST', `${W}/move`, { itemId: yog, fromLocationId: A0101, toLocationId: A0102, quantity: 4 });
+  r = await mem('GET', `${W}/items/${yog}/tracking`);
+  check('déplacer du lot Y1 de 4 : il suit (A-01-01 : 6, A-01-02 : 4)', r.json.lots.find((l) => l.lotNo === 'Y1').locations.map((c) => c.code + ':' + c.quantity).sort().join() === 'A-01-01:6,A-01-02:4', r.json.lots);
+  await trackCoh('déplacement');
+  r = await mem('POST', `${S}/items/${yog}/move`, { kind: 'out', quantity: 12 });
+  check('sortie FEFO : tout Y1 (10) puis 2 de Y2 ; le lot périmé reste', r.status === 200 && r.json.lots[0].lotNo === 'Y1' && r.json.lots[0].quantity === 10 && r.json.lots[1].lotNo === 'Y2' && r.json.lots[1].quantity === 2, r.json);
+  lv = await levels(yog);
+  check('emplacements : A-01-01 et A-01-02 vidés (lot Y1), B-01-01 garde 8 de Y2 + 5 de Y0', !lv.levels.some((l) => l.code.startsWith('A-01')) && lv.levels.find((l) => l.code === 'B-01-01').quantity === 13, lv);
+  await trackCoh('sortie FEFO');
+  r = await mem('POST', `${S}/items/${yog}/move`, { kind: 'out', quantity: 9 });
+  check('stock utilisable insuffisant hors périmé (8 + 5 périmés) → même message qu\'avant', r.status === 400 && /périmés/.test(r.json.error), r.json);
+  // transfert : les lots suivent vers « En transit » puis l'arrivée
+  await mgr('POST', `${S}/items/${yog}/move`, { kind: 'in', quantity: 6, lotNo: 'Y3', expiry: shift(90), unitCost: 200, locationId: A0101 });
+  r = await mem('POST', T, { fromWarehouseId: whDlaId, toWarehouseId: whPrinc, lines: [{ itemId: yog, quantity: 6, fromLocationId: A0101, toLocationId: PRINC }] });
+  const trY = r.json.id;
+  await owner('POST', `${T}/${trY}/ship`, {});
+  r = await mem('GET', `${W}/items/${yog}/tracking`);
+  check('en transit : le lot Y3 est dans « TRANSIT »', r.json.lots.find((l) => l.lotNo === 'Y3').locations[0].code === 'TRANSIT', r.json.lots.find((l) => l.lotNo === 'Y3'));
+  await trackCoh('en transit');
+  await mgr('POST', `${T}/${trY}/receive`, { lines: [{ lineId: (await mgr('GET', `${T}/${trY}`)).json.transfer.lines[0].id, receivedQty: 5, reason: 'Un pot cassé' }] });
+  r = await mem('GET', `${W}/items/${yog}/tracking`);
+  check('arrivée avec 1 manquant : Y3 à PRINCIPAL (5), le manquant est retiré du lot', r.json.lots.find((l) => l.lotNo === 'Y3').quantity === 5 && r.json.lots.find((l) => l.lotNo === 'Y3').locations[0].code === 'PRINCIPAL', r.json.lots.find((l) => l.lotNo === 'Y3'));
+  await trackCoh('arrivée avec écart');
+  // sortie dans un emplacement précis : seuls les lots qui y sont
+  r = await mem('POST', `${S}/items/${yog}/move`, { kind: 'out', quantity: 3, locationId: B0101 });
+  check('sortie dans B-01-01 : lot Y2 (le lot Y3 de PRINCIPAL n\'est pas touché)', r.status === 200 && r.json.lots.length === 1 && r.json.lots[0].lotNo === 'Y2', r.json);
+  r = await mem('POST', `${S}/items/${yog}/move`, { kind: 'out', quantity: 9, locationId: PRINC });
+  check('sortie plus grande que l\'emplacement → 400', r.status === 400, r.json);
+  // répartition cassée par une écriture directe : reconstruite au prochain mouvement
+  await dbx.prepare('DELETE FROM wms_lot_levels WHERE lot_id IN (SELECT id FROM stock_lots WHERE item_id = ?)').run(yog);
+  r = await mem('POST', `${S}/items/${yog}/move`, { kind: 'out', quantity: 1 });
+  check('répartition effacée : reconstruite, la sortie passe', r.status === 200, r.json);
+  await trackCoh('reconstruction');
+  // séries
+  const tel = await newItem('Radio', { tracking: 'serial', unitCost: 9000 });
+  await mgr('POST', `${S}/items/${tel}/move`, { kind: 'in', quantity: 2, serials: 'R1, R2', unitCost: 9000, locationId: A0101 });
+  await mgr('POST', `${S}/items/${tel}/move`, { kind: 'in', quantity: 1, serials: 'R3', unitCost: 9000, locationId: B0101 });
+  r = await mem('GET', `${W}/items/${tel}/tracking`);
+  check('séries par emplacement : R1 et R2 en A-01-01, R3 en B-01-01', JSON.stringify(r.json.serials.map((x) => x.serial + '@' + x.location)) === JSON.stringify(['R1@A-01-01', 'R2@A-01-01', 'R3@B-01-01']), r.json.serials);
+  await trackCoh('séries');
+  r = await mem('POST', `${W}/move`, { itemId: tel, fromLocationId: A0101, toLocationId: A0102, quantity: 1, serials: 'R2' });
+  r = await mem('GET', `${W}/items/${tel}/tracking`);
+  check('déplacer la série R2 : elle suit (A-01-02)', r.json.serials.find((x) => x.serial === 'R2').location === 'A-01-02', r.json.serials);
+  r = await mem('POST', `${W}/move`, { itemId: tel, fromLocationId: A0101, toLocationId: A0102, quantity: 1, serials: 'R3' });
+  check('déplacer une série qui n\'est pas là → 400', r.status === 400, r.json);
+  r = await mem('POST', `${S}/items/${tel}/move`, { kind: 'out', quantity: 1, serials: 'R3' });
+  lv = await levels(tel);
+  check('sortie de R3 : l\'emplacement B-01-01 est vidé (le niveau suit la série)', r.status === 200 && !lv.levels.some((l) => l.code === 'B-01-01') && lv.quantity === 2, lv);
+  r = await mem('POST', `${S}/items/${tel}/move`, { kind: 'out', quantity: 1, serials: 'R1', locationId: A0102 });
+  check('sortie de R1 en demandant A-01-02 (elle est en A-01-01) → 400', r.status === 400, r.json);
+  await trackCoh('sorties de séries');
+
+  // =====================================================================================================
   // SUPPRESSION D'UNE ORGANISATION : tout le stock d'entrepôt part avec elle (aucune ligne orpheline, aucune erreur)
   // =====================================================================================================
   const ownerId = (await dbx.prepare('SELECT owner_id FROM orgs WHERE id = ?').get(org)).owner_id;
