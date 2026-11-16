@@ -48,7 +48,7 @@
     "test:clients": "node scripts/test-admin-clients.js",
     "test:aifollow": "node scripts/test-ai-follow.js",
     "test:wave6": "node scripts/test-wave6-projects.js",
-    "test:purchasing": "node scripts/test-purchasing.js",
+    "test:purchasing": "node scripts/test-purchasing.js && node scripts/test-purchasing-wms.js",
     "test:wave4": "node scripts/test-wave4-negotiation.js && node scripts/test-wave4-followups.js && node scripts/test-wave4-relay.js",
     "test:wave3": "node scripts/test-wave3-hr.js && node scripts/test-wave3-ops.js && node scripts/test-wave3-support.js && node scripts/test-wave3-reports.js"
   },

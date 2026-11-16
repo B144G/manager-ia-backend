@@ -2737,7 +2737,8 @@ const MIGRATIONS = [
     reason TEXT NOT NULL DEFAULT '',
     lot_no TEXT NOT NULL DEFAULT '',
     expiry TEXT,
-    location_id BIGINT
+    location_id BIGINT,
+    qc_pending DOUBLE PRECISION NOT NULL DEFAULT 0
   );
   CREATE INDEX idx_pur_receipt_lines ON pur_receipt_lines(receipt_id);
   CREATE TABLE pur_invoices (

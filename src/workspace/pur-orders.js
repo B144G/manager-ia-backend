@@ -15,6 +15,7 @@ const { HttpError, isEmail, log, oneLine } = require('../util');
 
 const router = express.Router({ mergeParams: true });
 router.use(A.need('manager'));
+const wms = () => { try { return require('./wms-lib'); } catch { return null; } }; // module Stock WMS (emplacements) : facultatif
 
 const STATUSES = ['draft', 'approved', 'sent', 'partial', 'received', 'closed', 'cancelled'];
 const LABEL = { draft: 'Brouillon', approved: 'Approuvé', sent: 'Envoyé', partial: 'Partiellement reçu', received: 'Reçu', closed: 'Clos', cancelled: 'Annulé' };
@@ -224,7 +225,7 @@ async function receiptOf(req, id) {
 async function receiptView(req, r) {
   const o = await db.prepare('SELECT number, supplier_id, supplier_name FROM pur_orders WHERE id = ?').get(r.order_id);
   const lines = (await db.prepare(`SELECT rl.*, ol.description, ol.unit, ol.quantity AS ordered FROM pur_receipt_lines rl JOIN pur_order_lines ol ON ol.id = rl.order_line_id WHERE rl.receipt_id = ? ORDER BY rl.id`).all(r.id))
-    .map((l) => ({ id: Number(l.id), orderLineId: Number(l.order_line_id), description: l.description, unit: l.unit, ordered: Number(l.ordered), receivedQty: Number(l.received_qty), rejectedQty: Number(l.rejected_qty), reason: l.reason, lotNo: l.lot_no, expiry: l.expiry }));
+    .map((l) => ({ id: Number(l.id), orderLineId: Number(l.order_line_id), description: l.description, unit: l.unit, ordered: Number(l.ordered), receivedQty: Number(l.received_qty), rejectedQty: Number(l.rejected_qty), reason: l.reason, lotNo: l.lot_no, expiry: l.expiry, locationId: l.location_id === null ? null : Number(l.location_id), qcPending: Number(l.qc_pending) }));
   return { id: Number(r.id), number: r.number, orderId: Number(r.order_id), orderNumber: o.number, supplier: o.supplier_name, date: r.receipt_date, deliveryNote: r.delivery_note, note: r.note, receiver: await nameOf(r.created_by), createdAt: r.created_at, lines };
 }
 
@@ -261,7 +262,17 @@ router.post('/orders/:id/receipts', async (req, res) => {
       if (!loc) throw new HttpError(400, 'Emplacement inconnu.');
       locationId = Number(loc.id);
     }
-    todo.push({ ol, recv, rej, reason, lotNo: A.text(l.lotNo, 40), expiry: A.date(l.expiry), serials: l.serials, locationId });
+    let inspect = false;
+    if (l.inspection === true && recv > 0 && ol.item_id) {
+      // Contrôle qualité à l'entrée : la marchandise va en quarantaine (stock non disponible) jusqu'à l'inspection.
+      if (ol.tracking === 'serial') throw new HttpError(400, `« ${ol.description} » est suivi par numéro de série : le contrôle qualité à l'entrée n'est pas disponible pour ce type d'article.`);
+      const W = wms();
+      if (!W) throw new HttpError(400, "Le contrôle qualité à l'entrée demande le module Stock WMS (emplacements de quarantaine).");
+      const q = locationId ? await db.prepare("SELECT id FROM wms_locations WHERE id = ? AND org_id = ? AND kind = 'quarantine'").get(locationId, req.org.id) : await db.prepare("SELECT id FROM wms_locations WHERE org_id = ? AND kind = 'quarantine' AND active = 1 ORDER BY id LIMIT 1").get(req.org.id);
+      if (!q) throw new HttpError(400, "Aucun emplacement de quarantaine : créez-en un dans l'entrepôt (type « Quarantaine »).");
+      locationId = Number(q.id); inspect = true;
+    }
+    todo.push({ ol, recv, rej, reason, lotNo: A.text(l.lotNo, 40), expiry: A.date(l.expiry), serials: l.serials, locationId, inspect });
   }
   if (!todo.length) throw new HttpError(400, 'Aucune quantité reçue ou refusée : rien à enregistrer.');
   let rid; let number;
@@ -277,7 +288,7 @@ router.post('/orders/:id/receipts', async (req, res) => {
     number = await P.nextNumber(req.org.id, 'receipt', 'BR', date);
     rid = Number((await db.prepare('INSERT INTO pur_receipts (org_id, order_id, number, receipt_date, delivery_note, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, o.id, number, date, A.text(b.deliveryNote, 60), A.text(b.note, 500), req.user.id, nowISO())).lastInsertRowid);
     for (const t of todo) {
-      await db.prepare('INSERT INTO pur_receipt_lines (org_id, receipt_id, order_line_id, received_qty, rejected_qty, reason, lot_no, expiry, location_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, rid, t.ol.id, t.recv, t.rej, t.reason, t.lotNo, t.expiry, t.locationId);
+      await db.prepare('INSERT INTO pur_receipt_lines (org_id, receipt_id, order_line_id, received_qty, rejected_qty, reason, lot_no, expiry, location_id, qc_pending) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, rid, t.ol.id, t.recv, t.rej, t.reason, t.lotNo, t.expiry, t.locationId, t.inspect ? t.recv : 0);
       await db.prepare('UPDATE pur_order_lines SET received_qty = received_qty + ?, rejected_qty = rejected_qty + ? WHERE id = ?').run(t.recv, t.rej, t.ol.id);
       if (t.ol.item_id && t.recv > 0) {
         const serials = t.ol.tracking === 'serial' ? L.parseSerials(t.serials) : undefined;
@@ -319,6 +330,62 @@ router.get('/receipts/:id/pdf', async (req, res) => {
   });
   res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${v.number}.pdf"`, 'Cache-Control': 'private, no-store' });
   res.send(buf);
+});
+
+// ---------- Contrôle qualité à l'entrée (stock en quarantaine → rayonnage ou retour fournisseur) ----------
+router.get('/inspections', async (req, res) => {
+  const rows = await db.prepare(`SELECT rl.id, rl.qc_pending, rl.lot_no, rl.expiry, rl.location_id, r.id AS receipt_id, r.number AS receipt, r.receipt_date, ol.description, ol.unit, ol.item_id, o.number AS order_number, o.id AS order_id, COALESCE(s.name, o.supplier_name) AS supplier
+    FROM pur_receipt_lines rl JOIN pur_receipts r ON r.id = rl.receipt_id JOIN pur_order_lines ol ON ol.id = rl.order_line_id JOIN pur_orders o ON o.id = r.order_id LEFT JOIN suppliers s ON s.id = o.supplier_id
+    WHERE rl.org_id = ? AND rl.qc_pending > 0 ORDER BY rl.id`).all(req.org.id);
+  res.json({ inspections: rows.map((x) => ({ receiptLineId: Number(x.id), receiptId: Number(x.receipt_id), receipt: x.receipt, date: x.receipt_date, orderId: Number(x.order_id), order: x.order_number, supplier: x.supplier, description: x.description, unit: x.unit, itemId: x.item_id === null ? null : Number(x.item_id), pending: Number(x.qc_pending), lotNo: x.lot_no, expiry: x.expiry, locationId: x.location_id === null ? null : Number(x.location_id) })) });
+});
+router.post('/inspections', async (req, res) => {
+  const W = wms();
+  if (!W) throw new HttpError(400, "Le contrôle qualité à l'entrée demande le module Stock WMS.");
+  const b = req.body || {};
+  if (!Array.isArray(b.lines) || !b.lines.length) throw new HttpError(400, 'Indiquez les quantités contrôlées.');
+  const out = { accepted: 0, rejected: 0 }; const touched = new Set();
+  await db.transaction(async () => {
+    const seen = new Set();
+    for (const l of b.lines) {
+      const id = A.id(l && l.receiptLineId, 'Ligne de réception invalide.');
+      if (seen.has(id)) throw new HttpError(400, 'Une ligne de réception apparaît deux fois.');
+      seen.add(id);
+      const rl = await db.prepare(`SELECT rl.*, r.number AS receipt, r.order_id, ol.item_id, ol.description, ol.received_qty AS ol_recv FROM pur_receipt_lines rl JOIN pur_receipts r ON r.id = rl.receipt_id JOIN pur_order_lines ol ON ol.id = rl.order_line_id WHERE rl.id = ? AND rl.org_id = ? FOR UPDATE`).get(id, req.org.id);
+      if (!rl) throw new HttpError(404, 'Ligne de réception introuvable.');
+      const acc = l.acceptedQty === undefined || l.acceptedQty === '' ? 0 : A.qty(l.acceptedQty, { allowZero: true });
+      const rej = l.rejectedQty === undefined || l.rejectedQty === '' ? 0 : A.qty(l.rejectedQty, { allowZero: true });
+      if (acc === 0 && rej === 0) continue;
+      if (P.round3(acc + rej) > Number(rl.qc_pending) + 1e-9) throw new HttpError(400, `« ${rl.description} » : ${P.round3(acc + rej)} contrôlé(s) pour ${rl.qc_pending} en attente de contrôle.`);
+      const reason = A.text(l.reason, 200);
+      if (rej > 0 && !reason) throw new HttpError(400, `Indiquez le motif du refus pour « ${rl.description} ».`);
+      const it = await W.lockItem(req.org.id, rl.item_id);
+      if (acc > 0) {
+        let to = l.toLocationId ? await db.prepare("SELECT id FROM wms_locations WHERE id = ? AND org_id = ? AND kind IN ('storage', 'picking', 'reception') AND active = 1").get(A.id(l.toLocationId, 'Emplacement invalide.'), req.org.id)
+          : await db.prepare("SELECT id FROM wms_locations WHERE org_id = ? AND kind = 'storage' AND active = 1 AND warehouse_id = (SELECT warehouse_id FROM wms_locations WHERE id = ?) ORDER BY id LIMIT 1").get(req.org.id, rl.location_id);
+        if (!to) throw new HttpError(400, "Aucun emplacement de stockage disponible pour libérer cette marchandise : indiquez l'emplacement.");
+        await W.reconcile(req.org.id, it);
+        await W.relocate(req, it, Number(rl.location_id), Number(to.id), acc, { kind: 'putaway', reason: `Contrôle qualité ${rl.receipt} : accepté`, refKind: 'pur_inspection', refId: id });
+        out.accepted += acc;
+      }
+      if (rej > 0) {
+        // Le refusé repart chez le fournisseur : sortie du stock depuis la quarantaine, et la commande n'est plus considérée comme reçue pour cette quantité.
+        await L.adjust(req, it.id, -rej, `Contrôle qualité ${rl.receipt} : refusé, retour fournisseur (${reason})`.slice(0, 150), { locationId: Number(rl.location_id), refKind: 'pur_inspection', refId: id, allowExpired: true });
+        await db.prepare('UPDATE pur_order_lines SET received_qty = GREATEST(received_qty - ?, 0), rejected_qty = rejected_qty + ? WHERE id = ?').run(rej, rej, rl.order_line_id);
+        await db.prepare('UPDATE pur_receipt_lines SET rejected_qty = rejected_qty + ?, reason = ? WHERE id = ?').run(rej, reason, id);
+        out.rejected += rej; touched.add(Number(rl.order_id));
+      }
+      await db.prepare('UPDATE pur_receipt_lines SET qc_pending = qc_pending - ? WHERE id = ?').run(P.round3(acc + rej), id);
+    }
+    for (const oid of touched) {
+      const all = await db.prepare('SELECT quantity, received_qty FROM pur_order_lines WHERE order_id = ?').all(oid);
+      const done = all.every((x) => Number(x.received_qty) + 1e-9 >= Number(x.quantity));
+      await db.prepare("UPDATE pur_orders SET status = CASE WHEN status IN ('received', 'partial') THEN ? ELSE status END, updated_at = ? WHERE id = ?").run(done ? 'received' : 'partial', nowISO(), oid);
+    }
+  })();
+  if (!out.accepted && !out.rejected) throw new HttpError(400, 'Aucune quantité contrôlée : rien à enregistrer.');
+  await A.logActivity(req.org.id, req.user.id, 'purchasing', `Contrôle qualité : ${out.accepted} accepté(s), ${out.rejected} refusé(s)`);
+  res.json({ ok: true, ...out });
 });
 
 // ---------- Clôture, annulation ----------
