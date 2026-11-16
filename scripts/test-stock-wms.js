@@ -1165,4 +1165,27 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await other('GET', `${W2}/scan?code=SAV-0001`);
   check('isolation : un code d\'une autre organisation n\'est pas résolu', r.status === 404, r.status);
   await coherent('fin du lot 10');
+
+  // =====================================================================================================
+  // SUPPRESSION D'UNE ORGANISATION : tout le stock d'entrepôt part avec elle (aucune ligne orpheline, aucune erreur)
+  // =====================================================================================================
+  const ownerId = (await dbx.prepare('SELECT owner_id FROM orgs WHERE id = ?').get(org)).owner_id;
+  const orgX = Number((await dbx.prepare("INSERT INTO orgs (name, sector, description, currency, owner_id, intake_token, created_at) VALUES ('Société à supprimer', '', '', 'FCFA', ?, ?, ?)").run(ownerId, 'tok' + Date.now(), new Date().toISOString())).lastInsertRowid);
+  await dbx.prepare("INSERT INTO org_members (org_id, user_id, role, title, created_at) VALUES (?, ?, 'owner', 'Dirigeant', ?)").run(orgX, ownerId, new Date().toISOString());
+  {
+    const SX = `${ws(orgX)}/stock`; const WX = `${SX}/wms`;
+    const ix = (await owner('POST', `${SX}/items`, { name: 'Temp', unitCost: 10 })).json.id;
+    await owner('POST', `${SX}/items/${ix}/move`, { kind: 'in', quantity: 5, unitCost: 10 });
+    const whx = (await owner('POST', `${WX}/warehouses`, { name: 'Dépôt temporaire' })).json.id;
+    await owner('POST', `${WX}/reservations`, { itemId: ix, quantity: 1, label: 'x', kind: 'manual' });
+    const trx = (await owner('POST', `${WX}/transfers`, { fromWarehouseId: (await dbx.prepare('SELECT id FROM wms_warehouses WHERE org_id = ? AND is_default = 1').get(orgX)).id, toWarehouseId: whx, lines: [{ itemId: ix, quantity: 2 }] })).json.id;
+    await owner('POST', `${WX}/transfers/${trx}/ship`, {});
+    await owner('POST', `${WX}/returns`, { kind: 'scrap', reason: 'Test', validate: true, lines: [{ itemId: ix, quantity: 1, reasonCode: 'damaged' }] });
+    await owner('POST', `${WX}/receipts`, { lines: [{ itemId: ix, quantity: 2, unitCost: 10 }], costs: [{ kind: 'transport', amount: 20 }] });
+    await owner('POST', `${WX}/picks`, { label: 'p', lines: [{ itemId: ix, quantity: 1 }] });
+    r = await owner('DELETE', ws(orgX), { confirm: 'Société à supprimer' });
+    check('suppression d\'une organisation qui a des emplacements, transferts, réservations, retours, réceptions et listes → 200', r.status === 200, r.json);
+    const left = await dbx.prepare('SELECT (SELECT COUNT(*) FROM wms_levels WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_locations WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_warehouses WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_transfers WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_returns WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_receipts WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_picks WHERE org_id = ?) AS n').get(orgX, orgX, orgX, orgX, orgX, orgX, orgX);
+    check('rien d\'orphelin après la suppression', left.n === 0, left);
+  }
 });
