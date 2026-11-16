@@ -12,6 +12,7 @@ run('Achats × Stock WMS', async ({ check, owner, mgr, mem, other, org2, O, ws }
   const lotItem = (await owner('POST', `${O}/stock/items`, { name: 'Peinture 5 L', unit: 'pot', unitCost: 9000, tracking: 'lot' })).json.id;
   const serialItem = (await owner('POST', `${O}/stock/items`, { name: 'Imprimante', unit: 'pièce', unitCost: 90000, tracking: 'serial' })).json.id;
   const sup = (await mgr('POST', `${P}/suppliers`, { name: 'Céramiques du Wouri' })).json.id;
+  await mgr('GET', `${WM}/locations`); // crée l'entrepôt principal
   const loc = async (code, kind) => (await mgr('POST', `${WM}/locations`, { code, name: code, kind })).json.id;
   const rayon = await loc('A-01-01', 'storage'); const rayon2 = await loc('A-01-02', 'storage'); const quar = await loc('Q-01', 'quarantine');
   check('emplacements créés (2 rayonnages, 1 quarantaine)', rayon && rayon2 && quar, [rayon, rayon2, quar]);
