@@ -33,7 +33,7 @@ async function build(org, chatId) {
     const orders = (await db.prepare("SELECT number, total, lines FROM documents WHERE chat_id = ? AND kind = 'order' ORDER BY id DESC LIMIT 3").all(chat.id)).map((o) => `Commande ${o.number} : ${JSON.parse(o.lines).map((l) => `${l.label} × ${l.quantity}`).join(', ')} (total ${o.total} ${org.currency})`);
     const appts = (await db.prepare("SELECT date, time, purpose FROM appointments WHERE chat_id = ? AND status != 'cancelled' ORDER BY id DESC LIMIT 3").all(chat.id)).map((a) => `Rendez-vous demandé : ${a.date} à ${a.time}${a.purpose ? ' (' + a.purpose + ')' : ''}`);
     const data = [`Entreprise : ${org.name}.`, cu ? `Fiche client : ${cu.name}, tél. ${cu.phone || 'non donné'}, e-mail ${cu.email || 'non donné'}.` : 'Client non encore enregistré.', ...orders, ...appts, `Canal : ${chat.channel}.`, 'Conversation :', ...msgs].join('\n');
-    const raw = await claude.ask({ system: SYSTEM, messages: [{ role: 'user', content: `<donnees>\n${data}\n</donnees>` }], maxTokens: 700, tier: 'fast' });
+    const raw = await claude.ask({ system: SYSTEM, messages: [{ role: 'user', fenced: true, content: `<donnees>\n${data}\n</donnees>` }], maxTokens: 700, tier: 'fast' });
     await db.prepare('INSERT INTO ai_usage (org_id, user_id, created_at) VALUES (?, 0, ?)').run(org.id, nowISO());
     const j = extractJSON(raw);
     if (!j || typeof j.summary !== 'string') return null;

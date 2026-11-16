@@ -35,7 +35,7 @@ router.post('/assistant', limits.assistantMinute, daily, asyncHandler(async (req
   }
 
   try {
-    const text = await claude.ask({ stable: system, messages, maxTokens: 600, tier: 'fast' });
+    const text = await claude.ask({ stable: system, messages, maxTokens: 600, tier: 'fast', budget: 'site' });
     // L'affichage du site est en texte simple : on retire les marques de mise en forme Markdown.
     res.json({ text: text.replace(/\*\*(.+?)\*\*/gs, '$1').replace(/^#{1,6}\s+/gm, '').replace(/^\s*[-*]\s+/gm, '• ') });
   } catch (e) {

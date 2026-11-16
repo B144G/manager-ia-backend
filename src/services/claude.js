@@ -103,8 +103,13 @@ async function askModel({ system = '', stable = '', messages, maxTokens = 600, m
   return text;
 }
 
-async function ask({ system = '', stable = '', messages, maxTokens = 600, tier }) {
+async function ask({ system = '', stable = '', messages, maxTokens = 600, tier, budget }) {
   if (!isConfigured()) throw new HttpError(503, 'Assistant indisponible');
+  await require('../security/aibudget').charge(budget); // plafond de coût global / par portée (429 si dépassé)
+  const guard = require('../security/promptguard');
+  system = guard.fence(system); // une donnée ne peut pas « fermer » le bloc <donnees> et se faire passer pour une consigne
+  // Message construit par le code autour de données (fenced: true) : on neutralise seulement l'intérieur du bloc ; tout autre texte utilisateur perd ses balises de bloc.
+  messages = (messages || []).map(({ fenced, ...m }) => (typeof m.content === 'string' ? { ...m, content: fenced ? guard.fence(m.content) : guard.neutralizeTags(m.content) } : m));
   const c = config.ai;
   const primary = (tier === 'fast' && c.modelFast) || c.model;
   const models = [...new Set([primary, ...(c.modelFallbacks || [])])];

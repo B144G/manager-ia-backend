@@ -22,10 +22,15 @@ const { db } = require('../src/db');
     out.tables[t] = rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, Buffer.isBuffer(v) || v instanceof Uint8Array ? { $b64: Buffer.from(v).toString('base64') } : v])));
   }
   const file = path.join(dir, `manager-ia-${new Date().toISOString().replace(/[:.]/g, '-')}.json.gz`);
-  fs.writeFileSync(file, zlib.gzipSync(JSON.stringify(out)), { mode: 0o600 });
-  const all = fs.readdirSync(dir).filter((f) => /^manager-ia-.*\.json\.gz$/.test(f)).sort();
+  // La sauvegarde contient TOUTES les données : elle est chiffrée (AES-256-GCM) avec BACKUP_KEY, sinon DATA_KEY. Sans clé, on refuse d'écrire en clair (BACKUP_ALLOW_PLAIN=1 pour forcer).
+  const secret = process.env.BACKUP_KEY || config.dataKey;
+  let payload = zlib.gzipSync(JSON.stringify(out)); let finalFile = file;
+  if (secret) { const crypto = require('crypto'); const salt = crypto.randomBytes(16); const iv = crypto.randomBytes(12); const c = crypto.createCipheriv('aes-256-gcm', crypto.scryptSync(secret, salt, 32), iv); const ct = Buffer.concat([c.update(payload), c.final()]); payload = Buffer.concat([Buffer.from('MIABK1'), salt, iv, c.getAuthTag(), ct]); finalFile = file + '.enc'; }
+  else if (process.env.BACKUP_ALLOW_PLAIN !== '1') { console.error('Sauvegarde refusée : définissez BACKUP_KEY (ou DATA_KEY) pour la chiffrer, ou BACKUP_ALLOW_PLAIN=1 pour l\'écrire en clair.'); await db.close(); process.exit(1); }
+  fs.writeFileSync(finalFile, payload, { mode: 0o600 });
+  const all = fs.readdirSync(dir).filter((f) => /^manager-ia-.*\.json\.gz(\.enc)?$/.test(f)).sort();
   for (const old of all.slice(0, Math.max(0, all.length - keep))) fs.unlinkSync(path.join(dir, old));
   const total = Object.values(out.tables).reduce((a, r) => a + r.length, 0);
-  console.log(`Sauvegarde OK : ${file} (${Math.round(fs.statSync(file).size / 1024)} Ko, ${tables.length} tables, ${total} lignes, ${Math.min(all.length, keep)} copie(s) conservée(s))`);
+  console.log(`Sauvegarde OK : ${finalFile} (${Math.round(fs.statSync(finalFile).size / 1024)} Ko, ${tables.length} tables, ${total} lignes, ${Math.min(all.length, keep)} copie(s) conservée(s))`);
   await db.close();
 })().catch((e) => { console.error('Échec de la sauvegarde :', e.message); process.exit(1); });

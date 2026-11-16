@@ -3311,6 +3311,61 @@ const MIGRATIONS = [
   );
   CREATE INDEX idx_pur_evaluations ON pur_evaluations(org_id, supplier_id);
   `,
+  /* SÉCURITÉ ET CONFIDENTIALITÉ : verrouillage progressif, appareils connus, consentements, droits des personnes, budget IA, ancrage du journal d'audit, double authentification exigée par organisation, durées de conservation */ `
+  ALTER TABLE login_fails ADD COLUMN lock_level BIGINT NOT NULL DEFAULT 0;
+  CREATE TABLE login_devices (
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    fp TEXT NOT NULL,
+    ip TEXT NOT NULL DEFAULT '',
+    device TEXT NOT NULL DEFAULT '',
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    PRIMARY KEY (user_id, fp)
+  );
+  CREATE TABLE consents (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    version TEXT NOT NULL,
+    accepted BIGINT NOT NULL DEFAULT 1,
+    ip TEXT NOT NULL DEFAULT '',
+    at TEXT NOT NULL
+  );
+  CREATE INDEX idx_consents_user ON consents(user_id, kind, id);
+  CREATE TABLE data_requests (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    detail TEXT NOT NULL DEFAULT '',
+    requested_at TEXT NOT NULL,
+    due_at TEXT NOT NULL,
+    done_at TEXT
+  );
+  CREATE INDEX idx_data_requests_user ON data_requests(user_id, kind, status);
+  ALTER TABLE users ADD COLUMN erase_after TEXT;
+  ALTER TABLE users ADD COLUMN anonymized_at TEXT;
+  CREATE TABLE ai_budget (
+    day TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    calls BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, scope)
+  );
+  CREATE TABLE audit_checkpoints (
+    id BIGSERIAL PRIMARY KEY,
+    upto_id BIGINT NOT NULL,
+    hash TEXT NOT NULL,
+    at TEXT NOT NULL,
+    mac TEXT NOT NULL
+  );
+  ALTER TABLE orgs ADD COLUMN require_2fa BIGINT NOT NULL DEFAULT 0;
+  CREATE TABLE retention_rules (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    days BIGINT NOT NULL,
+    PRIMARY KEY (org_id, kind)
+  );
+  `,
 ];
 
 

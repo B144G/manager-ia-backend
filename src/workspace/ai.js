@@ -265,6 +265,17 @@ const IMG_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
 const TXT_MIME = new Set(['text/plain', 'text/csv', 'text/markdown', 'application/json']);
 // Une pièce jointe coûte plus qu'une simple question : elle consomme des messages en plus du message lui-même (une image ou un fichier texte : 1 ; un PDF : 8, car il peut peser très lourd côté IA).
 const ATT_UNITS = { image: 1, text: 1, pdf: 8 };
+/** Vérifie que le contenu correspond au type annoncé (le type envoyé par le navigateur ne prouve rien) : signature des images et PDF, texte UTF-8 sans octet nul. */
+function magicOk(mime, buf) {
+  const at = (off, sig) => sig.every((b, i) => buf[off + i] === b);
+  if (mime === 'image/png') return buf.length > 8 && at(0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  if (mime === 'image/jpeg') return buf.length > 3 && at(0, [0xff, 0xd8, 0xff]);
+  if (mime === 'image/gif') return buf.length > 6 && (buf.subarray(0, 6).toString('latin1') === 'GIF87a' || buf.subarray(0, 6).toString('latin1') === 'GIF89a');
+  if (mime === 'image/webp') return buf.length > 12 && buf.subarray(0, 4).toString('latin1') === 'RIFF' && buf.subarray(8, 12).toString('latin1') === 'WEBP';
+  if (mime === 'application/pdf') return buf.subarray(0, 1024).toString('latin1').includes('%PDF-');
+  if (buf.includes(0)) return false;
+  try { new TextDecoder('utf-8', { fatal: true }).decode(buf); return true; } catch { return false; }
+}
 function attachmentParts(list) {
   if (list === undefined || list === null) return { parts: [], names: [], extra: 0 };
   if (!Array.isArray(list) || list.length > ATT_MAX) throw new HttpError(400, `Au plus ${ATT_MAX} pièces jointes par message.`);
@@ -275,9 +286,10 @@ function attachmentParts(list) {
     if (!/^[A-Za-z0-9+/=]+$/.test(data) || !data.length) throw new HttpError(400, `Le fichier « ${name} » est illisible.`);
     const bytes = Math.floor(data.length * 3 / 4); total += bytes;
     if (total > ATT_BYTES) throw new HttpError(413, 'Les pièces jointes dépassent 8 Mo au total.');
+    if (IMG_MIME.has(mime) || mime === 'application/pdf' || TXT_MIME.has(mime)) { if (!magicOk(mime, Buffer.from(data, 'base64'))) throw new HttpError(400, `Le contenu du fichier « ${name} » ne correspond pas à son type : il est refusé.`); }
     if (IMG_MIME.has(mime)) { parts.push({ type: 'image', mime, data }); extra += ATT_UNITS.image; }
     else if (mime === 'application/pdf') { parts.push({ type: 'document', mime, data }); extra += ATT_UNITS.pdf; }
-    else if (TXT_MIME.has(mime)) { extra += ATT_UNITS.text; parts.push({ type: 'text', text: `[Contenu du fichier « ${name} »]\n${Buffer.from(data, 'base64').toString('utf8').slice(0, 12000)}` }); }
+    else if (TXT_MIME.has(mime)) { extra += ATT_UNITS.text; parts.push({ type: 'text', text: `[Contenu du fichier « ${name} »]\n${require('../security/promptguard').neutralizeTags(Buffer.from(data, 'base64').toString('utf8').slice(0, 12000))}` }); }
     else throw new HttpError(400, `Le type du fichier « ${name} » n'est pas accepté (images, PDF et fichiers texte).`);
     names.push(name);
   }

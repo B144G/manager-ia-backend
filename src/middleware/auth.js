@@ -29,6 +29,7 @@ async function setUserCookie(res, userId, req, { closeOthers = false } = {}) {
   if (!closeOthers) { // vraie connexion (pas un simple changement de mot de passe) : date de dernière connexion + chronologie
     await db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(new Date().toISOString(), userId);
     await require('../services/accounts').recordEvent(userId, 'connexion');
+    await require('../security/devices').noteLogin(req, userId); // appareil jamais vu : alerte au titulaire
   }
   const token = jwt.sign({ sub: userId, typ: 'user', sid, pc: (row && row.pass_changed_at) || '' }, config.jwtSecret, { algorithm: 'HS256', expiresIn: '30d' });
   res.cookie(USER_COOKIE, token, cookieOpts(USER_MAX_AGE));

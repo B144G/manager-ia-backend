@@ -131,7 +131,10 @@ orgRouter.put('/', A.need('admin'), async (req, res) => {
 orgRouter.delete('/', A.need('owner'), async (req, res) => {
   if ((req.body || {}).confirm !== req.org.name) throw new HttpError(400, "Pour supprimer, écrivez exactement le nom de l'organisation.");
   await require('../services/waWeb').dropOrg(req.org.id).catch(() => {}); // ferme la session WhatsApp par QR code ; la base efface le reste en cascade
-  await db.prepare('DELETE FROM orgs WHERE id = ?').run(req.org.id);
+  await db.transaction(async () => {
+    await require('../security/privacy').purgeOrgOrphans(req.org.id); // tables sans liaison en cascade : rien ne doit rester
+    await db.prepare('DELETE FROM orgs WHERE id = ?').run(req.org.id);
+  })();
   res.json({ ok: true });
 });
 

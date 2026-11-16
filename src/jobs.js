@@ -32,6 +32,9 @@ async function runOnce() {
   // 3) Nettoyage des vieilles données techniques
   await db.prepare('DELETE FROM conversations WHERE created_at < ?').run(addDays(new Date(), -90).toISOString());
   await require('./services/security').sweep();
+  await require('./security/privacy').runErasures().catch((e) => log.warn('Suppressions de comptes : ' + String(e.message).slice(0, 100))); // comptes dont le délai de réflexion est écoulé
+  await require('./security/privacy').purgeRetention().catch((e) => log.warn('Durées de conservation : ' + String(e.message).slice(0, 100)));
+  await require('./security/aibudget').sweep().catch(() => {});
   await require('./services/signedUrl').purge();
   await require('./services/accounts').sweep();
   await require('./services/alerts').sweep();

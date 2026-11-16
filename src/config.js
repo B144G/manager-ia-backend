@@ -23,9 +23,9 @@ const isProd = str('NODE_ENV') === 'production';
 
 // --- Secret JWT : obligatoire en production ---
 let jwtSecret = str('JWT_SECRET');
-if (isProd && jwtSecret.length < 16) {
+if (isProd && jwtSecret.length < 32) {
   console.error(
-    '\n[ERREUR] JWT_SECRET est obligatoire en production (au moins 16 caractères, idéalement 48+).\n' +
+    '\n[ERREUR] JWT_SECRET est obligatoire en production (au moins 32 caractères, idéalement 48+).\n' +
       'Générez-en un avec : node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))"\n' +
       'Puis ajoutez-le dans les variables d\'environnement. Le serveur refuse de démarrer sans lui.\n'
   );
@@ -37,11 +37,17 @@ if (!jwtSecret) {
 }
 
 // --- Production : refuser un mot de passe administrateur faible ---
-if (isProd && str('ADMIN_PASSWORD') && str('ADMIN_PASSWORD').length < 10) {
-  console.error('\n[ERREUR] ADMIN_PASSWORD est trop court pour la production (10 caractères minimum, idéalement 16+).\n');
+if (isProd && str('ADMIN_PASSWORD') && str('ADMIN_PASSWORD').length < 12) {
+  console.error('\n[ERREUR] ADMIN_PASSWORD est trop court pour la production (12 caractères minimum, idéalement 16+).\n');
   process.exit(1);
 }
 if (isProd && !str('DATA_KEY')) console.warn('[AVERTISSEMENT] DATA_KEY absent : les jetons WhatsApp sont chiffrés avec une clé dérivée de JWT_SECRET. Définissez DATA_KEY (48+ caractères aléatoires) et conservez-la : sans elle, ils deviennent illisibles.');
+
+// --- Production : jamais de joker dans les sites autorisés, jamais d'adresse non chiffrée (hors machine locale) ---
+if (isProd && str('ALLOWED_ORIGINS').split(',').some((o) => { const t = o.trim(); return t === '*' || (/^http:\/\//i.test(t) && !/localhost|127\.0\.0\.1/.test(t)); })) {
+  console.error('\n[ERREUR] ALLOWED_ORIGINS ne doit contenir ni « * » ni adresse en http:// en production.\n');
+  process.exit(1);
+}
 
 // --- Cookies ---
 let sameSite = str('COOKIE_SAMESITE', 'lax').toLowerCase();

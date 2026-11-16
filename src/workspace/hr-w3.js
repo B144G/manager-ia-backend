@@ -153,7 +153,9 @@ router.post('/leaves', mgr, async (req, res, next) => {
 
 // ---------- Dossier du personnel (administrateurs) ----------
 const FILE_FIELDS = { cniNo: 'cni_no', birthDate: 'birth_date', address: 'address', emergencyName: 'emergency_name', emergencyPhone: 'emergency_phone', diplomas: 'diplomas', email: null };
-const fileView = (e) => ({ id: e.id, name: e.name, cniNo: e.cni_no, birthDate: e.birth_date, address: e.address, emergencyName: e.emergency_name, emergencyPhone: e.emergency_phone, diplomas: e.diplomas, cnpsNo: e.cnps_no, niu: e.niu });
+const vault = require('../services/vault');
+const SENSITIVE_COLS = ['cni_no', 'emergency_phone', 'cnps_no'];
+const fileView = (e) => ({ id: e.id, name: e.name, cniNo: vault.decryptField(e.cni_no), birthDate: e.birth_date, address: e.address, emergencyName: e.emergency_name, emergencyPhone: vault.decryptField(e.emergency_phone), diplomas: e.diplomas, cnpsNo: vault.decryptField(e.cnps_no), niu: vault.decryptField(e.niu) });
 const empScoped = async (req, id) => {
   const e = await db.prepare('SELECT * FROM employees WHERE id = ? AND org_id = ?').get(A.id(id), req.org.id);
   if (!e || !A.visible(req, e)) throw new HttpError(404, 'Employé introuvable.');
@@ -167,16 +169,16 @@ hrRouter.get('/employees/:id/file', adm, async (req, res) => {
 hrRouter.put('/employees/:id/file', adm, async (req, res) => {
   const e = await empScoped(req, req.params.id); const b = req.body || {};
   const set = {};
-  if (b.cniNo !== undefined) set.cni_no = A.text(b.cniNo, 40);
+  if (b.cniNo !== undefined) set.cni_no = vault.encryptField(A.text(b.cniNo, 40));
   if (b.birthDate !== undefined) set.birth_date = A.date(b.birthDate);
   if (b.address !== undefined) set.address = A.text(b.address, 300);
   if (b.emergencyName !== undefined) set.emergency_name = A.text(b.emergencyName, 100);
-  if (b.emergencyPhone !== undefined) set.emergency_phone = A.text(b.emergencyPhone, 40);
+  if (b.emergencyPhone !== undefined) set.emergency_phone = vault.encryptField(A.text(b.emergencyPhone, 40));
   if (b.diplomas !== undefined) set.diplomas = A.text(b.diplomas, 600);
-  if (b.cnpsNo !== undefined) set.cnps_no = A.text(b.cnpsNo, 30);
+  if (b.cnpsNo !== undefined) set.cnps_no = vault.encryptField(A.text(b.cnpsNo, 30));
   if (Object.keys(set).length) {
     await db.prepare(`UPDATE employees SET ${Object.keys(set).map((c) => `${c} = ?`).join(', ')} WHERE id = ?`).run(...Object.values(set), e.id);
-    await W.audit(req, 'employee_file', e.id, 'update', Object.fromEntries(Object.keys(set).map((c) => [c, e[c]])), set);
+    await W.audit(req, 'employee_file', e.id, 'update', Object.fromEntries(Object.keys(set).map((c) => [c, SENSITIVE_COLS.includes(c) ? '(chiffré)' : e[c]])), Object.fromEntries(Object.keys(set).map((c) => [c, SENSITIVE_COLS.includes(c) ? '(chiffré)' : set[c]])));
   }
   res.json({ ok: true });
 });

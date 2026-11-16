@@ -75,6 +75,17 @@ router.post('/audit/verify', async (req, res) => {
   res.json(r);
 });
 
+// ---- Tâches de confidentialité (normalement lancées chaque jour) : suppressions de comptes arrivées à échéance, purge des données hors durée de conservation ----
+router.post('/privacy/run', async (req, res) => {
+  const privacy = require('../security/privacy');
+  const erased = await privacy.runErasures();
+  const purged = await privacy.purgeRetention();
+  const enc = await require('../security/encryption').run();
+  await central.audit.checkpoint();
+  await central.audit.record(req, 'privacy.jobs_run', { severity: 'info', detail: `${erased} compte(s) anonymisé(s), ${purged} ligne(s) purgée(s), ${enc.upgraded} valeur(s) chiffrée(s)` });
+  res.json({ erased, purged, encrypted: enc.upgraded, unreadable: enc.unreadable });
+});
+
 // ---- Adresses IP bloquées ----
 router.post('/blocks', async (req, res) => {
   const b = req.body || {};

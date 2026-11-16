@@ -10,8 +10,9 @@ const check = (name, cond, extra) => { if (cond) { passed++; console.log('  OK  
   const { db } = require('../src/db'); await db.ready;
   const { attachmentParts: P } = require('../src/workspace/ai');
   const b64 = (s) => Buffer.from(s).toString('base64');
+  const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(40)]).toString('base64'); // signature réelle : le contenu est vérifié
   check('aucune pièce jointe : rien', P(undefined).parts.length === 0 && P([]).parts.length === 0);
-  const r = P([{ name: 'photo.png', mime: 'image/png', data: b64('x') }, { name: 'doc.pdf', mime: 'application/pdf', data: b64('%PDF-1.4') }, { name: 'notes.csv', mime: 'text/csv', data: b64('a;b\n1;2') }]);
+  const r = P([{ name: 'photo.png', mime: 'image/png', data: PNG }, { name: 'doc.pdf', mime: 'application/pdf', data: b64('%PDF-1.4') }, { name: 'notes.csv', mime: 'text/csv', data: b64('a;b\n1;2') }]);
   check('image, PDF et texte reconnus', r.parts[0].type === 'image' && r.parts[1].type === 'document' && r.parts[2].type === 'text' && /a;b/.test(r.parts[2].text) && /notes\.csv/.test(r.parts[2].text), r.parts);
   check('les noms sont gardés pour l\'historique', r.names.join() === 'photo.png,doc.pdf,notes.csv');
   const bad = (list) => { try { P(list); return null; } catch (e) { return e; } };

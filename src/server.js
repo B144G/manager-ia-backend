@@ -10,7 +10,7 @@ const cookieParser = require('cookie-parser');
 const config = require('./config');
 const { db } = require('./db');
 const limits = require('./middleware/limits');
-const { HttpError, log } = require('./util');
+const { HttpError, log, safePath } = require('./util');
 const security = require('./security');
 
 const app = express();
@@ -24,11 +24,11 @@ app.use(security.requestId);
 app.use(security.abuse.guard);
 
 // CSP désactivée ici : elle est appliquée seulement à /admin (le frontend public a ses propres scripts).
-app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' }, strictTransportSecurity: { maxAge: 63072000, includeSubDomains: true }, referrerPolicy: { policy: 'no-referrer' } }));
 
 // En-têtes de sécurité supplémentaires (sur tout) et politique de contenu stricte pour les pages du site servies ici.
 app.use((req, res, next) => {
-  res.set('Permissions-Policy', 'camera=(), geolocation=(), payment=(), microphone=(self)');
+  res.set('Permissions-Policy', 'camera=(), geolocation=(), payment=(), usb=(), interest-cohort=(), microphone=(self)');
   res.set('X-Content-Type-Options', 'nosniff');
   next();
 });
@@ -51,7 +51,7 @@ app.use(cookieParser());
 app.use((req, res, next) => {
   const t = Date.now();
   res.on('finish', () => {
-    if (req.path !== '/api/health') log.info(`${req.method} ${req.path} -> ${res.statusCode} (${Date.now() - t} ms) [${String(req.id).slice(0, 8)}]`);
+    if (req.path !== '/api/health') log.info(`${req.method} ${safePath(req.path)} -> ${res.statusCode} (${Date.now() - t} ms) [${String(req.id).slice(0, 8)}]`);
   });
   next();
 });
@@ -64,8 +64,11 @@ const jsonSmall = express.json({ limit: '100kb' });
 const jsonFiles = express.json({ limit: '9mb' }); // pièces jointes à l'assistant IA (images, PDF, texte) : 4 pièces, 8 Mo au plus en tout
 const jsonStatement = express.json({ limit: '2mb' }); // relevé bancaire CSV (Comptabilité > rapprochement) : seule route à corps plus gros
 // Les fichiers joints (images, PDF) arrivent en base64 : cette seule route a une limite plus large (elle la règle elle-même, après connexion).
-app.use((req, res, next) => (/^\/api\/ws\/orgs\/\d+\/ai\/chat$/.test(req.path) && req.method === 'POST' ? jsonFiles(req, res, next) : next()));
-app.use((req, res, next) => (/^\/api\/ws\/orgs\/\d+\/(accounting\/bank\/\d+\/import|data\/import\/(customers|stock))$/.test(req.path) && req.method === 'POST' ? jsonStatement(req, res, next) : ((/^\/api\/ws\/orgs\/\d+\/mail\/files$/.test(req.path) || /^\/api\/ws\/public\/chat\/[A-Za-z0-9]+\/voice$/.test(req.path) || /^\/api\/ws\/public\/(whatsapp|meta)\/[A-Za-z0-9]+$/.test(req.path)) && req.method === 'POST' ? next() : jsonSmall(req, res, next))));
+// Les gros corps (9 Mo, 2 Mo) ne sont lus QU'APRÈS avoir vérifié la connexion : un visiteur anonyme ne peut pas faire analyser des mégaoctets de JSON.
+const { requireUser } = require('./middleware/auth');
+const bigBody = (parser) => (req, res, next) => { Promise.resolve(requireUser(req, res, () => parser(req, res, next))).catch(next); };
+app.use((req, res, next) => (/^\/api\/ws\/orgs\/\d+\/ai\/chat$/.test(req.path) && req.method === 'POST' ? bigBody(jsonFiles)(req, res, next) : next()));
+app.use((req, res, next) => (/^\/api\/ws\/orgs\/\d+\/(accounting\/bank\/\d+\/import|data\/import\/(customers|stock))$/.test(req.path) && req.method === 'POST' ? bigBody(jsonStatement)(req, res, next) : ((/^\/api\/ws\/orgs\/\d+\/mail\/files$/.test(req.path) || /^\/api\/ws\/public\/chat\/[A-Za-z0-9]+\/voice$/.test(req.path) || /^\/api\/ws\/public\/(whatsapp|meta)\/[A-Za-z0-9]+$/.test(req.path)) && req.method === 'POST' ? next() : jsonSmall(req, res, next))));
 
 // Protection contre les requêtes venant d'un autre site (CSRF) : l'en-tête Origin doit être connu.
 function originCheck(req, res, next) {
@@ -85,6 +88,13 @@ function originCheck(req, res, next) {
   throw new HttpError(403, 'Origine non autorisée.');
 }
 
+// Les réponses de l'API contiennent des données personnelles : jamais mises en cache par un navigateur ou un relais ; aucune ressource externe n'y est chargeable.
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  res.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+  next();
+});
+
 app.get('/api/health', async (req, res) => { try { await db.prepare('SELECT 1 AS ok').get(); res.json({ ok: true, db: true }); } catch (e) { res.status(503).json({ ok: false, db: false }); } });
 app.use('/api', limits.global, originCheck);
 app.use('/api', require('./routes/auth'));
@@ -92,6 +102,7 @@ app.use('/api', require('./routes/contact'));
 app.use('/api', require('./routes/assistant'));
 app.use('/api', require('./routes/payments'));
 app.use('/api/security', require('./routes/security'));
+app.use('/api/privacy', require('./routes/privacy'));
 app.use('/api/v1', require('./workspace/public-api'));
 app.use('/api/admin', require('./routes/admin'));
 const workspace = require('./workspace');
@@ -127,6 +138,8 @@ app.use((err, req, res, next) => {
   if (err.type === 'entity.parse.failed' || err.type === 'encoding.unsupported' || err.type === 'charset.unsupported') {
     return res.status(400).json({ error: 'Requête invalide (JSON incorrect).' });
   }
+  // Valeur refusée par la base elle-même (nombre hors limites, texte ou date invalide, texte trop long) : c'est une entrée incorrecte, pas une panne.
+  if (err && ['22003', '22P02', '22007', '22008', '22001', '22021'].includes(err.code)) return res.status(400).json({ error: 'Valeur invalide : vérifiez les nombres, dates et textes saisis.' });
   log.error(`Erreur interne sur ${req.method} ${req.path} :`, err && err.message ? err.message : err);
   res.status(500).json({ error: 'Erreur interne du serveur. Réessayez dans un instant.' });
 });
@@ -141,6 +154,7 @@ async function start() {
     log.info(`Assistant IA : ${on(config.ai.key)} | Paiement automatique Campay : ${on(config.campay.enabled)} | WhatsApp admin : ${on(config.whatsapp.phoneId && config.whatsapp.token)} | E-mail : ${on(config.smtp.host || config.mailApi.key)} | Admin : ${on(config.admin.username && config.admin.password)} | Webhooks Meta : ${on(config.meta.appSecret)}`);
   });
   security.configcheck.run().then((r) => { if (r.summary.bad || r.summary.warn) log.warn(`Sécurité : ${r.summary.bad} point(s) dangereux, ${r.summary.warn} à améliorer (npm run security:check pour le détail).`); else log.info('Sécurité : configuration solide.'); }).catch(() => {});
+  require('./security/encryption').startupUpgrade(); // chiffre au repos les anciennes données en clair (idempotent)
   require('./jobs').start();
   require('./workspace/inbound').start(); // réponses différées (délai choisi par l'organisation)
   if (config.waQr.enabled) require('./services/waWeb').startWatcher(); // reprise échelonnée des sessions WhatsApp par QR code

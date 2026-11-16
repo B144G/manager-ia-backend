@@ -10,6 +10,7 @@ const abuse = require('./abuse');
 const totp = require('./totp');
 const sensitive = require('./sensitive');
 const configcheck = require('./configcheck');
+const devices = require('./devices');
 
 /** Numéro unique par requête (en-tête X-Request-Id, journal d'audit, journal du serveur) : retrouve toute une action de bout en bout. */
 function requestId(req, res, next) {
@@ -19,6 +20,6 @@ function requestId(req, res, next) {
   next();
 }
 
-async function sweep() { await Promise.all([sessions.sweep(), abuse.sweep()]); }
+async function sweep() { await Promise.all([sessions.sweep(), abuse.sweep(), audit.checkpoint().catch(() => {})]); }
 
-module.exports = { audit, sessions, abuse, totp, sensitive, configcheck, requestId, sweep };
+module.exports = { audit, sessions, abuse, totp, sensitive, configcheck, devices, requestId, sweep };

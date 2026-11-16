@@ -30,6 +30,11 @@ const TABLE = [
   ['POST', /^\/accounting\/entries\/\d+\/reverse$/, 'accounting.reverse_entry', 'warn'],
   ['GET', /^\/accounting\/export\.csv$/, 'accounting.export', 'info'],
   ['POST', /^\/mail\/send$/, 'mail.send', 'info'],
+  // Registre des accès aux données personnelles sensibles (consultable par les administrateurs : /api/privacy/orgs/:id/access-log)
+  ['GET', /^\/payroll(\/|$)/, 'pii.payroll_read', 'info'],
+  ['GET', /^\/hr(\/employees(\/\d+(\/file)?)?)?$/, 'pii.hr_read', 'info'],
+  ['PUT', /^\/hr\/employees\/\d+(\/file)?$/, 'pii.hr_write', 'warn'],
+  ['GET', /^\/data\/export\//, 'pii.data_export', 'warn'],
 ];
 
 /** À monter sur /api/ws/orgs (avant le routeur de l'espace de travail). */
