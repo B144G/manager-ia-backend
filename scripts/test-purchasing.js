@@ -168,6 +168,9 @@ run('Module Achats', async ({ check, owner, mgr, mem, other, org2, O, ws, dbx, o
   r = await owner('POST', `${P}/orders/${BC2}/approve`); check('BC2 approuvé', r.status === 200, r.json);
   o1 = (await mgr('GET', `${P}/orders/${BC2}`)).json.order; const [lLait, lOrdi] = o1.lines.map((l) => l.id);
   check('TVA 0 % : TTC = HT = 625 000', o1.totalHt === 625000 && o1.vatAmount === 0 && o1.totalTtc === 625000, o1);
+  r = await mgr('POST', `${P}/orders/${BC2}/receipts`, { lines: [{ orderLineId: lLait, receivedQty: 1, locationId: 5 }] });
+  check("emplacement d'entrepôt : refusé tant que le module WMS n'est pas installé (pas d'ignorance silencieuse)", r.status === 400 && /emplacements/.test(r.json.error), r.json);
+
   r = await mgr('POST', `${P}/orders/${BC2}/receipts`, { lines: [{ orderLineId: lLait, receivedQty: 30 }] }); check('article par lot : numéro de lot obligatoire', r.status === 400 && /lot/.test(r.json.error), r.json);
   r = await mgr('POST', `${P}/orders/${BC2}/receipts`, { lines: [{ orderLineId: lOrdi, receivedQty: 2, serials: 'SN-1' }] }); check('article par série : autant de numéros que d\'unités', r.status === 400 && /série/.test(r.json.error), r.json);
   r = await mgr('POST', `${P}/orders/${BC2}/receipts`, { lines: [{ orderLineId: lOrdi, receivedQty: 1.5, serials: 'SN-1' }] }); check('article par série : quantité entière', r.status === 400, r.json);

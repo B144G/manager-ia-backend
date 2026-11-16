@@ -252,7 +252,16 @@ router.post('/orders/:id/receipts', async (req, res) => {
     const max = Number(ol.quantity) * (1 + st.tolQtyPct / 100);
     if (P.round3(Number(ol.received_qty) + recv) > max + 1e-9) throw new HttpError(400, `« ${ol.description} » : ${P.round3(Number(ol.received_qty) + recv)} reçu(s) pour ${ol.quantity} commandé(s) (tolérance ${st.tolQtyPct} %).`);
     if (ol.item_id && recv > 0 && ol.tracking === 'serial' && !Number.isInteger(recv)) throw new HttpError(400, `« ${ol.description} » est suivi par numéro de série : quantité entière.`);
-    todo.push({ ol, recv, rej, reason, lotNo: A.text(l.lotNo, 40), expiry: A.date(l.expiry), serials: l.serials });
+    let locationId = null;
+    if (l.locationId !== undefined && l.locationId !== null && l.locationId !== '') {
+      // Emplacement de réception (module Stock WMS) : sans WMS installé, on refuse plutôt que d'ignorer en silence.
+      const hasWms = await db.prepare("SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'wms_locations'").get();
+      if (!hasWms) throw new HttpError(400, "Les emplacements d'entrepôt ne sont pas disponibles : laissez le rangement automatique.");
+      const loc = await db.prepare('SELECT id FROM wms_locations WHERE id = ? AND org_id = ?').get(A.id(l.locationId, 'Emplacement invalide.'), req.org.id);
+      if (!loc) throw new HttpError(400, 'Emplacement inconnu.');
+      locationId = Number(loc.id);
+    }
+    todo.push({ ol, recv, rej, reason, lotNo: A.text(l.lotNo, 40), expiry: A.date(l.expiry), serials: l.serials, locationId });
   }
   if (!todo.length) throw new HttpError(400, 'Aucune quantité reçue ou refusée : rien à enregistrer.');
   let rid; let number;
@@ -268,13 +277,13 @@ router.post('/orders/:id/receipts', async (req, res) => {
     number = await P.nextNumber(req.org.id, 'receipt', 'BR', date);
     rid = Number((await db.prepare('INSERT INTO pur_receipts (org_id, order_id, number, receipt_date, delivery_note, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, o.id, number, date, A.text(b.deliveryNote, 60), A.text(b.note, 500), req.user.id, nowISO())).lastInsertRowid);
     for (const t of todo) {
-      await db.prepare('INSERT INTO pur_receipt_lines (org_id, receipt_id, order_line_id, received_qty, rejected_qty, reason, lot_no, expiry) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, rid, t.ol.id, t.recv, t.rej, t.reason, t.lotNo, t.expiry);
+      await db.prepare('INSERT INTO pur_receipt_lines (org_id, receipt_id, order_line_id, received_qty, rejected_qty, reason, lot_no, expiry, location_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, rid, t.ol.id, t.recv, t.rej, t.reason, t.lotNo, t.expiry, t.locationId);
       await db.prepare('UPDATE pur_order_lines SET received_qty = received_qty + ?, rejected_qty = rejected_qty + ? WHERE id = ?').run(t.recv, t.rej, t.ol.id);
       if (t.ol.item_id && t.recv > 0) {
         const serials = t.ol.tracking === 'serial' ? L.parseSerials(t.serials) : undefined;
         // Le prix reçu alimente la fiche « prix par fournisseur » du module Stock et achats (comparaison de prix, note du fournisseur).
         await db.prepare('INSERT INTO supplier_prices (org_id, item_id, supplier_id, unit_price) VALUES (?, ?, ?, ?) ON CONFLICT (item_id, supplier_id) DO UPDATE SET unit_price = EXCLUDED.unit_price').run(req.org.id, t.ol.item_id, o.supplier_id, Number(t.ol.unit_price));
-        await L.adjust(req, t.ol.item_id, t.recv, `Réception ${number} (${o.number})`, { unitCost: Number(t.ol.unit_price), lotNo: t.lotNo, expiry: t.expiry || undefined, serials, strict: true, refKind: 'pur_receipt', refId: rid });
+        await L.adjust(req, t.ol.item_id, t.recv, `Réception ${number} (${o.number})`, { unitCost: Number(t.ol.unit_price), lotNo: t.lotNo, expiry: t.expiry || undefined, serials, strict: true, refKind: 'pur_receipt', refId: rid, locationId: t.locationId || undefined });
       }
     }
     const all = await db.prepare('SELECT quantity, received_qty FROM pur_order_lines WHERE order_id = ?').all(o.id);
