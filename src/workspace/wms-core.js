@@ -88,7 +88,7 @@ const qtyAt = async (locId, itemId) => Number(((await db.prepare('SELECT quantit
 async function add(orgId, locId, itemId, delta) {
   if (delta > EPS) await capacityGuard(locId, delta);
   const r = await addRaw(orgId, locId, itemId, delta);
-  if (delta < 0) await trimHus(locId, itemId);
+  if (delta < 0) { await trimHus(locId, itemId); await trimUnits(locId, itemId); }
   return r;
 }
 async function addRaw(orgId, locId, itemId, delta) {
@@ -122,6 +122,19 @@ async function trimHus(locId, itemId) {
     else await db.prepare('UPDATE wms_hu_contents SET quantity = ? WHERE id = ?').run(round3(Number(c.quantity) - take), c.id);
     excess = round3(excess - take);
     await markEmpty(c.hu_id);
+  }
+}
+/** Unités de la ligne B (wms_unit_items) : une unité ne contient jamais plus que ce qui reste à l'emplacement. */
+async function trimUnits(locId, itemId) {
+  let excess = round3(Number((await db.prepare('SELECT COALESCE(SUM(ui.quantity), 0) AS q FROM wms_unit_items ui JOIN wms_units u ON u.id = ui.unit_id WHERE u.location_id = ? AND ui.item_id = ?').get(locId, itemId)).q) - await qtyAt(locId, itemId));
+  if (excess <= EPS) return;
+  const rows = await db.prepare('SELECT ui.unit_id, ui.quantity FROM wms_unit_items ui JOIN wms_units u ON u.id = ui.unit_id WHERE u.location_id = ? AND ui.item_id = ? ORDER BY ui.quantity, ui.unit_id').all(locId, itemId);
+  for (const r of rows) {
+    if (excess <= EPS) break;
+    const take = round3(Math.min(excess, Number(r.quantity)));
+    if (Number(r.quantity) - take <= EPS) await db.prepare('DELETE FROM wms_unit_items WHERE unit_id = ? AND item_id = ?').run(r.unit_id, itemId);
+    else await db.prepare('UPDATE wms_unit_items SET quantity = quantity - ? WHERE unit_id = ? AND item_id = ?').run(take, r.unit_id, itemId);
+    excess = round3(excess - take);
   }
 }
 async function markEmpty(huId) {

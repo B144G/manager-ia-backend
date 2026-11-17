@@ -137,12 +137,15 @@ router.post('/waves', mgr, async (req, res) => {
   const b = req.body || {};
   let assigned = null;
   if (b.assignedTo !== undefined && b.assignedTo !== null && b.assignedTo !== '') assigned = await A.memberOf(req, b.assignedTo);
+  // « strict » (ligne B) : une vague regroupe au moins 2 commandes et tout entre ou rien n'est créé (409, aucune liste, aucune réservation).
+  if (b.strict === true && (new Set((Array.isArray(b.documentIds) ? b.documentIds : []).map(String))).size < 2) throw new HttpError(400, 'Une vague regroupe au moins 2 commandes.');
   await F().syncReservations(req.org.id);
   const out = await db.transaction(async () => {
     const code = await W.nextCode(req.org.id, 'VG');
     const id = Number((await db.prepare("INSERT INTO wms_waves (org_id, code, status, label, assigned_to, created_by, created_at) VALUES (?, ?, 'draft', ?, ?, ?, ?)").run(req.org.id, code, cleanText(String(b.label || ''), 150), assigned, req.user.id, nowISO())).lastInsertRowid);
     const wave = await db.prepare('SELECT * FROM wms_waves WHERE id = ?').get(id);
     const r = await attach(req, wave, b);
+    if (b.strict === true && r.skipped.length) throw new HttpError(409, `Vague refusée, rien n'est créé : ${r.skipped.map((x) => `${x.number} (${x.reason})`).join(' ; ')}`);
     const first = await db.prepare("SELECT id FROM wms_picks WHERE wave_id = ? AND status != 'cancelled' ORDER BY id LIMIT 1").get(id);
     if (!first) throw new HttpError(400, r.skipped.length ? `Aucune commande n'a pu entrer dans la vague : ${r.skipped.map((x) => `${x.number} (${x.reason})`).join(' ; ')}` : 'Choisissez au moins une commande ou une liste de préparation.');
     const st = await stagingFor(req, b, first.id);
@@ -184,10 +187,27 @@ router.post('/waves/:id/release', mgr, async (req, res) => {
   if (w.assigned_to) await db.prepare("UPDATE wms_picks SET assigned_to = ? WHERE wave_id = ? AND status IN ('open','in_progress')").run(w.assigned_to, w.id);
   res.json({ ok: true });
 });
+/** Expédie toute la vague (ligne B) : chaque liste préparée sort du stock ; un colisage incomplet (409) arrête tout. */
+router.post('/waves/:id/issue', mgr, async (req, res) => {
+  const w = await waveOf(req, req.params.id);
+  const picks = (await picksOf(w.id)).filter((p) => p.status === 'picked');
+  if (!picks.length) throw new HttpError(400, "Aucune liste préparée à expédier : terminez d'abord la vague.");
+  await db.transaction(async () => { for (const p of picks) await F().issuePick(req, p); })();
+  res.json({ ok: true, orders: picks.length });
+});
 router.post('/waves/:id/cancel', mgr, async (req, res) => {
   const w = await waveOf(req, req.params.id);
   if (!['draft', 'released'].includes(w.status)) throw new HttpError(400, 'Des articles ont déjà été prélevés : terminez la vague.');
   await db.transaction(async () => {
+    // « cancelPicks » (ligne B) : les listes de la vague sont annulées avec elle (leurs réservations sont libérées) ; sinon elles redeviennent des listes ordinaires.
+    if ((req.body || {}).cancelPicks === true) {
+      const live = await db.prepare("SELECT * FROM wms_picks WHERE wave_id = ? AND status IN ('open','in_progress')").all(w.id);
+      await db.prepare("UPDATE wms_reservations SET status = 'released', close_reason = 'Vague annulée' WHERE status = 'active' AND pick_id IN (SELECT id FROM wms_picks WHERE wave_id = ? AND status IN ('open','in_progress'))").run(w.id);
+      // La commande garde sa réservation (elle existe toujours) : elle est remise à son compte.
+      for (const p of live.filter((x) => x.document_id)) for (const l of await db.prepare('SELECT item_id, SUM(quantity) AS q FROM wms_pick_lines WHERE pick_id = ? GROUP BY item_id').all(p.id))
+        await db.prepare("INSERT INTO wms_reservations (org_id, item_id, quantity, status, source_kind, document_id, label, created_by, created_at) VALUES (?, ?, ?, 'active', 'document', ?, ?, ?, ?)").run(req.org.id, l.item_id, Number(l.q), p.document_id, p.label || '', req.user.id, nowISO());
+      await db.prepare("UPDATE wms_picks SET status = 'cancelled' WHERE wave_id = ? AND status IN ('open','in_progress')").run(w.id);
+    }
     await db.prepare('UPDATE wms_picks SET wave_id = NULL WHERE wave_id = ?').run(w.id);
     await db.prepare("UPDATE wms_waves SET status = 'cancelled', done_at = ? WHERE id = ?").run(nowISO(), w.id);
   })();
@@ -217,7 +237,8 @@ router.post('/waves/:id/confirm', async (req, res) => {
   } else if (b.locationCode && stop.location && String(b.locationCode).trim().toUpperCase() !== stop.location.toUpperCase()) throw new HttpError(400, `Ce n'est pas le bon emplacement : allez en ${stop.location}.`);
   if (!from) throw new HttpError(400, "Cette ligne n'a pas d'emplacement : indiquez où vous prenez la marchandise.");
   const given = b.quantity !== undefined && b.quantity !== null && b.quantity !== '';
-  const q = given ? Math.min(stop.quantity, H().qty(b.quantity)) : stop.quantity;
+  if (given && H().qty(b.quantity) > stop.quantity + W.EPS) throw new HttpError(400, `Il reste ${stop.quantity} à prélever à cet arrêt.`);
+  const q = given ? H().qty(b.quantity) : stop.quantity;
   if (await W.qtyAt(from, it.id) + W.EPS < q) throw new HttpError(400, 'Pas assez de stock dans cet emplacement.');
   const short = given && q + W.EPS < stop.quantity;
   const staging = w.staging_location_id ? await W.locationOf(req.org.id, w.staging_location_id) : await W.outboundOf(req.org.id, 'staging');

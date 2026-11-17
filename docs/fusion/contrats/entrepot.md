@@ -13,6 +13,12 @@ Règle : les chemins et formes de A sont inchangés. Tout ce qui suit est un AJO
 - `POST /location-counts` `{ locationId, blind?, itemIds?, note? }` → 201 `{ id, items }` ; `POST /location-counts/:id/lines` `{ itemId }`
 - Forme B sous `/b/` : `GET /b/forecast`, `/b/forecast/:id`, `/b/reorder`, `GET|PUT /b/items/:id/params`, `GET /b/reports/valuation|rotation|stockouts|aging|moves` (`?format=csv`), `GET /b/scan?code=`
 
+## Routes ajoutées (suite)
+- Palettes de B : `GET|POST /units`, `GET|DELETE /units/:id`, `POST /units/:id/items`, `DELETE /units/:id/items/:itemId`, `POST /units/:id/nest`, `POST /units/:id/move`.
+- Colisage de B : `GET|POST /picks/:id/packages` (`{ weight, lines:[{itemId,quantity}] | all:true }`), `DELETE /packages/:id`.
+- `POST /waves/:id/issue` (responsable) → `{ ok, orders }`.
+- Paramètres : `POST /waves { strict }`, `POST /waves/:id/cancel { cancelPicks }`, `POST /picks/:id/complete { keepShortfall }`. `POST /picks/:id/issue` peut répondre 409 « Colisage incomplet ».
+
 ## Champs / paramètres ajoutés
 - `locations/lookup` : `location` reçoit le détail (name, kind, warehouse, zone, capacity, quantity…) et la réponse un `content[]` (forme A `{ id, code }` conservée dans `location`).
 - `POST /move` : `lotId`, `serials`. `POST /putaway` : `quantity` (rangement partiel). `POST /reservations` : `warehouseId`, `neededBy`. `POST /reservations/:id/fulfill` : `locationId` ; réponse + `status`, `remaining`, `quantity`.
@@ -35,7 +41,7 @@ Règle : les chemins et formes de A sont inchangés. Tout ce qui suit est un AJO
 - Retour fournisseur / rebut de stock réservé → 409.
 
 ## Migrations (src/migrations/fusion-entrepot.js, rejouables)
-`wms_transfer_lines.from/to_location_id` ; `wms_reservations.warehouse_id` ; `wms_lot_levels` (nouvelle) ; `stock_serials.location_id` ; `stock_moves.location_id` ; `stock_counts.location_id/blind/cycle_class` ; `wms_returns.order_id/credited_at` ; `wms_item_class` (nouvelle) ; `wms_item_params.updated_at` ; `wms_landed_alloc` (nouvelle) ; `wms_moves.unit_value` ; clés étrangères différées (suppression d'organisation).
+`wms_transfer_lines.from/to_location_id` ; `wms_reservations.warehouse_id` ; `wms_lot_levels` (nouvelle) ; `stock_serials.location_id` ; `stock_moves.location_id` ; `stock_counts.location_id/blind/cycle_class` ; `wms_returns.order_id/credited_at` ; `wms_item_class` (nouvelle) ; `wms_item_params.updated_at` ; `wms_units`, `wms_unit_items`, `wms_packages`, `wms_package_items` (nouvelles) ; `wms_landed_alloc` (nouvelle) ; `wms_moves.unit_value` ; clés étrangères différées (suppression d'organisation).
 
 ## Montage
 Aucun changement de `index.js` : tout est requis depuis `wms.js` (`wms-b-routes.js`, `wms-b-counts.js`).

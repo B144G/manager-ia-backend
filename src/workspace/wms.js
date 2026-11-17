@@ -438,6 +438,7 @@ router.get('/scan', async (req, res) => {
   throw new HttpError(404, 'Code inconnu : ni article, ni emplacement, ni document.');
 });
 
+router.use('/', require('./wms-b-units')); // fusion : palettes (unités) et colisage de la ligne B (/units, /picks/:id/packages, /packages/:id)
 router.use('/b', require('./wms-b-routes')); // fusion : prévision, états et exports de la ligne B (formes de B)
 router.use('/', require('./wms-b-counts')); // fusion : inventaire par emplacement et comptage à l'aveugle (ligne B)
 router.use('/', require('./wms-hu'));

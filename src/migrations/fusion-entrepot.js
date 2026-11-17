@@ -81,4 +81,44 @@ module.exports = [
   ALTER TABLE wms_transfers DROP CONSTRAINT IF EXISTS wms_transfers_to_warehouse_id_fkey;
   ALTER TABLE wms_transfers ADD CONSTRAINT wms_transfers_to_warehouse_id_fkey FOREIGN KEY (to_warehouse_id) REFERENCES wms_warehouses(id) DEFERRABLE INITIALLY DEFERRED;
   `,
+  // Palettes / cartons / caisses (unités logistiques de la ligne B) et colisage des listes de préparation (poids, contenu).
+  `
+  CREATE TABLE IF NOT EXISTS wms_units (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'pallet',
+    location_id BIGINT NOT NULL REFERENCES wms_locations(id) ON DELETE CASCADE,
+    parent_id BIGINT REFERENCES wms_units(id) ON DELETE SET NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, code)
+  );
+  CREATE INDEX IF NOT EXISTS idx_wms_units_loc ON wms_units(location_id);
+  CREATE TABLE IF NOT EXISTS wms_unit_items (
+    unit_id BIGINT NOT NULL REFERENCES wms_units(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    quantity DOUBLE PRECISION NOT NULL CHECK (quantity > 0),
+    PRIMARY KEY (unit_id, item_id)
+  );
+  CREATE TABLE IF NOT EXISTS wms_packages (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    pick_id BIGINT NOT NULL REFERENCES wms_picks(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    weight DOUBLE PRECISION NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, code)
+  );
+  CREATE INDEX IF NOT EXISTS idx_wms_packages_pick ON wms_packages(pick_id);
+  CREATE TABLE IF NOT EXISTS wms_package_items (
+    package_id BIGINT NOT NULL REFERENCES wms_packages(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    quantity DOUBLE PRECISION NOT NULL CHECK (quantity > 0),
+    PRIMARY KEY (package_id, item_id)
+  );
+  `,
 ];
