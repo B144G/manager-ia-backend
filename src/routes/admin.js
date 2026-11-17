@@ -20,6 +20,15 @@ const fs = require('fs');
 const router = express.Router();
 const PAID = [...new Set([...Object.values(config.plans), ...Object.values(config.legacyPlans)].map((p) => p.name))]; // Illimité, et les anciennes offres que des abonnés ont encore (Pro, Pro Max, Méga Pro)
 const PLAN_NAMES = ['Gratuit', ...PAID];
+const PERIOD_LABEL = { week: 'semaine', month: 'mois', quarter: 'trimestre', semester: 'semestre', year: 'année' };
+/** Catalogue des offres : source unique = src/config.js (jamais de prix recopié dans l'interface). */
+function planCatalog() {
+  return {
+    sold: Object.values(config.plans).map((p) => ({ id: p.id, name: p.name, period: p.period, periodLabel: PERIOD_LABEL[p.period] || p.period, days: p.days, priceXAF: p.priceXAF })),
+    legacy: Object.values(config.legacyPlans).filter((p) => !Object.values(config.plans).some((q) => q.name === p.name)).map((p) => ({ id: p.id, name: p.name, priceXAF: p.priceXAF })),
+    free: { name: 'Gratuit', priceXAF: 0 },
+  };
+}
 const STATUSES = ['pending', 'awaiting_validation', 'paid', 'failed'];
 
 router.post('/login', limits.adminLogin, async (req, res) => {
@@ -80,8 +89,13 @@ router.use((req, res, next) => {
   next();
 });
 
+// Lectures : plafonnées par adresse (la page ne fait que quelques appels par écran ; le direct et la recherche ont leurs propres limites).
+const adminRead = limits.make(60 * 1000, 300, 'Trop de requêtes. Patientez une minute.');
+router.use((req, res, next) => (req.method === 'GET' && !/^\/(live|search)/.test(req.path) ? adminRead(req, res, next) : next()));
+
 router.use('/security', require('./admin-security'));
 router.use(require('./admin-clients')); // résumé (pastilles), clients, alertes
+router.use(require('./admin-live')); // nouveaux comptes en direct (flux SSE + repli), inscriptions en attente, recherche globale
 
 router.get('/security-log', async (req, res) => {
   const ev = await central.audit.list({ limit: req.query.limit });
@@ -293,6 +307,7 @@ router.get('/overview', async (req, res) => {
 
   const users = (await one('SELECT COUNT(*) n FROM users')).n;
   const newUsers = (await one('SELECT COUNT(*) n FROM users WHERE created_at >= ?', since)).n;
+  const newUsersPrev = (await one('SELECT COUNT(*) n FROM users WHERE created_at >= ? AND created_at < ?', iso(now - 2 * days * DAY), since)).n;
   const orgs = (await one('SELECT COUNT(*) n FROM orgs')).n;
   const activeOrgs = (await one('SELECT COUNT(DISTINCT org_id) n FROM activity WHERE created_at >= ?', since)).n;
 
@@ -300,6 +315,17 @@ router.get('/overview', async (req, res) => {
   const revRows = await db.prepare("SELECT substr(paid_at, 1, 7) m, SUM(amount_xaf) s FROM payments WHERE status = 'paid' AND paid_at >= ? GROUP BY m").all(months[0] + '-01');
   const sigRows = await db.prepare('SELECT substr(created_at, 1, 7) m, COUNT(*) n FROM users WHERE created_at >= ? GROUP BY m').all(months[0] + '-01');
   const series = months.map((m) => ({ month: m, revenue: (revRows.find((r) => r.m === m) || {}).s || 0, signups: (sigRows.find((r) => r.m === m) || {}).n || 0 }));
+
+  // Séries journalières de la période (mini-courbes des indicateurs et courbe des inscriptions)
+  const dayKeys = []; for (let i = days - 1; i >= 0; i--) dayKeys.push(iso(now - i * DAY).slice(0, 10));
+  const dsince = dayKeys[0] + 'T00:00:00.000Z';
+  const byDay = (rows, f) => dayKeys.map((k) => { const r = rows.find((x) => x.d === k); return r ? Number(r[f]) : 0; });
+  const daily = {
+    days: dayKeys,
+    signups: byDay(await db.prepare('SELECT substr(created_at, 1, 10) d, COUNT(*) n FROM users WHERE created_at >= ? GROUP BY d').all(dsince), 'n'),
+    revenue: byDay(await db.prepare("SELECT substr(paid_at, 1, 10) d, SUM(amount_xaf) s FROM payments WHERE status = 'paid' AND paid_at >= ? GROUP BY d").all(dsince), 's'),
+    ai: byDay(await db.prepare('SELECT substr(created_at, 1, 10) d, COUNT(*) n FROM ai_usage WHERE created_at >= ? GROUP BY d').all(dsince), 'n'),
+  };
 
   const nowIso = iso(now);
   const payers = {};
@@ -320,11 +346,11 @@ router.get('/overview', async (req, res) => {
   res.json({
     days,
     kpi: {
-      users, newUsers, orgs, activeOrgs, payers: Object.values(payers).reduce((a, b) => a + b, 0), payersByPlan: Object.fromEntries(PAID.map((n) => [n, payers[n] || 0])),
+      users, newUsers, newUsersPrev, orgs, activeOrgs, payers: Object.values(payers).reduce((a, b) => a + b, 0), payersByPlan: Object.fromEntries(PAID.map((n) => [n, payers[n] || 0])),
       aiToday, aiYesterday,
     },
-    plans: { Gratuit: free, ...Object.fromEntries(PAID.map((n) => [n, payers[n] || 0])), prices: Object.fromEntries(Object.values(config.legacyPlans).map((p) => [p.name, p.priceXAF])), unlimited: Object.fromEntries(Object.values(config.plans).map((p) => [p.period, p.priceXAF])) },
-    series,
+    plans: { Gratuit: free, ...Object.fromEntries(PAID.map((n) => [n, payers[n] || 0])), prices: Object.fromEntries([...Object.values(config.legacyPlans), ...Object.values(config.plans).filter((p) => p.period === 'month')].map((p) => [p.name, p.priceXAF])), unlimited: Object.fromEntries(Object.values(config.plans).map((p) => [p.period, p.priceXAF])) },
+    series, daily, catalog: planCatalog(),
     todo: { payments: pendingCount, leads: leadsOpen, expiring, alerts: (await alertsSvc.openCounts()).open },
     payments: pendingPays.map((p) => ({ id: p.id, reference: p.reference, user: p.user_name, planName: custom.label((planOf(p.plan) || {}).name || p.plan), operator: p.operator, amountXAF: p.amount_xaf, created: p.created_at })),
     leads: (await db.prepare('SELECT id, name, what, message, created_at FROM leads WHERE handled = 0 ORDER BY id DESC LIMIT 3').all()).map((l) => ({ id: l.id, name: l.name, text: l.message || l.what || '', created: l.created_at })),
@@ -356,7 +382,7 @@ router.get('/ai-usage', async (req, res) => {
 });
 
 router.get('/settings', async (req, res) => {
-  res.json({ system: await systemStatus(), plans: { ...Object.fromEntries(Object.values(config.plans).map((p) => ['Illimité / ' + p.period, p.priceXAF])), durationDays: config.durationDays }, workspaceLimits: config.workspaceLimits, adminEmail: config.admin.email });
+  res.json({ catalog: planCatalog(), system: await systemStatus(), plans: { ...Object.fromEntries(Object.values(config.plans).map((p) => ['Illimité / ' + p.period, p.priceXAF])), durationDays: config.durationDays }, workspaceLimits: config.workspaceLimits, adminEmail: config.admin.email });
 });
 
 router.get('/notifications', async (req, res) => {

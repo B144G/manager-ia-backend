@@ -101,7 +101,7 @@ app.use('/api/ws', workspace.router);
 app.use('/api', (req, res) => res.status(404).json({ error: 'Route introuvable.' }));
 
 // Interface d'administration (fichiers statiques + politique de sécurité stricte)
-const adminCsp = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+const adminCsp = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 app.use('/admin', (req, res, next) => {
   res.set('Content-Security-Policy', adminCsp);
   res.set('Cache-Control', 'no-store');
