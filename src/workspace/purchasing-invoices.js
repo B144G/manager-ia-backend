@@ -13,10 +13,17 @@ const admin = A.need('admin');
 const acc = () => require('./accounting');
 const { PLAN } = require('./syscohada');
 
-/** Clé d'origine unique de l'écriture (la comptabilité refuse deux écritures de même origine) : « pur_invoice », puis « pur_invoice#2 »… après une annulation. */
-async function sourceKey(orgId, base, id) {
-  const n = Number((await db.prepare("SELECT COUNT(*) AS c FROM acc_entries WHERE org_id = ? AND source_id = ? AND (source = ? OR source LIKE ?)").get(orgId, id, base, base + '#%')).c);
-  return n ? `${base}#${n + 1}` : base;
+/** Identifiant d'origine de l'écriture = facture × 100 + n° de tentative : une validation annulée puis refaite ne produit jamais de doublon actif
+ * (la comptabilité refuse deux écritures de même origine). On saute les identifiants déjà pris (anciennes écritures de la première version). */
+async function entrySid(orgId, inv) {
+  let attempt = Number(inv.attempts) + 1;
+  for (;;) {
+    const sid = Number(inv.id) * 100 + attempt;
+    const taken = await db.prepare("SELECT 1 FROM acc_entries WHERE org_id = ? AND source = 'pur_invoice' AND source_id = ?").get(orgId, sid)
+      || await db.prepare("SELECT 1 FROM supplier_bills WHERE org_id = ? AND source = 'pur_invoice' AND source_id = ?").get(orgId, sid);
+    if (!taken) return { sid, attempt };
+    attempt++;
+  }
 }
 
 const ISSUE_TEXT = {
@@ -38,7 +45,7 @@ async function invoiceOf(req, idv) {
   return i;
 }
 const linesOf = (id) => db.prepare('SELECT * FROM pur_invoice_lines WHERE invoice_id = ? ORDER BY position, id').all(id);
-const paidOf = async (id) => Number((await db.prepare('SELECT COALESCE(SUM(amount), 0) AS s FROM pur_payments WHERE invoice_id = ?').get(id)).s);
+const paidOf = async (i) => P.invoicePaid(typeof i === 'object' ? i : await db.prepare('SELECT * FROM pur_invoices WHERE id = ?').get(i));
 
 /** Rapprochement : renvoie { issues, matching } (sans rien enregistrer). */
 async function match(req, inv, lines) {
@@ -83,16 +90,18 @@ async function rematch(req, inv) {
 
 // ---------- Saisie ----------
 async function readInvoice(req, b, cur) {
-  const supplierRef = cleanText(String(b.supplierRef || ''), 60);
+  const has = (k) => b[k] !== undefined;
+  const supplierRef = cleanText(String(has('supplierRef') || !cur ? b.supplierRef || '' : cur.supplier_ref), 60);
   if (!supplierRef) throw new HttpError(400, 'Indiquez le numéro de la facture du fournisseur.');
-  const invoiceDate = P.dateOrNull(b.invoiceDate) || P.today();
+  const invoiceDate = P.dateOrNull(has('invoiceDate') || !cur ? b.invoiceDate : cur.invoice_date) || P.today();
   if (invoiceDate > P.today()) throw new HttpError(400, 'La date de la facture ne peut pas être dans le futur.');
   let order = null; let supplierId;
   if (cur) { order = cur.order_id ? await db.prepare('SELECT * FROM pur_orders WHERE id = ?').get(cur.order_id) : null; supplierId = Number(cur.supplier_id); } else {
     if (b.orderId !== undefined && b.orderId !== null && b.orderId !== '') {
       order = await db.prepare('SELECT * FROM pur_orders WHERE id = ? AND org_id = ?').get(A.id(b.orderId), req.org.id);
-      if (!order) throw new HttpError(404, 'Bon de commande introuvable.');
+      if (!order) throw new HttpError(400, 'Bon de commande introuvable.');
       supplierId = Number(order.supplier_id);
+      if (b.supplierId !== undefined && b.supplierId !== null && b.supplierId !== '' && Number(b.supplierId) !== supplierId) throw new HttpError(400, "Le fournisseur de la facture n'est pas celui du bon de commande.");
     } else {
       const s = await db.prepare('SELECT id FROM suppliers WHERE id = ? AND org_id = ?').get(A.id(b.supplierId, 'Choisissez le fournisseur.'), req.org.id);
       if (!s) throw new HttpError(400, 'Fournisseur introuvable.');
@@ -102,14 +111,16 @@ async function readInvoice(req, b, cur) {
   const sup = await db.prepare('SELECT * FROM suppliers WHERE id = ?').get(supplierId);
   const settings = await P.settingsOf(req.org);
   const terms = order ? Number(order.payment_days) : sup && sup.payment_days !== null ? Number(sup.payment_days) : settings.defaultTermsDays;
-  const dueDate = P.dateOrNull(b.dueDate) || P.addDays(invoiceDate, terms);
-  const vatRate = b.vatRate === undefined || b.vatRate === null || b.vatRate === '' ? (order ? Number(order.vat_rate) : Number(req.org.vat_rate) || 0) : P.pct(b.vatRate);
-  const declared = b.declaredTotal === undefined || b.declaredTotal === null || b.declaredTotal === '' ? null : P.money(b.declaredTotal, 'Total annoncé invalide.');
-  const account = String(b.expenseAccount || '601').trim();
-  if (!/^[2-6]\d{1,5}$/.test(account)) throw new HttpError(400, 'Compte de charge invalide (ex. 601, 605, 622).');
+  const dueDate = P.dateOrNull(b.dueDate) || (cur && !has('invoiceDate') ? cur.due_date : P.addDays(invoiceDate, terms));
+  if (dueDate < invoiceDate) throw new HttpError(400, "L'échéance précède la date de la facture.");
+  const vatRate = b.vatRate === undefined || b.vatRate === null || b.vatRate === '' ? (cur ? Number(cur.vat_rate) : order ? Number(order.vat_rate) : Number(req.org.vat_rate) || 0) : P.pct(b.vatRate, 40);
+  const declared = b.declaredTotal === undefined && cur ? (cur.declared_total === null ? null : Number(cur.declared_total)) : b.declaredTotal === undefined || b.declaredTotal === null || b.declaredTotal === '' ? null : P.money(b.declaredTotal, 'Total annoncé invalide.');
+  const account = String(b.expenseAccount || (cur ? cur.expense_account : '601')).trim();
+  // Charges (classe 6), stocks (classe 3) ou immobilisations (classe 2) : jamais un compte de tiers ou de trésorerie (classes 4 et 5).
+  if (!/^[236]\d{1,5}$/.test(account)) throw new HttpError(400, 'Compte de charge invalide : un compte de charges, de stock ou d\'immobilisation (ex. 601, 605, 622).');
   // Le compte doit exister (plan de l'organisation ou plan SYSCOHADA de base) : sinon la validation échouerait plus tard, au moment de passer l'écriture.
   if (!PLAN.some(([c]) => c === account) && !await db.prepare('SELECT 1 FROM acc_accounts WHERE org_id = ? AND code = ?').get(req.org.id, account)) throw new HttpError(400, `Compte de charge inconnu du plan comptable : ${account}. Choisissez un compte existant (ex. 601, 605, 611) ou créez-le d'abord dans la Comptabilité.`);
-  const raw = Array.isArray(b.lines) ? b.lines : [];
+  const raw = Array.isArray(b.lines) ? b.lines : (cur && b.lines === undefined ? (await linesOf(cur.id)).map((l) => ({ orderLineId: l.order_line_id, description: l.description, quantity: l.quantity, unitPrice: l.unit_price })) : []);
   if (!raw.length) throw new HttpError(400, 'Ajoutez au moins une ligne.');
   if (raw.length > 200) throw new HttpError(400, 'Trop de lignes (200 au plus).');
   const valid = order ? Object.fromEntries((await db.prepare('SELECT * FROM pur_order_lines WHERE order_id = ?').all(order.id)).map((l) => [Number(l.id), l])) : {};
@@ -121,7 +132,7 @@ async function readInvoice(req, b, cur) {
     if (!description) throw new HttpError(400, "Chaque ligne a besoin d'une désignation.");
     return { order_line_id: olId, description, quantity: P.qtyOf(x.quantity), unit_price: P.money(x.unitPrice, 'Prix invalide.') };
   });
-  return { order, supplierId, supplierRef, invoiceDate, dueDate, vatRate, declared, account, notes: cleanText(String(b.notes || ''), 500), lines };
+  return { order, supplierId, supplierRef, invoiceDate, dueDate, vatRate, declared, account, notes: cleanText(String(has('notes') || !cur ? b.notes || '' : cur.notes || ''), 500), lines };
 }
 async function saveLines(id, lines) {
   await db.prepare('DELETE FROM pur_invoice_lines WHERE invoice_id = ?').run(id);
@@ -136,8 +147,10 @@ router.post('/invoices', mgr, async (req, res) => {
     const id = Number((await db.prepare(`INSERT INTO pur_invoices (org_id, number, supplier_id, order_id, supplier_ref, invoice_date, due_date, vat_rate, declared_total, expense_account, notes, status, created_by, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'entered', ?, ?, ?)`).run(req.org.id, number, v.supplierId, v.order ? v.order.id : null, v.supplierRef, v.invoiceDate, v.dueDate, v.vatRate, v.declared, v.account, v.notes, req.user.id, now, now)).lastInsertRowid);
     await saveLines(id, v.lines);
+    await db.prepare('UPDATE pur_invoices SET supplier_name = (SELECT name FROM suppliers WHERE id = ?) WHERE id = ?').run(v.supplierId, id);
+    await P.syncInvoiceTotals(id);
     const r = await rematch(req, await db.prepare('SELECT * FROM pur_invoices WHERE id = ?').get(id));
-    return { id, number, status: r.status };
+    return { id, number, status: r.status, issues: r.issues };
   })();
   await A.logActivity(req.org.id, req.user.id, 'purchasing', `Facture fournisseur ${out.number} saisie`);
   res.status(201).json(out);
@@ -151,6 +164,7 @@ router.put('/invoices/:id', mgr, async (req, res) => {
     await db.prepare('UPDATE pur_invoices SET supplier_ref = ?, invoice_date = ?, due_date = ?, vat_rate = ?, declared_total = ?, expense_account = ?, notes = ?, updated_at = ? WHERE id = ?')
       .run(v.supplierRef, v.invoiceDate, v.dueDate, v.vatRate, v.declared, v.account, v.notes, nowISO(), i.id);
     await saveLines(i.id, v.lines);
+    await P.syncInvoiceTotals(i.id);
     return rematch(req, await invoiceOf(req, i.id));
   })();
   res.json({ ok: true, status: out.status });
@@ -173,7 +187,7 @@ router.get('/invoices', mgr, async (req, res) => {
   const counts = {}; let toPay = 0; let overdue = 0; const out = [];
   for (const i of rows) {
     counts[i.status] = (counts[i.status] || 0) + 1;
-    const t = await P.invoiceTotalsOf(i); const paid = i.status === 'approved' ? await paidOf(i.id) : 0;
+    const t = await P.invoiceTotalsOf(i); const paid = i.status === 'approved' ? await paidOf(i) : 0;
     if (i.status === 'approved') { const bal = Math.max(0, t.ttc - paid); toPay += bal; if (bal > 0 && i.due_date < P.today()) overdue++; }
     if (status && i.status !== status) continue;
     let issues = []; try { issues = JSON.parse(i.issues); } catch { issues = []; }
@@ -187,8 +201,8 @@ router.get('/invoices/:id', mgr, async (req, res) => {
   const o = i.order_id ? await db.prepare('SELECT number FROM pur_orders WHERE id = ?').get(i.order_id) : null;
   const lines = await linesOf(i.id);
   const m = await match(req, i, lines);
-  const pays = await db.prepare('SELECT * FROM pur_payments WHERE invoice_id = ? ORDER BY date, id').all(i.id);
-  const paid = pays.reduce((x, p) => x + Number(p.amount), 0);
+  const pays = i.bill_id ? await db.prepare('SELECT * FROM supplier_payments WHERE bill_id = ? ORDER BY date, id').all(i.bill_id) : await db.prepare('SELECT * FROM pur_payments WHERE invoice_id = ? ORDER BY date, id').all(i.id);
+  const paid = await paidOf(i);
   const entry = i.entry_id ? await db.prepare('SELECT number FROM acc_entries WHERE id = ?').get(i.entry_id) : null;
   let issues = []; try { issues = JSON.parse(i.issues); } catch { issues = []; }
   const METHOD = { bank: 'Virement bancaire', mobile: 'Mobile money', cash: 'Espèces' };
@@ -201,7 +215,7 @@ router.get('/invoices/:id', mgr, async (req, res) => {
     lines: lines.map((l) => ({ orderLineId: l.order_line_id ? Number(l.order_line_id) : null, description: l.description, quantity: Number(l.quantity), unitPrice: Number(l.unit_price) })),
     totalHt: m.totals.ht, vatAmount: m.totals.vat, totalTtc: m.totals.ttc,
     payments: pays.map((p) => ({ id: Number(p.id), date: p.date, method: METHOD[p.method] || p.method, reference: p.reference || null, amount: Number(p.amount) })),
-    balance: Math.max(0, m.totals.ttc - paid), paid, canPay: i.status === 'approved' && paid < m.totals.ttc && A.can(req, 'admin'),
+    billId: i.bill_id ? Number(i.bill_id) : null, balance: i.status === 'approved' ? Math.max(0, m.totals.ttc - paid) : 0, paid, canPay: i.status === 'approved' && paid < m.totals.ttc && A.can(req, 'admin'),
   } });
 });
 
@@ -213,38 +227,45 @@ router.post('/invoices/:id/approve', admin, async (req, res) => {
   // Tout sous verrou : une modification, un rapprochement ou une seconde validation simultanés ne passent pas (une seule écriture, sur les lignes validées).
   const { i, r, out } = await db.transaction(async () => {
     const i = await P.lockRow('pur_invoices', i0.id);
-    if (i.status === 'approved') throw new HttpError(400, 'Cette facture est déjà validée pour paiement.');
+    if (i.status === 'approved') throw new HttpError(409, 'Cette facture est déjà validée pour paiement.');
     if (!['entered', 'matched', 'blocked'].includes(i.status)) throw new HttpError(400, 'Cette facture est annulée.');
     const r = await rematch(req, i);
-    if (r.status === 'blocked' && !(b.override && reason)) return { i, r, out: null };
+    if (r.status === 'blocked' && !b.override) return { i, r, out: null };
+    if (r.status === 'blocked' && !reason) throw new HttpError(400, 'Indiquez pourquoi vous validez malgré les anomalies (motif obligatoire).');
     const s = await db.prepare('SELECT name FROM suppliers WHERE id = ?').get(i.supplier_id);
     const t = r.totals;
+    const key = await entrySid(req.org.id, i);
     const lines = [{ account: i.expense_account, debit: t.ht, memo: `Facture ${i.supplier_ref}` }];
     if (t.vat) lines.push({ account: '4452', debit: t.vat, memo: 'TVA récupérable' });
     lines.push({ account: '401', credit: t.ttc, memo: s ? s.name : 'Fournisseur' });
-    const e = await acc().recordEntry(req.org, req.user.id, { journal: 'AC', date: i.invoice_date, label: `Facture ${i.supplier_ref} - ${s ? s.name : ''}`.slice(0, 200), piece: i.number, lines: lines.filter((l) => (l.debit || l.credit) > 0), source: await sourceKey(req.org.id, 'pur_invoice', i.id), sourceId: i.id });
-    await db.prepare("UPDATE pur_invoices SET status = 'approved', override_reason = ?, entry_id = ?, approved_by = ?, approved_at = ?, updated_at = ? WHERE id = ?").run(r.status === 'blocked' ? reason : '', e.id, req.user.id, nowISO(), nowISO(), i.id);
-    return { i, r, out: e };
+    const e = await acc().recordEntry(req.org, req.user.id, { journal: 'AC', date: i.invoice_date, label: `Facture ${i.supplier_ref} - ${s ? s.name : ''}`.slice(0, 200), piece: i.number, lines: lines.filter((l) => (l.debit || l.credit) > 0), source: 'pur_invoice', sourceId: key.sid });
+    // Dette fournisseur dans la comptabilité (dettes à payer), liée à l'écriture : les règlements s'y rattachent.
+    const billId = Number((await db.prepare("INSERT INTO supplier_bills (org_id, supplier_id, supplier_name, number, bill_date, due_date, amount, source, source_id, acc_entry_id, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pur_invoice', ?, ?, ?, ?, ?)")
+      .run(req.org.id, i.supplier_id, s ? s.name : '', i.supplier_ref || i.number, i.invoice_date, i.due_date, t.ttc, key.sid, e.id, `Achats ${i.number}`, req.user.id, nowISO())).lastInsertRowid);
+    await db.prepare("UPDATE pur_invoices SET status = 'approved', override_reason = ?, entry_id = ?, bill_id = ?, attempts = ?, approved_by = ?, approved_at = ?, updated_at = ? WHERE id = ?").run(r.status === 'blocked' ? reason : '', e.id, billId, key.attempt, req.user.id, nowISO(), nowISO(), i.id);
+    return { i, r, out: { ...e, billId } };
   })();
   // Le nouveau statut du rapprochement (« bloquée ») reste enregistré : l'erreur est levée après la transaction.
   if (!out) throw new HttpError(400, 'Le rapprochement a relevé des anomalies : corrigez la facture ou validez malgré tout avec un motif.');
   await A.logActivity(req.org.id, req.user.id, 'purchasing', `Facture ${i.number} validée pour paiement${r.status === 'blocked' ? ' malgré les anomalies' : ''}`);
-  res.json({ ok: true, entry: out.number });
+  res.json({ ok: true, entry: out.number, billId: out.billId });
 });
 router.post('/invoices/:id/unapprove', admin, async (req, res) => {
   const i0 = await invoiceOf(req, req.params.id);
   const reason = cleanText(String((req.body || {}).reason || ''), 500);
+  let rev = null;
   await db.transaction(async () => {
     // Sous verrou (comme le paiement) : un règlement enregistré au même moment empêche l'annulation.
     const i = await P.lockRow('pur_invoices', i0.id);
     if (i.status !== 'approved') throw new HttpError(400, "Cette facture n'est pas validée.");
-    if (await paidOf(i.id) > 0) throw new HttpError(400, 'Un règlement a déjà été enregistré : la validation ne peut plus être annulée.');
+    if (await paidOf(i) > 0) throw new HttpError(400, 'Un règlement a déjà été enregistré : la validation ne peut plus être annulée.');
     if (!reason) throw new HttpError(400, 'Indiquez le motif.');
-    if (i.entry_id) await acc().reverseEntry(req.org, req.user.id, i.entry_id, P.today(), { source: await sourceKey(req.org.id, 'pur_invoice_cancel', i.id), sourceId: i.id });
-    await db.prepare("UPDATE pur_invoices SET status = 'entered', entry_id = NULL, approved_by = NULL, approved_at = NULL, override_reason = '', notes = ?, updated_at = ? WHERE id = ?").run(`${i.notes ? i.notes + '\n' : ''}Validation annulée : ${reason}`.slice(0, 1000), nowISO(), i.id);
+    if (i.entry_id) { const orig = await db.prepare('SELECT source_id FROM acc_entries WHERE id = ?').get(i.entry_id); rev = await acc().reverseEntry(req.org, req.user.id, i.entry_id, P.today(), { source: 'pur_invoice_cancel', sourceId: orig ? orig.source_id : i.id * 100 + Number(i.attempts) }); }
+    if (i.bill_id) await db.prepare("UPDATE supplier_bills SET status = 'cancelled' WHERE id = ? AND paid = 0").run(i.bill_id);
+    await db.prepare("UPDATE pur_invoices SET status = 'entered', bill_id = NULL, entry_id = NULL, approved_by = NULL, approved_at = NULL, override_reason = '', notes = ?, updated_at = ? WHERE id = ?").run(`${i.notes ? i.notes + '\n' : ''}Validation annulée : ${reason}`.slice(0, 1000), nowISO(), i.id);
     await rematch(req, await invoiceOf(req, i.id));
   })();
-  res.json({ ok: true });
+  res.json({ ok: true, reversedEntry: rev ? rev.reversed : null, reversalEntry: rev ? rev.number : null });
 });
 const MODES = { bank: ['521', 'BQ'], mobile: ['589', 'MM'], cash: ['571', 'CA'] };
 router.post('/invoices/:id/pay', admin, async (req, res) => {
@@ -256,7 +277,7 @@ router.post('/invoices/:id/pay', admin, async (req, res) => {
     const i = await P.lockRow('pur_invoices', i0.id);
     if (i.status !== 'approved') throw new HttpError(400, "Validez d'abord la facture pour paiement.");
     const t = await P.invoiceTotalsOf(i);
-    balance = t.ttc - await paidOf(i.id);
+    balance = t.ttc - await paidOf(i);
     if (balance <= 0) throw new HttpError(400, 'Cette facture est déjà payée.');
     amount = b.amount === undefined || b.amount === '' ? balance : P.money(b.amount, 'Montant invalide.');
     if (amount <= 0) throw new HttpError(400, 'Montant invalide.');
@@ -268,6 +289,19 @@ router.post('/invoices/:id/pay', admin, async (req, res) => {
     const ref = cleanText(String(b.reference || ''), 80);
     const s = await db.prepare('SELECT name FROM suppliers WHERE id = ?').get(i.supplier_id);
     const [account, journal] = MODES[method];
+    if (i.bill_id) {
+      // Règlement relié à la dette fournisseur de la comptabilité (supplier_bills / supplier_payments) : une seule source de vérité pour le solde.
+      const bill = await db.prepare('SELECT * FROM supplier_bills WHERE id = ? FOR UPDATE').get(i.bill_id);
+      if (!bill || !['open', 'partial'].includes(bill.status)) throw new HttpError(400, "Cette facture n'est plus à payer.");
+      const upd = await db.prepare("UPDATE supplier_bills SET paid = paid + ?, status = CASE WHEN paid + ? >= amount THEN 'paid' ELSE 'partial' END WHERE id = ? AND status IN ('open', 'partial') AND paid + ? <= amount").run(amount, amount, bill.id, amount);
+      if (!upd.changes) throw new HttpError(409, 'Cette facture vient de changer : rechargez la page.');
+      const sp = Number((await db.prepare('INSERT INTO supplier_payments (org_id, bill_id, amount, date, method, reference, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, bill.id, amount, date, method, ref, req.user.id, nowISO())).lastInsertRowid);
+      const xe = await acc().recordEntry(req.org, req.user.id, { journal, date, label: `Règlement fournisseur ${s ? s.name : ''} ${i.supplier_ref}`.trim().slice(0, 200), piece: ref || i.supplier_ref || i.number, lines: [{ account: '401', debit: amount, memo: s ? s.name : 'Fournisseur' }, { account, credit: amount, memo: ref }], source: 'supplier_payment', sourceId: sp });
+      await db.prepare('UPDATE supplier_payments SET acc_entry_id = ? WHERE id = ?').run(xe.id, sp);
+      // Historique des règlements d'achats (table de la première version) : conservé en parallèle, le solde faisant foi étant celui de la dette fournisseur.
+      await db.prepare('INSERT INTO pur_payments (org_id, invoice_id, date, method, reference, amount, entry_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, i.id, date, method, ref, amount, xe.id, req.user.id, nowISO());
+      return xe;
+    }
     const pid = Number((await db.prepare('INSERT INTO pur_payments (org_id, invoice_id, date, method, reference, amount, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, i.id, date, method, ref, amount, req.user.id, nowISO())).lastInsertRowid);
     const x = await acc().recordEntry(req.org, req.user.id, { journal, date, label: `Règlement ${i.supplier_ref} - ${s ? s.name : ''}`.slice(0, 200), piece: ref || i.number, lines: [{ account: '401', debit: amount, memo: s ? s.name : 'Fournisseur' }, { account, credit: amount, memo: `Règlement ${i.number}` }], source: 'pur_payment', sourceId: pid });
     await db.prepare('UPDATE pur_payments SET entry_id = ? WHERE id = ?').run(x.id, pid);

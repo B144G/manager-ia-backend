@@ -70,7 +70,7 @@ async function readLines(req, lines, priceKey, { priceRequired = false } = {}) {
     if (!description) throw new HttpError(400, "Chaque ligne a besoin d'un article du stock ou d'une désignation.");
     const raw = x[priceKey];
     const price = raw === undefined || raw === null || raw === '' ? null : money(raw, 'Prix invalide.');
-    if (priceRequired && price === null) throw new HttpError(400, 'Indiquez le prix unitaire de chaque ligne.');
+    if (priceRequired && (price === null || price <= 0)) throw new HttpError(400, 'Indiquez le prix unitaire de chaque ligne (supérieur à zéro).');
     out.push({ itemId: item ? Number(item.id) : null, description, unit: cleanText(String(x.unit || ''), 20) || (item ? item.unit : ''), quantity: qtyOf(x.quantity), price });
   }
   return out;
@@ -104,6 +104,36 @@ async function orderTotalsOf(o) {
 async function invoiceTotalsOf(inv) {
   const lines = await db.prepare('SELECT quantity, unit_price FROM pur_invoice_lines WHERE invoice_id = ?').all(inv.id);
   return orderTotals(lines, inv.vat_rate);
+}
+/** Enregistre les totaux (HT, TVA, TTC) d'un bon de commande ou d'une facture : colonnes utilisées par les sommes SQL (tableaux de bord, comptabilité). */
+async function syncOrderTotals(id) {
+  const o = await db.prepare('SELECT id, vat_rate FROM pur_orders WHERE id = ?').get(id);
+  if (!o) return;
+  const t = await orderTotalsOf(o);
+  await db.prepare('UPDATE pur_orders SET total_ht = ?, vat_amount = ?, total_ttc = ? WHERE id = ?').run(t.ht, t.vat, t.ttc, id);
+}
+async function syncInvoiceTotals(id) {
+  const i = await db.prepare('SELECT id, vat_rate FROM pur_invoices WHERE id = ?').get(id);
+  if (!i) return;
+  const t = await invoiceTotalsOf(i);
+  await db.prepare('UPDATE pur_invoices SET total_ht = ?, vat_amount = ?, total_ttc = ? WHERE id = ?').run(t.ht, t.vat, t.ttc, id);
+}
+/** Projet de l'organisation (jamais celui d'une autre). */
+async function projectOf(req, v) {
+  const id = A.idOrNull(v, 'Projet invalide.');
+  if (id === null) return null;
+  if (!await db.prepare('SELECT 1 FROM projects WHERE id = ? AND org_id = ?').get(id, req.org.id)) throw new HttpError(400, 'Projet introuvable.');
+  return id;
+}
+/** Séparation des tâches : on n'approuve pas son propre document (sauf le propriétaire). */
+function ownDocError(req, authorId, what) {
+  if (Number(authorId) === Number(req.user.id) && req.member.role !== 'owner') return `Vous ne pouvez pas approuver votre propre ${what} : un autre responsable doit le faire.`;
+  return null;
+}
+/** Montant déjà réglé d'une facture : dette fournisseur liée (comptabilité) si elle existe, sinon règlements enregistrés dans les achats (anciennes factures). */
+async function invoicePaid(i) {
+  if (i.bill_id) { const b = await db.prepare('SELECT paid FROM supplier_bills WHERE id = ?').get(i.bill_id); return b ? Number(b.paid) : 0; }
+  return Number((await db.prepare('SELECT COALESCE(SUM(amount), 0) AS s FROM pur_payments WHERE invoice_id = ?').get(i.id)).s);
 }
 const OPEN_ORDER = ['approved', 'sent', 'partial'];
 const isLate = (o) => OPEN_ORDER.includes(o.status) && o.expected_date && o.expected_date < today();
@@ -144,8 +174,8 @@ async function budgetCheck(req, cat, year, extra, opts = {}) {
   const b = await budgetOf(req.org.id, cat, year, { ...opts, extra });
   if (!b || !b.over) return {};
   const s = await settingsOf(req.org);
-  if (s.budgetBlock && !opts.warnOnly) throw new HttpError(403, `Budget « ${cat} » dépassé : l'approbation est bloquée par les réglages des achats.`);
-  return { budgetWarning: { category: cat } };
+  if (s.budgetBlock && !opts.warnOnly && !(opts.override === true && A.can(req, 'admin'))) throw new HttpError(403, `Budget « ${cat} » dépassé : l'approbation est bloquée par les réglages des achats (un administrateur peut passer outre explicitement).`);
+  return { budgetWarning: { category: cat, over: true, planned: b.planned, engaged: b.engaged, invoiced: b.invoiced, after: b.engaged + b.invoiced + (extra || 0) } };
 }
 
 /** Verrou de ligne (dans une transaction) : relit un document sous verrou pour que deux envois simultanés (double clic, deux personnes)
@@ -195,5 +225,5 @@ async function alertItems(req) {
 module.exports = {
   alertItems, plural,
   today, yearOf, round3, amount, vatOf, DEFAULTS, APPROVER_ROLES, settingsOf, requiredRole, nextNumber, dateOrNull, money, qtyOf, pct, category, readLines,
-  orderLineState, orderTotals, orderTotalsOf, lockRow, invoiceTotalsOf, OPEN_ORDER, isLate, plannedOf, usedOf, budgetOf, budgetCheck, nameMap, csv, addDays,
+  invoicePaid, syncOrderTotals, syncInvoiceTotals, projectOf, ownDocError, orderLineState, orderTotals, orderTotalsOf, lockRow, invoiceTotalsOf, OPEN_ORDER, isLate, plannedOf, usedOf, budgetOf, budgetCheck, nameMap, csv, addDays,
 };

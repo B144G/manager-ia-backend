@@ -44,6 +44,7 @@ async function statsOf(orgId, s) {
   const nEv = Number(ev.n) || 0;
   const onTimeRate = timed ? Math.round((onTime / timed) * 100) : null;
   const qualityRate = accepted + rejected > 0 ? Math.round((accepted / (accepted + rejected)) * 100) : null;
+  const qualityRateExact = accepted + rejected > 0 ? Math.round((accepted / (accepted + rejected)) * 1000) / 10 : null;
   const priceIndex = ratios.length ? Math.round((ratios.reduce((a, b) => a + b, 0) / ratios.length) * 100) / 100 : null;
   const mix = (measured, evalAvg) => { const v = [measured, evalAvg].filter((x) => x !== null && x !== undefined && Number.isFinite(x)); return v.length ? Math.round((v.reduce((a, b) => a + b, 0) / v.length) * 10) / 10 : null; };
   const scores = {
@@ -52,9 +53,11 @@ async function statsOf(orgId, s) {
     price: mix(priceIndex === null ? null : Math.max(0, Math.min(5, 5 - (priceIndex - 1) * 10)), nEv ? Number(ev.p) : null),
   };
   const parts = Object.values(scores).filter((x) => x !== null);
+  const score = parts.length ? Math.round((parts.reduce((a, b) => a + b, 0) / parts.length) * 10) / 10 : null;
+  const GRADE = score === null ? '' : score >= 4.5 ? 'Excellent' : score >= 3.5 ? 'Bon' : score >= 2.5 ? 'Moyen' : 'À surveiller';
   return {
-    orders: orders.length, spent, score: parts.length ? Math.round((parts.reduce((a, b) => a + b, 0) / parts.length) * 10) / 10 : null,
-    onTimeRate, avgLeadDays: leads.length ? Math.round((leads.reduce((a, b) => a + b, 0) / leads.length) * 10) / 10 : null, qualityRate, priceIndex, scores, evaluations: nEv,
+    orders: orders.length, spent, score, grade: GRADE, onTime, late: timed - onTime, accepted: P.round3(accepted), rejected: P.round3(rejected), invoices: spentRows.length,
+    onTimeRate, qualityRateExact, avgLeadDays: leads.length ? Math.round((leads.reduce((a, b) => a + b, 0) / leads.length) * 10) / 10 : null, qualityRate, priceIndex, scores, evaluations: nEv,
   };
 }
 
@@ -63,7 +66,7 @@ router.get('/suppliers', mgr, async (req, res) => {
   const out = [];
   for (const s of rows) {
     const st = await statsOf(req.org.id, s);
-    out.push({ id: Number(s.id), name: s.name, blocked: Boolean(Number(s.blocked)), category: s.category || null, city: s.city || null, phone: s.phone || null, email: s.email || null, paymentDays: s.payment_days === null ? null : Number(s.payment_days), stats: { orders: st.orders, spent: st.spent, score: st.score } });
+    out.push({ id: Number(s.id), name: s.name, blocked: Boolean(Number(s.blocked)), status: Number(s.blocked) ? 'blocked' : 'active', category: s.category || null, city: s.city || null, phone: s.phone || null, email: s.email || null, paymentDays: s.payment_days === null ? null : Number(s.payment_days), stats: { orders: st.orders, spent: st.spent, score: st.score } });
   }
   res.json({ suppliers: out });
 });
@@ -77,9 +80,9 @@ router.get('/suppliers/:id', mgr, async (req, res) => {
   const docs = await db.prepare('SELECT id, name, mime, size, created_at FROM pur_documents WHERE supplier_id = ? ORDER BY id DESC').all(s.id);
   res.json({ supplier: {
     id: Number(s.id), name: s.name, contactPerson: s.contact_person, email: s.email, phone: s.phone, address: s.address, city: s.city, taxId: s.tax_id, rccm: s.rccm, category: s.category,
-    paymentDays: s.payment_days === null ? null : Number(s.payment_days), bankInfo: s.bank_info, notes: s.notes, blocked: Boolean(Number(s.blocked)),
+    paymentDays: s.payment_days === null ? null : Number(s.payment_days), bankInfo: s.bank_info, notes: s.notes, blocked: Boolean(Number(s.blocked)), status: Number(s.blocked) ? 'blocked' : 'active',
     stats: await statsOf(req.org.id, s), orders, invoices,
-    evaluations: evs.map((e) => ({ id: Number(e.id), createdAt: e.created_at, author: e.author || '', deliveryScore: Number(e.delivery_score), qualityScore: Number(e.quality_score), priceScore: Number(e.price_score), comment: e.comment || null })),
+    evaluations: evs.map((e) => ({ orderId: e.order_id ? Number(e.order_id) : null, id: Number(e.id), createdAt: e.created_at, author: e.author || '', deliveryScore: Number(e.delivery_score), qualityScore: Number(e.quality_score), priceScore: Number(e.price_score), comment: e.comment || null })),
     documents: docs.map((d) => ({ id: Number(d.id), name: d.name, mime: d.mime, size: Number(d.size), createdAt: d.created_at })),
   } });
 });
@@ -95,6 +98,7 @@ async function readSupplier(req, b, cur) {
   if (b.paymentDays === undefined) pd = cur ? cur.payment_days : null;
   else if (b.paymentDays === null || b.paymentDays === '') pd = null;
   else { pd = Number(b.paymentDays); if (!Number.isInteger(pd) || pd < 0 || pd > 365) throw new HttpError(400, 'Délai de paiement : entre 0 et 365 jours.'); }
+  if (b.status !== undefined && !['active', 'blocked'].includes(b.status)) throw new HttpError(400, 'Statut : actif (active) ou bloqué (blocked).');
   const blocked = b.status === undefined ? (cur ? Number(cur.blocked) : 0) : b.status === 'blocked' ? 1 : 0;
   const v = { name, contact_person: pick('contactPerson', 100), email, phone: pick('phone', 40), address: pick('address', 200), city: pick('city', 80), tax_id: pick('taxId', 40), rccm: pick('rccm', 40), category: pick('category', 60), bank_info: pick('bankInfo', 300), notes: pick('notes', 500), payment_days: pd, blocked };
   if (cur) for (const k of Object.keys(v)) if (v[k] === undefined) v[k] = cur[k];
@@ -120,10 +124,19 @@ router.put('/suppliers/:id', mgr, async (req, res) => {
 router.post('/suppliers/:id/evaluations', mgr, async (req, res) => {
   const s = await supplierOf(req, req.params.id);
   const b = req.body || {};
-  const sc = (v) => { const n = Number(v); if (!Number.isInteger(n) || n < 1 || n > 5) throw new HttpError(400, 'Chaque note va de 1 à 5.'); return n; };
-  const id = Number((await db.prepare('INSERT INTO pur_evaluations (org_id, supplier_id, author_id, delivery_score, quality_score, price_score, comment, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(req.org.id, s.id, req.user.id, sc(b.deliveryScore), sc(b.qualityScore), sc(b.priceScore), cleanText(String(b.comment || ''), 500), nowISO())).lastInsertRowid);
-  res.status(201).json({ id });
+  const sc = (v, label) => { const n = Number(v); if (!Number.isInteger(n) || n < 1 || n > 5) throw new HttpError(400, `${label} : une note entière de 1 à 5.`); return n; };
+  const d = sc(b.deliveryScore, 'Respect des délais'); const q = sc(b.qualityScore, 'Qualité'); const p = sc(b.priceScore, 'Prix');
+  // L'avis peut porter sur un bon de commande précis (de ce fournisseur et de cette organisation).
+  let orderId = null;
+  if (b.orderId !== undefined && b.orderId !== null && b.orderId !== '') {
+    const o = await db.prepare('SELECT id FROM pur_orders WHERE id = ? AND org_id = ? AND supplier_id = ?').get(A.id(b.orderId, 'Commande invalide.'), req.org.id, s.id);
+    if (!o) throw new HttpError(400, "Ce bon de commande n'est pas celui de ce fournisseur.");
+    orderId = Number(o.id);
+  }
+  const id = Number((await db.prepare('INSERT INTO pur_evaluations (org_id, supplier_id, author_id, delivery_score, quality_score, price_score, comment, created_at, order_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(req.org.id, s.id, req.user.id, d, q, p, cleanText(String(b.comment || ''), 500), nowISO(), orderId)).lastInsertRowid);
+  await A.logActivity(req.org.id, req.user.id, 'purchasing', `Évaluation du fournisseur « ${s.name} » enregistrée`);
+  res.status(201).json({ id, stats: await statsOf(req.org.id, s) });
 });
 router.delete('/evaluations/:id', A.need('admin'), async (req, res) => {
   const r = await db.prepare('DELETE FROM pur_evaluations WHERE id = ? AND org_id = ?').run(A.id(req.params.id), req.org.id);
@@ -154,8 +167,10 @@ router.get('/documents/:id/file', mgr, async (req, res) => {
   res.end(data);
 });
 router.delete('/documents/:id', mgr, async (req, res) => {
-  const r = await db.prepare('DELETE FROM pur_documents WHERE id = ? AND org_id = ?').run(A.id(req.params.id), req.org.id);
-  if (!r.changes) throw new HttpError(404, 'Document introuvable.');
+  const d = await db.prepare('SELECT * FROM pur_documents WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
+  if (!d) throw new HttpError(404, 'Document introuvable.');
+  if (!A.can(req, 'admin') && Number(d.created_by) !== Number(req.user.id)) throw new HttpError(403, 'Seul son auteur ou un administrateur peut supprimer ce document.');
+  await db.prepare('DELETE FROM pur_documents WHERE id = ?').run(d.id);
   res.json({ ok: true });
 });
 
