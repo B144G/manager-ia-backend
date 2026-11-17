@@ -163,7 +163,7 @@ router.get('/scan', async (req, res) => {
   }
   for (const pre of ['PAL-', 'CAR-', 'CAI-']) {
     if (!up.startsWith(pre)) continue;
-    const u = await db.prepare('SELECT id, code FROM wms_hus WHERE org_id = ? AND code = ?').get(req.org.id, up);
+    const u = (await db.prepare('SELECT id, code FROM wms_units WHERE org_id = ? AND code = ?').get(req.org.id, up)) || (await db.prepare('SELECT id, code FROM wms_hus WHERE org_id = ? AND code = ?').get(req.org.id, up));
     if (u) return res.json({ type: 'unit', id: u.id, label: u.code, code: u.code });
   }
   throw new HttpError(404, 'Code inconnu : ni article, ni emplacement, ni document.');

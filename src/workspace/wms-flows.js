@@ -467,14 +467,35 @@ router.post('/picks/:id/complete', async (req, res) => {
     for (const [itemId, q] of Object.entries(byItem)) await db.prepare("UPDATE wms_reservations SET quantity = ? WHERE pick_id = ? AND item_id = ? AND status = 'active'").run(q, p.id, Number(itemId));
     await db.prepare("UPDATE wms_reservations SET status = 'released', close_reason = 'Rien prélevé' WHERE pick_id = ? AND status = 'active' AND quantity <= 0").run(p.id);
     await db.prepare("UPDATE wms_picks SET status = 'picked', picked_at = ? WHERE id = ?").run(nowISO(), p.id);
+    // Préparation partielle (ligne B, option « keepShortfall: true » ; par défaut A libère le manque, prouvé par test-wms.js) : le manque reste réservé pour la commande, qui existe toujours (dans la limite de ce qui est disponible).
+    if (p.document_id && (req.body || {}).keepShortfall === true) {
+      const doc = await db.prepare('SELECT status FROM documents WHERE id = ?').get(p.document_id);
+      if (doc && !['cancelled', 'refused'].includes(doc.status)) {
+        const wanted = {}; for (const l of lines) wanted[l.item_id] = r3((wanted[l.item_id] || 0) + Number(l.quantity));
+        for (const [itemId, q] of Object.entries(byItem)) {
+          const miss = r3(wanted[itemId] - q); if (miss <= W.EPS) continue;
+          const take = r3(Math.min(miss, Math.max(0, (await W.availability(Number(itemId))).available)));
+          if (take > W.EPS) await db.prepare("INSERT INTO wms_reservations (org_id, item_id, quantity, status, source_kind, document_id, label, created_by, created_at) VALUES (?, ?, ?, 'active', 'document', ?, ?, ?, ?)").run(req.org.id, Number(itemId), take, p.document_id, p.label || '', req.user.id, nowISO());
+        }
+      }
+    }
   })();
   res.json({ ok: true });
 });
 router.post('/picks/:id/issue', mgr, async (req, res) => {
-  const p = await pickOf(req, req.params.id);
+  await issuePick(req, await pickOf(req, req.params.id));
+  res.json({ ok: true });
+});
+/** Sort du stock ce qui a été prélevé pour une liste (route /picks/:id/issue et /waves/:id/issue). */
+async function issuePick(req, p) {
   if (p.status !== 'picked') throw new HttpError(400, 'Terminez d\'abord la préparation.');
   if (await db.prepare("SELECT 1 FROM wms_hus WHERE pick_id = ? AND status NOT IN ('empty','shipped') LIMIT 1").get(p.id)) throw new HttpError(400, "Cette liste est emballée en colis : expédiez-la depuis l'écran Expéditions.");
   await require('./wms-vas').assertDone(req, { pickIds: [Number(p.id)] });
+  // Colisage (ligne B) : dès qu'un colis existe, tout ce qui est prélevé doit être emballé.
+  if (await db.prepare('SELECT 1 FROM wms_packages WHERE pick_id = ? LIMIT 1').get(p.id)) {
+    const rest = await require('./wms-b-units').unpackedOf(p.id);
+    if (rest.length) throw new HttpError(409, `Colisage incomplet : ${rest.map((x) => `${x.name} (${x.q})`).join(', ')} pas encore emballé(s).`);
+  }
   const serials = (req.body || {}).serials || {};
   await db.transaction(async () => {
     // Double envoi : le second appel attend le premier puis trouve la liste déjà sortie (le stock ne sort qu'une fois).
@@ -496,8 +517,7 @@ router.post('/picks/:id/issue', mgr, async (req, res) => {
     // Réapprovisionnement automatique des emplacements de préparation passés sous leur minimum.
     for (const l of lines) for (const f of (() => { try { return JSON.parse(l.picked_from); } catch { return []; } })()) if (f.locationId) await require('./wms-replen').autoCheck(req, f.locationId, l.item_id);
   })();
-  res.json({ ok: true });
-});
+}
 router.post('/picks/:id/cancel', mgr, async (req, res) => {
   const p = await pickOf(req, req.params.id);
   if (!['open', 'in_progress', 'picked'].includes(p.status)) throw new HttpError(400, 'Cette liste est terminée ou annulée.');
@@ -708,4 +728,4 @@ router.put('/returns/:id/rma', mgr, async (req, res) => {
 });
 
 module.exports = router;
-Object.assign(module.exports, { syncReservations, createPick, documentOf, docNeeds, pickOf });
+Object.assign(module.exports, { syncReservations, issuePick, createPick, documentOf, docNeeds, pickOf });
