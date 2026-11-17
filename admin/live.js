@@ -28,13 +28,13 @@
     const known = new Set(L.st.accounts.map((a) => a.id));
     const fresh = s.accounts.filter((a) => !known.has(a.id));
     if (first) { L.st.accounts = s.accounts; L.st.lastId = s.lastId; L.st.ready = true; if (L.seenId == null) { L.seenId = s.lastId; A.store.set('seen', s.lastId); } }
-    else for (const a of fresh.sort((x, y) => x.id - y.id)) addAccount(a, true);
+    else for (const a of fresh.sort((x, y) => x.id - y.id)) addAccount(a, true, true);
     emit('pending', L.st.pending); emit('summary', L.st.summary); emit('snapshot', L.st);
   }
-  function addAccount(a, announce) {
+  function addAccount(a, announce, inTotals) {
     if (L.st.accounts.some((x) => x.id === a.id)) return;
     L.st.accounts = [a, ...L.st.accounts].sort((x, y) => y.id - x.id).slice(0, 20);
-    L.st.totals.users++; L.st.lastId = Math.max(L.st.lastId, a.id);
+    if (!inTotals) L.st.totals.users++; L.st.lastId = Math.max(L.st.lastId, a.id);
     if (announce) { announceAccount(a); emit('account', a); }
   }
 
