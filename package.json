@@ -64,7 +64,8 @@
     "test:accstock2": "node scripts/test-acc-stock-ecritures.js",
     "test:purchasingb": "node scripts/test-purchasing-b.js",
     "test:purchasingwms": "node scripts/test-purchasing-wms.js",
-    "test:libraryb": "node scripts/test-library-b.js"
+    "test:libraryb": "node scripts/test-library-b.js",
+    "test:stockwms": "node scripts/test-stock-wms.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc14",
