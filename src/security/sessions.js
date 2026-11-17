@@ -31,10 +31,14 @@ async function check(id, kind) {
   return s;
 }
 
-const revoke = async (id, reason = 'déconnexion') => (await db.prepare('UPDATE sessions SET revoked_at = ?, revoke_reason = ? WHERE id = ? AND revoked_at IS NULL').run(nowISO(), clip(reason, 40), id)).changes > 0;
+const revoke = async (id, reason = 'déconnexion') => {
+  await db.prepare('DELETE FROM lib_grants WHERE session_id = ?').run(id); // bibliothèque : les blocs déverrouillés se referment
+  return (await db.prepare('UPDATE sessions SET revoked_at = ?, revoke_reason = ? WHERE id = ? AND revoked_at IS NULL').run(nowISO(), clip(reason, 40), id)).changes > 0;
+};
 
 /** Ferme toutes les sessions d'un utilisateur (sauf éventuellement une). Renvoie le nombre de sessions fermées. */
 async function revokeAllForUser(userId, exceptId, reason = 'sécurité') {
+  await db.prepare('DELETE FROM lib_grants WHERE user_id = ? AND session_id != ?').run(userId, exceptId || '');
   return (await db.prepare('UPDATE sessions SET revoked_at = ?, revoke_reason = ? WHERE kind = \'user\' AND user_id = ? AND revoked_at IS NULL AND id != ?').run(nowISO(), clip(reason, 40), userId, exceptId || '')).changes;
 }
 async function revokeAllAdmin(exceptId, reason = 'sécurité') {
