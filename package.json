@@ -66,6 +66,7 @@
     "test:purchasingwms": "node scripts/test-purchasing-wms.js",
     "test:libraryb": "node scripts/test-library-b.js",
     "test:stockwms": "node scripts/test-stock-wms.js",
+    "test:stockcompta": "node scripts/test-stock-compta.js",
     "test:security": "node scripts/test-security-routes.js && node scripts/test-security-auth.js && node scripts/test-security-data.js && node scripts/test-security-idor.js && node scripts/test-security-privacy.js && node scripts/test-security-fuzz.js",
     "security:rotate-keys": "node scripts/rotate-keys.js",
     "test:configprod": "node scripts/test-config-prod.js",

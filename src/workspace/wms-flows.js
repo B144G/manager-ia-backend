@@ -692,9 +692,17 @@ router.post('/returns/:id/lines/:lineId/dispose', mgr, async (req, res) => {
 router.post('/returns/:id/credit', mgr, async (req, res) => {
   const r = await returnOf(req, req.params.id);
   if (r.kind !== 'supplier' || r.status !== 'done') throw new HttpError(400, 'Seul un retour fournisseur validé reçoit un avoir.');
-  const amount = A.amount((req.body || {}).amount);
-  await db.prepare("UPDATE wms_returns SET credit_amount = ?, credit_status = 'received', credited_at = ? WHERE id = ?").run(amount, nowISO(), r.id);
-  res.json({ ok: true });
+  const b = req.body || {};
+  const amount = A.amount(b.amount);
+  if (r.credit_entry_id) throw new HttpError(409, 'Cet avoir est déjà comptabilisé : annulez-le avant de le refaire.');
+  // Échange avec la comptabilité : l'avoir est écrit (D 401, C 609 et TVA) et imputé sur les dettes du fournisseur, sauf si on demande de seulement l'enregistrer.
+  const book = b.book !== false && b.book !== 'false';
+  const out = await db.transaction(async () => {
+    await db.prepare("UPDATE wms_returns SET credit_amount = ?, credit_status = 'received', credited_at = ? WHERE id = ?").run(amount, nowISO(), r.id);
+    return book ? await require('./stock-compta').bookSupplierCredit(req, r, amount, b.vat === undefined || b.vat === '' ? 0 : A.amount(b.vat)) : null;
+  })();
+  if (out) await A.logActivity(req.org.id, req.user.id, 'stock', `Avoir fournisseur du retour ${r.code} comptabilisé (${amount})`);
+  res.json({ ok: true, booked: Boolean(out), entry: out ? out.entry : null, applied: out ? out.applied : [], unapplied: out ? out.unapplied : 0 });
 });
 /**
  * Retour fournisseur : numéro d'autorisation de retour (RMA) donné par le fournisseur, bon de commande et facture d'achat d'origine.

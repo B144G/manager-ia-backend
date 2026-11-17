@@ -443,6 +443,7 @@ router.use('/b', require('./wms-b-routes')); // fusion : prévision, états et e
 router.use('/', require('./wms-b-counts')); // fusion : inventaire par emplacement et comptage à l'aveugle (ligne B)
 router.use('/', require('./wms-hu'));
 router.use('/', require('./wms-flows'));
+router.use('/', require('./stock-compta')); // échange avec Achats, comptabilité et trésorerie
 router.use('/', require('./wms-receipts'));
 router.use('/', require('./wms-analytics'));
 router.use('/', require('./wms-waves'));

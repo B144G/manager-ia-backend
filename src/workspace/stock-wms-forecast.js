@@ -130,7 +130,8 @@ router.get('/forecast/:id', async (req, res) => {
 });
 
 // ---------- Réapprovisionnement amélioré ----------
-router.get('/reorder', async (req, res) => {
+/** Suggestions de réapprovisionnement (utilisées aussi par l'état de trésorerie du stock). */
+async function reorderList(req) {
   const cfg = await W.settings(req.org.id);
   const ctx = await load(req, cfg);
   const out = [];
@@ -143,8 +144,9 @@ router.get('/reorder', async (req, res) => {
   }
   const rank = { critical: 0, soon: 1, ok: 2 };
   out.sort((a, b) => rank[a.urgency] - rank[b.urgency] || (a.coverDays === null) - (b.coverDays === null) || (a.coverDays || 0) - (b.coverDays || 0));
-  res.json({ suggestions: out, critical: out.filter((x) => x.urgency === 'critical').length, estimate: out.reduce((a, x) => a + (x.estimate || 0), 0), serviceLevel: cfg.serviceLevel, z: r2(zOf(cfg.serviceLevel)) });
-});
+  return { suggestions: out, critical: out.filter((x) => x.urgency === 'critical').length, estimate: out.reduce((a, x) => a + (x.estimate || 0), 0), serviceLevel: cfg.serviceLevel, z: r2(zOf(cfg.serviceLevel)) };
+}
+router.get('/reorder', async (req, res) => res.json(await reorderList(req)));
 
 // ---------- Paramètres par article ----------
 const itemOf = async (req, id) => {
@@ -174,3 +176,4 @@ router.put('/items/:id/params', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.reorderList = reorderList;
