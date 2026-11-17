@@ -178,13 +178,16 @@ router.post('/items/:id/move', async (req, res) => {
   const projectId = kind === 'out' ? await P6.linkableProject(req, b.projectId) : null;
   // Emplacement (WMS) : entrée dans l'emplacement choisi (sinon règles de rangement), sortie depuis l'emplacement choisi (sinon automatique).
   const locationId = b.locationId === undefined || b.locationId === null || b.locationId === '' ? undefined : A.id(b.locationId, 'Emplacement introuvable.');
-  if (locationId) await require('./wms-core').locationOf(req.org.id, locationId);
-  // Une sortie libre ne prend pas le stock réservé (une commande livrée passe par sa réservation).
+  const loc = locationId ? await require('./wms-core').locationOf(req.org.id, locationId) : null;
+  // Une sortie libre ne prend pas le stock réservé (une commande livrée passe par sa réservation),
+  // ni la marchandise non disponible (quarantaine, retours à contrôler, rebut, en transit) : seul un responsable la sort, en désignant l'emplacement.
   if (kind === 'out') {
     const W = require('./wms-core');
+    if (loc && W.CONTROLLED.includes(loc.kind) && !W.canLeaveControlled(req)) throw new HttpError(403, W.CONTROLLED_MSG);
     await W.expireReservations(req.org.id);
     const av = await W.availability(it.id);
     if (av.reserved > 0 && av.available + 1e-9 < q) throw new HttpError(400, `Stock réservé : il reste ${Math.max(0, av.available)} ${it.unit} disponible(s) pour « ${it.name} » (${av.reserved} ${it.unit} réservé(s)).`);
+    if (!loc && av.usable + 1e-9 < q && q <= Number(it.quantity) + 1e-9) throw new HttpError(400, `Stock non disponible : il reste ${Math.max(0, av.usable)} ${it.unit} disponible(s) pour « ${it.name} » (le reste est en quarantaine, en retours à contrôler, au rebut ou en transit).`);
   }
   const r = await L.adjust(req, it, kind === 'in' ? q : -q, A.text(b.reason, 150) || (kind === 'in' ? 'Entrée' : 'Sortie'),
     { locationId, refKind: projectId ? 'project' : undefined, refId: projectId || undefined, strict: true, lotNo: A.text(b.lotNo, 40), expiry: A.date(b.expiry) || undefined, serials, unitCost: kind === 'in' && b.unitCost !== undefined && b.unitCost !== '' ? A.amount(b.unitCost) : undefined });
@@ -433,11 +436,14 @@ router.put('/counts/:id/lines', async (req, res) => {
   const list = (req.body || {}).lines;
   if (!Array.isArray(list) || !list.length || list.length > 1000) throw new HttpError(400, 'Liste de comptages invalide.');
   await db.transaction(async () => {
+    let n = 0;
     for (const x of list) {
       const counted = x.counted === null || x.counted === '' || x.counted === undefined ? null : A.qty(x.counted, { allowZero: true });
-      const r = await db.prepare('UPDATE stock_count_lines SET counted = ? WHERE count_id = ? AND item_id = ?').run(counted, c.id, A.id(x.itemId));
+      const r = await db.prepare('UPDATE stock_count_lines SET counted = ?, counted_by = ?, counted_at = ? WHERE count_id = ? AND item_id = ?').run(counted, counted === null ? null : req.user.id, counted === null ? null : nowISO(), c.id, A.id(x.itemId));
       if (!r.changes) throw new HttpError(404, 'Article absent de cet inventaire.');
+      if (counted !== null) n++;
     }
+    if (n) await require('./wms-pilot').record(req, 'count', { lines: n, units: 0, refKind: 'count', refId: c.id });
   })();
   res.json({ ok: true });
 });

@@ -244,8 +244,14 @@ router.post('/move', async (req, res) => {
   const q = qty(b.quantity);
   // Le stock posé sur une palette se déplace avec la palette (ou après l'avoir retiré de la palette).
   const fromId = A.id(b.fromLocationId, 'Emplacement introuvable.');
-  if (await W.qtyAt(fromId, it.id) + W.EPS >= q && await W.looseAt(fromId, it.id) + W.EPS < q) throw new HttpError(400, 'Une partie de ce stock est sur une palette : déplacez la palette entière, ou retirez d\'abord les articles de la palette.');
-  const r = await db.transaction(() => W.move(req, it.id, A.id(b.fromLocationId, 'Emplacement introuvable.'), A.id(b.toLocationId, 'Emplacement introuvable.'), q, { reason: cleanText(String(b.reason || ''), 150) }))();
+  const toId = A.id(b.toLocationId, 'Emplacement introuvable.');
+  const r = await db.transaction(async () => {
+    await W.lockItem(req.org.id, it.id); // contrôles et déplacement sous le verrou de l'article (envois simultanés)
+    if (await W.qtyAt(fromId, it.id) + W.EPS >= q && await W.looseAt(fromId, it.id) + W.EPS < q) throw new HttpError(400, 'Une partie de ce stock est sur une palette : déplacez la palette entière, ou retirez d\'abord les articles de la palette.');
+    const m = await W.move(req, it.id, fromId, toId, q, { reason: cleanText(String(b.reason || ''), 150) });
+    await require('./wms-pilot').record(req, 'move', { lines: 1, units: q, refKind: 'item', refId: it.id });
+    return m;
+  })();
   res.json({ ok: true, from: r.from.code, to: r.to.code, quantity: r.quantity });
 });
 
@@ -255,8 +261,12 @@ router.get('/putaway/pending', async (req, res) => {
     WHERE s.org_id = ? AND l.kind = 'reception' AND s.quantity > 0 ORDER BY l.code, i.name`).all(req.org.id);
   const tasks = [];
   for (const r of rows) {
-    const p = await W.putawayPlan(req.org.id, { id: r.item_id, tracking: r.tracking }, Number(r.quantity), { exclude: r.lid });
-    tasks.push({ itemId: Number(r.item_id), fromLocationId: Number(r.lid), from: r.code, name: r.name, quantity: r3(Number(r.quantity)), unit: r.unit, suggestion: p.plan.map((x) => ({ locationId: Number(x.location.id), code: x.location.code, quantity: x.quantity })) });
+    // La marchandise mise de côté pour un transbordement ne se range pas : elle part en dépose.
+    const held = await require('./wms-xdock').heldAt(r.lid, r.item_id);
+    const q = r3(Number(r.quantity) - held);
+    if (q <= W.EPS) continue;
+    const p = await W.putawayPlan(req.org.id, { id: r.item_id, tracking: r.tracking }, q, { exclude: r.lid });
+    tasks.push({ itemId: Number(r.item_id), fromLocationId: Number(r.lid), from: r.code, name: r.name, quantity: q, crossDockQty: held, unit: r.unit, suggestion: p.plan.map((x) => ({ locationId: Number(x.location.id), code: x.location.code, quantity: x.quantity })) });
   }
   res.json({ tasks });
 });
@@ -264,13 +274,16 @@ router.post('/putaway', async (req, res) => {
   const b = req.body || {};
   const it = await itemOf(req, b.itemId);
   const from = await W.locationOf(req.org.id, A.id(b.fromLocationId, 'Emplacement introuvable.'));
-  const q = await W.qtyAt(from.id, it.id);
-  if (q <= W.EPS) throw new HttpError(400, 'Pas assez de stock dans cet emplacement.');
+  if (W.CONTROLLED.includes(from.kind) && !W.canLeaveControlled(req)) throw new HttpError(403, W.CONTROLLED_MSG);
   await db.transaction(async () => {
-    if (b.toLocationId) { await W.move(req, it.id, from.id, A.id(b.toLocationId), q, { kind: 'putaway', reason: 'Rangement' }); return; }
+    await W.lockItem(req.org.id, it.id);
+    const q = await W.qtyAt(from.id, it.id);
+    if (q <= W.EPS) throw new HttpError(400, 'Pas assez de stock dans cet emplacement.');
+    if (b.toLocationId) { await W.move(req, it.id, from.id, A.id(b.toLocationId), q, { kind: 'putaway', reason: 'Rangement' }); await require('./wms-pilot').record(req, 'putaway', { lines: 1, units: q, refKind: 'item', refId: it.id }); return; }
     const p = await W.putawayPlan(req.org.id, it, q, { exclude: from.id });
     if (!p.plan.length) throw new HttpError(400, 'Aucune règle de rangement ne désigne un autre emplacement : choisissez la destination.');
     for (const x of p.plan) await W.move(req, it.id, from.id, x.location.id, x.quantity, { kind: 'putaway', reason: 'Rangement' });
+    await require('./wms-pilot').record(req, 'putaway', { lines: p.plan.length, units: q, refKind: 'item', refId: it.id });
   })();
   res.json({ ok: true });
 });
@@ -304,6 +317,11 @@ router.put('/settings', A.need('admin'), async (req, res) => {
   const next = { ...cur };
   for (const [k, [mn, mx]] of Object.entries(spec)) if (b[k] !== undefined && b[k] !== '') next[k] = optNum(b[k], { min: mn, max: mx, msg: `Valeur invalide pour ${k} (entre ${mn} et ${mx}).` });
   if (next.abcA >= next.abcB) throw new HttpError(400, 'Le seuil A doit être plus petit que le seuil B.');
+  // Transbordement à la réception : proposer (par défaut), exécuter tout de suite, ou ne rien détecter.
+  if (b.crossDock !== undefined) {
+    if (!require('./wms-xdock').MODES.includes(b.crossDock)) throw new HttpError(400, 'Transbordement : choisissez « propose », « auto » ou « off ».');
+    next.crossDock = b.crossDock;
+  }
   await db.prepare('UPDATE wms_settings SET data = ? WHERE org_id = ?').run(JSON.stringify(next), req.org.id);
   res.json({ ok: true, settings: next });
 });
@@ -337,7 +355,7 @@ router.get('/scan', async (req, res) => {
   if (l) return res.json({ type: 'location', id: Number(l.id), label: l.code });
   const hu = await db.prepare('SELECT id, code FROM wms_hus WHERE org_id = ? AND UPPER(code) = UPPER(?)').get(req.org.id, code);
   if (hu) return res.json({ type: 'hu', id: Number(hu.id), label: hu.code });
-  for (const [type, table] of [['pick', 'wms_picks'], ['transfer', 'wms_transfers'], ['return', 'wms_returns'], ['receipt', 'wms_receipts']]) {
+  for (const [type, table] of [['pick', 'wms_picks'], ['transfer', 'wms_transfers'], ['return', 'wms_returns'], ['receipt', 'wms_receipts'], ['wave', 'wms_waves'], ['shipment', 'wms_shipments'], ['replenishment', 'wms_replen_tasks'], ['slotting', 'wms_slot_tasks'], ['appointment', 'wms_appointments'], ['crossdock', 'wms_crossdocks'], ['kit_order', 'wms_kit_orders'], ['vas', 'wms_vas_tasks']]) {
     const x = await db.prepare(`SELECT id, code FROM ${table} WHERE org_id = ? AND UPPER(code) = UPPER(?)`).get(req.org.id, code);
     if (x) return res.json({ type, id: Number(x.id), label: x.code });
   }
@@ -348,5 +366,15 @@ router.use('/', require('./wms-hu'));
 router.use('/', require('./wms-flows'));
 router.use('/', require('./wms-receipts'));
 router.use('/', require('./wms-analytics'));
+router.use('/', require('./wms-waves'));
+router.use('/', require('./wms-replen'));
+router.use('/', require('./wms-ship'));
+router.use('/', require('./wms-slotting'));
+router.use('/', require('./wms-labor'));
+router.use('/', require('./wms-yard'));
+router.use('/', require('./wms-dashboard'));
+router.use('/', require('./wms-xdock'));
+router.use('/', require('./wms-kits'));
+router.use('/', require('./wms-vas'));
 
 module.exports = { router, itemOf, qty, optNum, levelsOf };

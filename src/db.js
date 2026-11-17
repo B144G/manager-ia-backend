@@ -3236,6 +3236,492 @@ const MIGRATIONS = [
   CREATE INDEX idx_wms_hu_contents_item ON wms_hu_contents(item_id);
   `,
 
+  // Préparation avancée (4C) : vagues de préparation, réapprovisionnement des emplacements de préparation, poste d'emballage, expéditions.
+  // Les colis emballés sont des unités de manutention (wms_hus type « box ») rattachées à leur liste de préparation ; une expédition charge des colis et des palettes.
+  `
+  CREATE TABLE wms_waves (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    label TEXT NOT NULL DEFAULT '',
+    warehouse_id BIGINT REFERENCES wms_warehouses(id) ON DELETE SET NULL,
+    staging_location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    assigned_to BIGINT,
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    released_at TEXT,
+    done_at TEXT
+  );
+  CREATE INDEX idx_wms_waves_org ON wms_waves(org_id, status);
+  ALTER TABLE wms_picks ADD COLUMN wave_id BIGINT REFERENCES wms_waves(id) ON DELETE SET NULL;
+  ALTER TABLE wms_picks ADD COLUMN packed_at TEXT;
+  ALTER TABLE wms_picks ADD COLUMN shipped_at TEXT;
+  CREATE TABLE wms_replen_rules (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    location_id BIGINT NOT NULL REFERENCES wms_locations(id) ON DELETE CASCADE,
+    min_qty DOUBLE PRECISION NOT NULL,
+    max_qty DOUBLE PRECISION NOT NULL,
+    active BIGINT NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    UNIQUE (location_id, item_id)
+  );
+  CREATE TABLE wms_replen_tasks (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    rule_id BIGINT REFERENCES wms_replen_rules(id) ON DELETE SET NULL,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    from_location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    to_location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    hu_id BIGINT REFERENCES wms_hus(id) ON DELETE SET NULL,
+    quantity DOUBLE PRECISION NOT NULL,
+    done_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'open',
+    auto BIGINT NOT NULL DEFAULT 0,
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    done_by BIGINT,
+    done_at TEXT
+  );
+  CREATE INDEX idx_wms_replen_tasks_org ON wms_replen_tasks(org_id, status);
+  ALTER TABLE wms_hus ADD COLUMN pick_id BIGINT REFERENCES wms_picks(id) ON DELETE SET NULL;
+  ALTER TABLE wms_hus ADD COLUMN length_cm DOUBLE PRECISION;
+  ALTER TABLE wms_hus ADD COLUMN width_cm DOUBLE PRECISION;
+  ALTER TABLE wms_hus ADD COLUMN height_cm DOUBLE PRECISION;
+  CREATE INDEX idx_wms_hus_pick ON wms_hus(pick_id);
+  CREATE TABLE wms_shipments (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    warehouse_id BIGINT REFERENCES wms_warehouses(id) ON DELETE SET NULL,
+    dock_location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    dock TEXT NOT NULL DEFAULT '',
+    carrier_id BIGINT REFERENCES logistics_carriers(id) ON DELETE SET NULL,
+    carrier_name TEXT NOT NULL DEFAULT '',
+    tracking TEXT NOT NULL DEFAULT '',
+    document_id BIGINT REFERENCES documents(id) ON DELETE SET NULL,
+    customer_name TEXT NOT NULL DEFAULT '',
+    address TEXT NOT NULL DEFAULT '',
+    planned_date TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    delivery_id BIGINT REFERENCES logistics_deliveries(id) ON DELETE SET NULL,
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    shipped_at TEXT,
+    shipped_by BIGINT
+  );
+  CREATE INDEX idx_wms_shipments_org ON wms_shipments(org_id, status);
+  CREATE TABLE wms_shipment_units (
+    id BIGSERIAL PRIMARY KEY,
+    shipment_id BIGINT NOT NULL REFERENCES wms_shipments(id) ON DELETE CASCADE,
+    hu_id BIGINT NOT NULL REFERENCES wms_hus(id) ON DELETE CASCADE,
+    loaded BIGINT NOT NULL DEFAULT 0,
+    loaded_at TEXT,
+    loaded_by BIGINT,
+    UNIQUE (hu_id)
+  );
+  CREATE TABLE wms_shipment_lines (
+    id BIGSERIAL PRIMARY KEY,
+    shipment_id BIGINT NOT NULL REFERENCES wms_shipments(id) ON DELETE CASCADE,
+    hu_code TEXT NOT NULL DEFAULT '',
+    pick_id BIGINT,
+    item_id BIGINT REFERENCES stock_items(id) ON DELETE SET NULL,
+    name TEXT NOT NULL DEFAULT '',
+    unit TEXT NOT NULL DEFAULT '',
+    lot_no TEXT NOT NULL DEFAULT '',
+    quantity DOUBLE PRECISION NOT NULL
+  );
+  `,
+  // Budget et Projets · pilotage : date de fin réelle des tâches (valeur acquise), registre des risques et des problèmes, plan de référence.
+  `
+  ALTER TABLE tasks ADD COLUMN done_at TEXT;
+  CREATE TABLE project_risks (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    project_id BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'risk',
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    probability BIGINT NOT NULL DEFAULT 3,
+    impact BIGINT NOT NULL DEFAULT 3,
+    status TEXT NOT NULL DEFAULT 'open',
+    owner_id BIGINT,
+    mitigation TEXT NOT NULL DEFAULT '',
+    due TEXT,
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_project_risks ON project_risks(org_id, project_id);
+  CREATE TABLE project_baselines (
+    project_id BIGINT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    bac BIGINT NOT NULL DEFAULT 0,
+    data TEXT NOT NULL DEFAULT '{}',
+    taken_at TEXT NOT NULL,
+    taken_by BIGINT
+  );
+  `,
+
+  // Pilotage de l'entrepôt (4E) : optimisation des emplacements (distance au quai, niveau, poids des articles, tâches de déplacement),
+  // productivité des magasiniers (journal des opérations : qui, quand, combien), cour et quais (rendez-vous des camions, arrivée, mise à quai, départ).
+  `
+  ALTER TABLE wms_locations ADD COLUMN distance DOUBLE PRECISION;
+  ALTER TABLE wms_locations ADD COLUMN level BIGINT;
+  ALTER TABLE wms_zones ADD COLUMN distance DOUBLE PRECISION;
+  ALTER TABLE wms_item_params ADD COLUMN weight_kg DOUBLE PRECISION;
+  ALTER TABLE wms_pick_lines ADD COLUMN picked_by BIGINT;
+  ALTER TABLE wms_pick_lines ADD COLUMN picked_at TEXT;
+  ALTER TABLE wms_picks ADD COLUMN packed_by BIGINT;
+  ALTER TABLE wms_picks ADD COLUMN started_at TEXT;
+  ALTER TABLE wms_picks ADD COLUMN picked_at TEXT;
+  ALTER TABLE wms_waves ADD COLUMN started_at TEXT;
+  ALTER TABLE stock_count_lines ADD COLUMN counted_by BIGINT;
+  ALTER TABLE stock_count_lines ADD COLUMN counted_at TEXT;
+  CREATE TABLE wms_labor (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    user_id BIGINT,
+    task TEXT NOT NULL,
+    lines BIGINT NOT NULL DEFAULT 1,
+    units DOUBLE PRECISION NOT NULL DEFAULT 0,
+    ref_kind TEXT NOT NULL DEFAULT '',
+    ref_id BIGINT,
+    at TEXT NOT NULL
+  );
+  CREATE INDEX idx_wms_labor_org ON wms_labor(org_id, at);
+  CREATE INDEX idx_wms_labor_user ON wms_labor(user_id, at);
+  CREATE TABLE wms_slot_tasks (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    from_location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    to_location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    quantity DOUBLE PRECISION NOT NULL,
+    done_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'open',
+    reason TEXT NOT NULL DEFAULT 'velocity',
+    hits BIGINT NOT NULL DEFAULT 0,
+    gain DOUBLE PRECISION NOT NULL DEFAULT 0,
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    done_by BIGINT,
+    done_at TEXT
+  );
+  CREATE INDEX idx_wms_slot_tasks_org ON wms_slot_tasks(org_id, status);
+  CREATE TABLE wms_docks (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    warehouse_id BIGINT REFERENCES wms_warehouses(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    direction TEXT NOT NULL DEFAULT 'both',
+    location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    active BIGINT NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, code)
+  );
+  CREATE TABLE wms_appointments (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'planned',
+    dock_id BIGINT REFERENCES wms_docks(id) ON DELETE SET NULL,
+    carrier_id BIGINT REFERENCES logistics_carriers(id) ON DELETE SET NULL,
+    carrier_name TEXT NOT NULL DEFAULT '',
+    plate TEXT NOT NULL DEFAULT '',
+    driver TEXT NOT NULL DEFAULT '',
+    driver_phone TEXT NOT NULL DEFAULT '',
+    slot_start TEXT NOT NULL,
+    slot_end TEXT NOT NULL,
+    po_id BIGINT REFERENCES pur_orders(id) ON DELETE SET NULL,
+    shipment_id BIGINT REFERENCES wms_shipments(id) ON DELETE SET NULL,
+    note TEXT NOT NULL DEFAULT '',
+    arrived_at TEXT,
+    arrived_by BIGINT,
+    docked_at TEXT,
+    docked_by BIGINT,
+    departed_at TEXT,
+    departed_by BIGINT,
+    cancel_reason TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_wms_appointments_org ON wms_appointments(org_id, slot_start);
+  `,
+
+  // Flux spéciaux (4D) : transbordement (cross-docking) planifié ou opportuniste, kits (assemblage / désassemblage sur les nomenclatures
+  // de la Production), services à valeur ajoutée (étiquetage, reconditionnement, emballage cadeau, contrôle…) et retours fournisseurs avec numéro RMA.
+  `
+  CREATE TABLE wms_crossdocks (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'planned',
+    mode TEXT NOT NULL DEFAULT 'opportunistic',
+    item_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    quantity DOUBLE PRECISION NOT NULL,
+    done_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    document_id BIGINT REFERENCES documents(id) ON DELETE SET NULL,
+    pick_id BIGINT REFERENCES wms_picks(id) ON DELETE SET NULL,
+    purchase_order_id BIGINT REFERENCES pur_orders(id) ON DELETE SET NULL,
+    reservation_id BIGINT REFERENCES wms_reservations(id) ON DELETE SET NULL,
+    source_kind TEXT NOT NULL DEFAULT '',
+    source_id BIGINT,
+    source_code TEXT NOT NULL DEFAULT '',
+    hu_id BIGINT REFERENCES wms_hus(id) ON DELETE SET NULL,
+    from_location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    to_location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    note TEXT NOT NULL DEFAULT '',
+    close_reason TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    received_at TEXT,
+    done_by BIGINT,
+    done_at TEXT
+  );
+  CREATE INDEX idx_wms_crossdocks_org ON wms_crossdocks(org_id, status);
+  CREATE INDEX idx_wms_crossdocks_item ON wms_crossdocks(item_id, status);
+  ALTER TABLE production_boms ADD COLUMN kit BIGINT NOT NULL DEFAULT 0;
+  CREATE TABLE wms_kit_orders (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'assembly',
+    status TEXT NOT NULL DEFAULT 'planned',
+    bom_id BIGINT REFERENCES production_boms(id) ON DELETE SET NULL,
+    product_id BIGINT NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+    quantity DOUBLE PRECISION NOT NULL,
+    done_qty DOUBLE PRECISION NOT NULL DEFAULT 0,
+    warehouse_id BIGINT REFERENCES wms_warehouses(id) ON DELETE SET NULL,
+    location_id BIGINT REFERENCES wms_locations(id) ON DELETE SET NULL,
+    components TEXT NOT NULL DEFAULT '[]',
+    consumed TEXT NOT NULL DEFAULT '[]',
+    labor_cost DOUBLE PRECISION,
+    material_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+    total_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+    unit_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+    lot_no TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    done_by BIGINT,
+    done_at TEXT
+  );
+  CREATE INDEX idx_wms_kit_orders_org ON wms_kit_orders(org_id, status);
+  CREATE TABLE wms_vas_types (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'other',
+    unit_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_basis TEXT NOT NULL DEFAULT 'task',
+    minutes DOUBLE PRECISION,
+    mandatory BIGINT NOT NULL DEFAULT 0,
+    instructions TEXT NOT NULL DEFAULT '',
+    active BIGINT NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE wms_vas_rules (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    type_id BIGINT NOT NULL REFERENCES wms_vas_types(id) ON DELETE CASCADE,
+    applies TEXT NOT NULL DEFAULT 'pick',
+    item_id BIGINT REFERENCES stock_items(id) ON DELETE CASCADE,
+    customer_id BIGINT REFERENCES customers(id) ON DELETE CASCADE,
+    mandatory BIGINT NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE wms_vas_tasks (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    type_id BIGINT REFERENCES wms_vas_types(id) ON DELETE SET NULL,
+    name TEXT NOT NULL DEFAULT '',
+    ref_kind TEXT NOT NULL,
+    ref_id BIGINT NOT NULL,
+    item_id BIGINT REFERENCES stock_items(id) ON DELETE SET NULL,
+    quantity DOUBLE PRECISION NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'open',
+    mandatory BIGINT NOT NULL DEFAULT 0,
+    rule_id BIGINT REFERENCES wms_vas_rules(id) ON DELETE SET NULL,
+    assigned_to BIGINT,
+    unit_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cost_basis TEXT NOT NULL DEFAULT 'task',
+    cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+    minutes DOUBLE PRECISION,
+    note TEXT NOT NULL DEFAULT '',
+    result TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    done_by BIGINT,
+    done_at TEXT
+  );
+  CREATE INDEX idx_wms_vas_tasks_org ON wms_vas_tasks(org_id, status);
+  CREATE INDEX idx_wms_vas_tasks_ref ON wms_vas_tasks(ref_kind, ref_id);
+  ALTER TABLE wms_returns ADD COLUMN rma_no TEXT NOT NULL DEFAULT '';
+  ALTER TABLE wms_returns ADD COLUMN purchase_order_id BIGINT REFERENCES pur_orders(id) ON DELETE SET NULL;
+  ALTER TABLE wms_returns ADD COLUMN purchase_invoice_id BIGINT REFERENCES pur_invoices(id) ON DELETE SET NULL;
+  ALTER TABLE wms_returns ADD COLUMN credit_status TEXT NOT NULL DEFAULT '';
+  `,
+
+  // Transport (TMS) : planification des tournées (charge, créneaux, ordre de passage), exécution par le chauffeur (preuves de livraison chiffrées,
+  // paiement à la livraison, échecs et reports), suivi client par lien secret, grilles tarifaires, coûts réels, factures des transporteurs.
+  `
+  ALTER TABLE logistics_deliveries ADD COLUMN weight_kg DOUBLE PRECISION NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_deliveries ADD COLUMN volume_m3 DOUBLE PRECISION NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_deliveries ADD COLUMN pallets DOUBLE PRECISION NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_deliveries ADD COLUMN lat DOUBLE PRECISION;
+  ALTER TABLE logistics_deliveries ADD COLUMN lng DOUBLE PRECISION;
+  ALTER TABLE logistics_deliveries ADD COLUMN window_start TEXT NOT NULL DEFAULT '';
+  ALTER TABLE logistics_deliveries ADD COLUMN window_end TEXT NOT NULL DEFAULT '';
+  ALTER TABLE logistics_deliveries ADD COLUMN priority BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_deliveries ADD COLUMN cod_amount BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_deliveries ADD COLUMN cod_collected BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_deliveries ADD COLUMN track_token TEXT;
+  ALTER TABLE logistics_deliveries ADD COLUMN attempts BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_deliveries ADD COLUMN outcome TEXT NOT NULL DEFAULT '';
+  ALTER TABLE logistics_deliveries ADD COLUMN failure_reason TEXT NOT NULL DEFAULT '';
+  ALTER TABLE logistics_deliveries ADD COLUMN eta TEXT NOT NULL DEFAULT '';
+  ALTER TABLE logistics_deliveries ADD COLUMN arrived_at TEXT;
+  ALTER TABLE logistics_deliveries ADD COLUMN delivered_at TEXT;
+  ALTER TABLE logistics_deliveries ADD COLUMN est_cost BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_deliveries ADD COLUMN alloc_cost BIGINT NOT NULL DEFAULT 0;
+  CREATE UNIQUE INDEX idx_log_deliveries_token ON logistics_deliveries(track_token);
+  ALTER TABLE logistics_delivery_items ADD COLUMN returned_qty DOUBLE PRECISION NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_events ADD COLUMN lat DOUBLE PRECISION;
+  ALTER TABLE logistics_events ADD COLUMN lng DOUBLE PRECISION;
+  ALTER TABLE logistics_rounds ADD COLUMN status TEXT NOT NULL DEFAULT 'planned';
+  ALTER TABLE logistics_rounds ADD COLUMN start_time TEXT NOT NULL DEFAULT '08:00';
+  ALTER TABLE logistics_rounds ADD COLUMN planned_km DOUBLE PRECISION NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_rounds ADD COLUMN route_method TEXT NOT NULL DEFAULT '';
+  ALTER TABLE logistics_rounds ADD COLUMN odo_start DOUBLE PRECISION;
+  ALTER TABLE logistics_rounds ADD COLUMN odo_end DOUBLE PRECISION;
+  ALTER TABLE logistics_rounds ADD COLUMN actual_km DOUBLE PRECISION;
+  ALTER TABLE logistics_rounds ADD COLUMN started_at TEXT;
+  ALTER TABLE logistics_rounds ADD COLUMN ended_at TEXT;
+  ALTER TABLE logistics_rounds ADD COLUMN est_cost BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_rounds ADD COLUMN cod_remitted BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_rounds ADD COLUMN remitted_at TEXT;
+  ALTER TABLE logistics_rounds ADD COLUMN costs_entry_id BIGINT;
+  ALTER TABLE logistics_rounds ADD COLUMN costs_approved_at TEXT;
+  ALTER TABLE logistics_vehicles ADD COLUMN capacity_kg DOUBLE PRECISION NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_vehicles ADD COLUMN capacity_m3 DOUBLE PRECISION NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_vehicles ADD COLUMN capacity_pallets DOUBLE PRECISION NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_vehicles ADD COLUMN cost_per_km BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_vehicles ADD COLUMN co2_g_km DOUBLE PRECISION NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_drivers ADD COLUMN user_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
+  ALTER TABLE logistics_drivers ADD COLUMN daily_allowance BIGINT NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_zones ADD COLUMN lat DOUBLE PRECISION;
+  ALTER TABLE logistics_zones ADD COLUMN lng DOUBLE PRECISION;
+  ALTER TABLE logistics_zones ADD COLUMN depot_km DOUBLE PRECISION;
+  ALTER TABLE logistics_zones ADD COLUMN intra_km DOUBLE PRECISION NOT NULL DEFAULT 0;
+  ALTER TABLE logistics_zones ADD COLUMN sort_order BIGINT NOT NULL DEFAULT 0;
+  CREATE TABLE logistics_zone_km (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    zone_a BIGINT NOT NULL REFERENCES logistics_zones(id) ON DELETE CASCADE,
+    zone_b BIGINT NOT NULL REFERENCES logistics_zones(id) ON DELETE CASCADE,
+    km DOUBLE PRECISION NOT NULL,
+    UNIQUE (zone_a, zone_b)
+  );
+  CREATE TABLE logistics_settings (
+    org_id BIGINT PRIMARY KEY REFERENCES orgs(id) ON DELETE CASCADE,
+    depot_label TEXT NOT NULL DEFAULT '',
+    depot_lat DOUBLE PRECISION,
+    depot_lng DOUBLE PRECISION,
+    tz_offset BIGINT NOT NULL DEFAULT 60,
+    speed_kmh DOUBLE PRECISION NOT NULL DEFAULT 30,
+    service_min BIGINT NOT NULL DEFAULT 10,
+    road_factor DOUBLE PRECISION NOT NULL DEFAULT 1.3,
+    co2_g_km DOUBLE PRECISION NOT NULL DEFAULT 250,
+    tolerance_pct DOUBLE PRECISION NOT NULL DEFAULT 2,
+    tolerance_min BIGINT NOT NULL DEFAULT 500,
+    eta_margin BIGINT NOT NULL DEFAULT 30,
+    updated_at TEXT
+  );
+  CREATE TABLE logistics_rate_cards (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    carrier_id BIGINT REFERENCES logistics_carriers(id) ON DELETE CASCADE,
+    zone_id BIGINT REFERENCES logistics_zones(id) ON DELETE CASCADE,
+    min_kg DOUBLE PRECISION NOT NULL DEFAULT 0,
+    max_kg DOUBLE PRECISION,
+    base BIGINT NOT NULL DEFAULT 0,
+    per_kg BIGINT NOT NULL DEFAULT 0,
+    per_km BIGINT NOT NULL DEFAULT 0,
+    per_pallet BIGINT NOT NULL DEFAULT 0,
+    min_charge BIGINT NOT NULL DEFAULT 0,
+    fuel_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+    valid_from TEXT,
+    valid_to TEXT,
+    active BIGINT NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_log_rates_org ON logistics_rate_cards(org_id);
+  CREATE TABLE logistics_pod (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    delivery_id BIGINT NOT NULL REFERENCES logistics_deliveries(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size BIGINT NOT NULL,
+    sha256 TEXT NOT NULL DEFAULT '',
+    data BYTEA NOT NULL,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_log_pod_delivery ON logistics_pod(delivery_id);
+  CREATE TABLE logistics_trip_costs (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    round_id BIGINT NOT NULL REFERENCES logistics_rounds(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    amount BIGINT NOT NULL,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX idx_log_trip_costs ON logistics_trip_costs(round_id);
+  CREATE TABLE logistics_carrier_invoices (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    carrier_id BIGINT NOT NULL REFERENCES logistics_carriers(id),
+    number TEXT NOT NULL,
+    ref TEXT NOT NULL DEFAULT '',
+    date TEXT NOT NULL,
+    amount_ht BIGINT NOT NULL DEFAULT 0,
+    vat BIGINT NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'draft',
+    entry_id BIGINT,
+    note TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    approved_by BIGINT,
+    approved_at TEXT,
+    UNIQUE (org_id, number)
+  );
+  CREATE TABLE logistics_carrier_invoice_lines (
+    id BIGSERIAL PRIMARY KEY,
+    invoice_id BIGINT NOT NULL REFERENCES logistics_carrier_invoices(id) ON DELETE CASCADE,
+    delivery_id BIGINT REFERENCES logistics_deliveries(id) ON DELETE SET NULL,
+    label TEXT NOT NULL DEFAULT '',
+    amount BIGINT NOT NULL,
+    expected BIGINT,
+    flag TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX idx_log_cinv_lines ON logistics_carrier_invoice_lines(invoice_id);
+  CREATE INDEX idx_log_cinv_lines_delivery ON logistics_carrier_invoice_lines(delivery_id);
+  `,
+
 ];
 
 

@@ -12,14 +12,16 @@ const round3 = (n) => Math.round(Number(n) * 1000) / 1000;
 const EPS = 1e-9;
 const today = () => nowISO().slice(0, 10);
 
-const KINDS = { storage: 'Rayonnage', picking: 'Préparation', reception: 'Réception', quarantine: 'Quarantaine', returns: 'Retours', scrap: 'Rebut', transit: 'En transit' };
-const ZONE_KINDS = { storage: 'Stockage', picking: 'Préparation', reception: 'Réception', quarantine: 'Quarantaine', returns: 'Retours' };
+const KINDS = { storage: 'Rayonnage', picking: 'Préparation', reception: 'Réception', quarantine: 'Quarantaine', returns: 'Retours', scrap: 'Rebut', transit: 'En transit', staging: 'Dépose et emballage', shipping: "Quai d'expédition" };
+const ZONE_KINDS = { storage: 'Stockage', picking: 'Préparation', reception: 'Réception', quarantine: 'Quarantaine', returns: 'Retours', staging: 'Dépose et emballage', shipping: 'Expédition' };
+// Dépose / emballage et quai d'expédition : la marchandise préparée y attend son expédition. Elle n'est plus disponible à la vente (elle appartient à sa commande).
+const OUTBOUND = ['staging', 'shipping'];
 const USABLE = ['storage', 'picking', 'reception'];
 const isUsable = (l) => Boolean(Number(l.active)) && USABLE.includes(l.kind);
 // Ordre de prélèvement par défaut : préparation, puis rayonnage, puis réception ; ensuite le reste (jamais le transit d'abord).
-const TAKE_ORDER = "CASE l.kind WHEN 'picking' THEN 0 WHEN 'storage' THEN 1 WHEN 'reception' THEN 2 WHEN 'returns' THEN 3 WHEN 'quarantine' THEN 4 WHEN 'scrap' THEN 5 ELSE 6 END";
+const TAKE_ORDER = "CASE l.kind WHEN 'picking' THEN 0 WHEN 'storage' THEN 1 WHEN 'reception' THEN 2 WHEN 'returns' THEN 3 WHEN 'quarantine' THEN 4 WHEN 'scrap' THEN 5 WHEN 'staging' THEN 7 WHEN 'shipping' THEN 8 ELSE 6 END";
 
-const DEFAULTS = { abcA: 80, abcB: 95, abcDays: 365, cycleA: 30, cycleB: 90, cycleC: 180, forecastWeeks: 12, serviceLevel: 95, defaultLeadDays: 7, reviewDays: 7 };
+const DEFAULTS = { abcA: 80, abcB: 95, abcDays: 365, cycleA: 30, cycleB: 90, cycleC: 180, forecastWeeks: 12, serviceLevel: 95, defaultLeadDays: 7, reviewDays: 7, crossDock: 'propose' };
 
 // ---------- Mise en place ----------
 async function ensure(orgId) {
@@ -47,6 +49,19 @@ const special = async (orgId, kind) => {
 const transitOf = (orgId) => special(orgId, 'transit');
 const quarantineOf = (orgId) => special(orgId, 'quarantine');
 const returnsOf = (orgId) => special(orgId, 'returns');
+/** Emplacement de dépose / emballage (kind « staging ») ou quai d'expédition (« shipping ») d'un entrepôt : le premier actif, sinon il est créé. */
+async function outboundOf(orgId, kind, warehouseId) {
+  await ensure(orgId);
+  const w = warehouseId ? await db.prepare('SELECT * FROM wms_warehouses WHERE id = ? AND org_id = ?').get(warehouseId, orgId) : await db.prepare('SELECT * FROM wms_warehouses WHERE org_id = ? AND is_default = 1').get(orgId);
+  if (!w) throw new HttpError(404, 'Entrepôt introuvable.');
+  const l = await db.prepare('SELECT * FROM wms_locations WHERE warehouse_id = ? AND kind = ? AND active = 1 ORDER BY id LIMIT 1').get(w.id, kind);
+  if (l) return l;
+  const base = (Number(w.is_default) ? '' : `${w.code}-`) + (kind === 'staging' ? 'EMBALLAGE' : 'QUAI-EXP');
+  let code = base; let n = 2;
+  while (await db.prepare('SELECT 1 FROM wms_locations WHERE org_id = ? AND code = ?').get(orgId, code)) code = `${base}-${n++}`;
+  const id = Number((await db.prepare('INSERT INTO wms_locations (org_id, warehouse_id, code, name, kind, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(orgId, w.id, code, kind === 'staging' ? 'Dépose et emballage' : "Quai d'expédition", kind, nowISO())).lastInsertRowid);
+  return db.prepare('SELECT * FROM wms_locations WHERE id = ?').get(id);
+}
 /** Emplacement par défaut d'un entrepôt (ou de l'entrepôt principal). */
 async function defaultOf(orgId, warehouseId) {
   await ensure(orgId);
@@ -98,8 +113,26 @@ async function trimHus(locId, itemId) {
 async function markEmpty(huId) {
   const n = Number((await db.prepare('SELECT COUNT(*) AS c FROM wms_hu_contents WHERE hu_id = ?').get(huId)).c);
   const kids = Number((await db.prepare("SELECT COUNT(*) AS c FROM wms_hus WHERE parent_id = ? AND status != 'empty'").get(huId)).c);
-  await db.prepare('UPDATE wms_hus SET status = ?, updated_at = ? WHERE id = ?').run(n || kids ? 'open' : 'empty', nowISO(), huId);
+  // Un colis fermé le reste tant qu'il a du contenu ; un colis expédié garde son état.
+  await db.prepare("UPDATE wms_hus SET status = CASE WHEN status = 'shipped' THEN status WHEN ? > 0 THEN (CASE WHEN status = 'closed' THEN 'closed' ELSE 'open' END) ELSE 'empty' END, updated_at = ? WHERE id = ?").run(n || kids ? 1 : 0, nowISO(), huId);
 }
+/**
+ * Verrou de ligne (dans une transaction) : sérialise les opérations concurrentes sur un même article ou un même document
+ * (double clic, deux personnes en même temps). Renvoie la ligne relue après le verrou. `table` est toujours une constante du code.
+ */
+async function lockRow(table, id) {
+  return db.prepare(`SELECT * FROM ${table} WHERE id = ? FOR UPDATE`).get(Number(id));
+}
+/** Verrouille l'article (même verrou que stock-lib.adjust) : les quantités par emplacement ne se lisent et ne s'écrivent qu'une opération à la fois. */
+async function lockItem(orgId, itemId) {
+  const it = await db.prepare('SELECT * FROM stock_items WHERE id = ? AND org_id = ? FOR UPDATE').get(Number(itemId), orgId);
+  if (!it) throw new HttpError(404, 'Article introuvable.');
+  return it;
+}
+// Emplacements « sous contrôle » : seule une personne responsable (ou plus) en sort la marchandise (contrôle qualité, décision sur un retour, rebut).
+const CONTROLLED = ['quarantine', 'returns', 'scrap'];
+const CONTROLLED_MSG = 'Seul un responsable peut sortir la marchandise de la quarantaine, des retours à contrôler ou du rebut.';
+const canLeaveControlled = (req) => !req.member || require('./access').can(req, 'manager');
 const locTotal = async (locId) => Number((await db.prepare('SELECT COALESCE(SUM(quantity), 0) AS q FROM wms_stock WHERE location_id = ?').get(locId)).q);
 
 /** Destinations de rangement d'un article (règles par priorité, capacité respectée), limitées à un entrepôt si demandé. Renvoie [{ location, quantity }]. */
@@ -134,7 +167,7 @@ async function takeFrom(orgId, itemId, qty, { locationId, includeTransit = false
     await add(orgId, Number(locationId), itemId, -left);
     return [{ locationId: Number(locationId), quantity: left }];
   }
-  const rows = await db.prepare(`SELECT s.location_id, s.quantity FROM wms_stock s JOIN wms_locations l ON l.id = s.location_id WHERE s.item_id = ? AND s.quantity > 0${includeTransit ? '' : " AND l.kind != 'transit'"} ORDER BY l.active DESC, ${TAKE_ORDER}, s.quantity DESC`).all(itemId);
+  const rows = await db.prepare(`SELECT s.location_id, s.quantity FROM wms_stock s JOIN wms_locations l ON l.id = s.location_id WHERE s.item_id = ? AND s.quantity > 0${includeTransit ? '' : " AND l.kind NOT IN ('transit','staging','shipping')"} ORDER BY l.active DESC, ${TAKE_ORDER}, s.quantity DESC`).all(itemId);
   for (const r of rows) {
     if (left <= EPS) break;
     const t = round3(Math.min(Number(r.quantity), left));
@@ -185,6 +218,8 @@ async function move(req, itemId, fromId, toId, qty, { kind = 'internal', refKind
   if (Number(fromId) === Number(toId)) throw new HttpError(400, "L'emplacement de départ et celui d'arrivée sont identiques.");
   const from = await locationOf(orgId, fromId); const to = await locationOf(orgId, toId);
   if (!allowTransit && (to.kind === 'transit' || from.kind === 'transit')) throw new HttpError(400, "L'emplacement « En transit » ne reçoit que des transferts.");
+  if (CONTROLLED.includes(from.kind) && !canLeaveControlled(req)) throw new HttpError(403, CONTROLLED_MSG);
+  await lockItem(orgId, itemId);
   if (!Number(to.active)) throw new HttpError(400, 'Choisissez un emplacement actif (pas « En transit »).');
   const q = round3(qty);
   if (await qtyAt(from.id, itemId) + EPS < q) throw new HttpError(400, 'Pas assez de stock dans cet emplacement.');
@@ -217,6 +252,6 @@ async function nextCode(orgId, prefix) {
 }
 
 module.exports = {
-  KINDS, ZONE_KINDS, USABLE, DEFAULTS, isUsable, round3, EPS, today, ensure, settingsOf, transitOf, quarantineOf, returnsOf, defaultOf, locationOf,
+  KINDS, ZONE_KINDS, USABLE, OUTBOUND, outboundOf, addRaw, DEFAULTS, isUsable, lockRow, lockItem, CONTROLLED, CONTROLLED_MSG, canLeaveControlled, round3, EPS, today, ensure, settingsOf, transitOf, quarantineOf, returnsOf, defaultOf, locationOf,
   qtyAt, add, locTotal, huSum, looseAt, markEmpty, putawayPlan, destinationsFor, takeFrom, reconcile, withLocation, move, expireReservations, reservedOf, usableOf, availability, nextCode,
 };

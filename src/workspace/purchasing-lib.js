@@ -148,6 +148,9 @@ async function budgetCheck(req, cat, year, extra, opts = {}) {
   return { budgetWarning: { category: cat } };
 }
 
+/** Verrou de ligne (dans une transaction) : relit un document sous verrou pour que deux envois simultanés (double clic, deux personnes)
+ * ne passent pas tous les deux le même contrôle de statut. `table` est toujours une constante du code. */
+const lockRow = (table, id) => db.prepare(`SELECT * FROM ${table} WHERE id = ? FOR UPDATE`).get(Number(id));
 const nameMap = async (ids) => {
   const list = [...new Set(ids.filter((x) => x != null).map(Number))];
   if (!list.length) return {};
@@ -161,5 +164,5 @@ const addDays = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x
 
 module.exports = {
   today, yearOf, round3, amount, vatOf, DEFAULTS, APPROVER_ROLES, settingsOf, requiredRole, nextNumber, dateOrNull, money, qtyOf, pct, category, readLines,
-  orderLineState, orderTotals, orderTotalsOf, invoiceTotalsOf, OPEN_ORDER, isLate, plannedOf, usedOf, budgetOf, budgetCheck, nameMap, csv, addDays,
+  orderLineState, orderTotals, orderTotalsOf, lockRow, invoiceTotalsOf, OPEN_ORDER, isLate, plannedOf, usedOf, budgetOf, budgetCheck, nameMap, csv, addDays,
 };

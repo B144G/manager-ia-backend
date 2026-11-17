@@ -148,6 +148,7 @@ router.put('/requests/:id', async (req, res) => {
   if (r.status !== 'draft') throw new HttpError(400, 'Seul un brouillon se modifie. Retirez la demande de la validation pour la corriger.');
   const v = await readRequest(req, req.body || {});
   await db.transaction(async () => {
+    if ((await P.lockRow('pur_requests', r.id)).status !== 'draft') throw new HttpError(400, 'Seul un brouillon se modifie. Retirez la demande de la validation pour la corriger.');
     await db.prepare('UPDATE pur_requests SET title = ?, justification = ?, category = ?, needed_date = ?, updated_at = ? WHERE id = ?').run(v.title, v.justification, v.category, v.neededDate, nowISO(), r.id);
     await saveRequestLines(r.id, v.lines);
   })();
@@ -173,10 +174,12 @@ router.get('/requests/:id', async (req, res) => {
   } });
 });
 
-async function setStatus(r, status, extra = {}) {
+/** Change le statut si la demande est encore dans l'état lu (`from`, par défaut r.status) : deux actions simultanées ne s'appliquent pas toutes les deux. */
+async function setStatus(r, status, extra = {}, from = [r.status]) {
   const sets = ['status = ?', 'updated_at = ?']; const args = [status, nowISO()];
   for (const [k, v] of Object.entries(extra)) { sets.push(`${k} = ?`); args.push(v); }
-  await db.prepare(`UPDATE pur_requests SET ${sets.join(', ')} WHERE id = ?`).run(...args, r.id);
+  const x = await db.prepare(`UPDATE pur_requests SET ${sets.join(', ')} WHERE id = ? AND status IN (${from.map(() => '?').join(',')})`).run(...args, r.id, ...from);
+  if (!x.changes) throw new HttpError(409, "Cette demande vient d'être modifiée par quelqu'un d'autre : rechargez-la.");
 }
 const mineOnly = (req, r) => { if (Number(r.requester_id) !== Number(req.user.id)) throw new HttpError(403, 'Seul le demandeur peut faire cette action.'); };
 router.post('/requests/:id/submit', async (req, res) => {
@@ -196,11 +199,17 @@ router.post('/requests/:id/approve', mgr, async (req, res) => {
   const r = await requestOf(req, req.params.id);
   if (r.status !== 'submitted') throw new HttpError(400, "Cette demande n'attend pas d'approbation.");
   if (Number(r.requester_id) === Number(req.user.id) && req.member.role !== 'owner') throw new HttpError(403, 'Vous ne pouvez pas approuver votre propre demande : un autre responsable doit le faire.');
-  const total = reqTotal(await linesOfRequest(r.id));
-  const role = P.requiredRole(await P.settingsOf(req.org), 'request', total);
-  if (A.RANK[req.member.role] < A.RANK[role]) throw new HttpError(403, `Ce montant doit être approuvé par : ${A.ROLE_LABEL[role]}.`);
-  const warn = r.category ? await P.budgetCheck(req, r.category, P.yearOf(r.created_at), total) : {};
-  await setStatus(r, 'approved', { decided_by: req.user.id, decided_at: nowISO(), reject_reason: '' });
+  // Montant relu sous verrou : le demandeur ne peut pas retirer, gonfler puis renvoyer sa demande pendant l'approbation.
+  const warn = await db.transaction(async () => {
+    const cur = await P.lockRow('pur_requests', r.id);
+    if (cur.status !== 'submitted') throw new HttpError(400, "Cette demande n'attend pas d'approbation.");
+    const total = reqTotal(await linesOfRequest(r.id));
+    const role = P.requiredRole(await P.settingsOf(req.org), 'request', total);
+    if (A.RANK[req.member.role] < A.RANK[role]) throw new HttpError(403, `Ce montant doit être approuvé par : ${A.ROLE_LABEL[role]}.`);
+    const w = r.category ? await P.budgetCheck(req, r.category, P.yearOf(r.created_at), total) : {};
+    await setStatus(cur, 'approved', { decided_by: req.user.id, decided_at: nowISO(), reject_reason: '' });
+    return w;
+  })();
   await A.logActivity(req.org.id, req.user.id, 'purchasing', `Demande d'achat ${r.number} approuvée`);
   res.json({ ok: true, ...warn });
 });
@@ -217,7 +226,7 @@ router.post('/requests/:id/cancel', async (req, res) => {
   const r = await requestOf(req, req.params.id);
   if (Number(r.requester_id) !== Number(req.user.id) && !A.can(req, 'admin')) throw new HttpError(403, 'Votre rôle ne permet pas cette action.');
   if (!['draft', 'submitted', 'approved'].includes(r.status)) throw new HttpError(400, 'Cette demande ne peut plus être annulée.');
-  await setStatus(r, 'cancelled');
+  await setStatus(r, 'cancelled', {}, ['draft', 'submitted', 'approved']);
   res.json({ ok: true });
 });
 router.post('/requests/:id/duplicate', async (req, res) => {
@@ -237,7 +246,7 @@ router.delete('/requests/:id', async (req, res) => {
   const r = await requestOf(req, req.params.id);
   if (Number(r.requester_id) !== Number(req.user.id) && !A.can(req, 'admin')) throw new HttpError(403, 'Votre rôle ne permet pas cette action.');
   if (r.status !== 'draft') throw new HttpError(400, 'Seul un brouillon se supprime.');
-  await db.prepare('DELETE FROM pur_requests WHERE id = ?').run(r.id);
+  await db.prepare("DELETE FROM pur_requests WHERE id = ? AND status = 'draft'").run(r.id);
   res.json({ ok: true });
 });
 
@@ -275,6 +284,8 @@ router.post('/requests/:id/to-order', mgr, async (req, res) => {
     lines.push({ itemId: l.item_id, description: l.description, unit: l.unit, quantity: Number(l.quantity), unitPrice: price || 0 });
   }
   const o = await db.transaction(async () => {
+    // Double envoi : une demande ne devient qu'un seul bon de commande.
+    if ((await P.lockRow('pur_requests', r.id)).status !== 'approved') throw new HttpError(400, 'Seule une demande approuvée peut devenir un bon de commande.');
     const x = await createDraftOrder(req, { supplier, lines, category: r.category, notes: `Demande ${r.number} : ${r.title}`, requestId: r.id, expectedDate: r.needed_date });
     await setStatus(r, 'ordered', { order_id: x.id });
     return x;
@@ -368,6 +379,7 @@ router.put('/rfqs/:id/quotes/:supplierId', mgr, async (req, res) => {
   const note = cleanText(String(b.note || ''), 500);
   if (b.declined) {
     await db.transaction(async () => {
+      if ((await P.lockRow('pur_rfqs', r.id)).status !== 'open') throw new HttpError(400, "Cet appel d'offres est terminé.");
       await db.prepare('DELETE FROM pur_rfq_prices WHERE rfq_id = ? AND supplier_id = ?').run(r.id, sid);
       await db.prepare("UPDATE pur_rfq_suppliers SET status = 'declined', note = ?, updated_at = ? WHERE rfq_id = ? AND supplier_id = ?").run(note, nowISO(), r.id, sid);
     })();
@@ -380,6 +392,7 @@ router.put('/rfqs/:id/quotes/:supplierId', mgr, async (req, res) => {
   const vu = P.dateOrNull(b.validUntil);
   const prices = lines.map((l) => { const lid = A.id(l && l.rfqLineId); if (!valid.has(lid)) throw new HttpError(400, 'Ligne inconnue.'); return [lid, P.money(l.unitPrice, 'Prix invalide.')]; });
   await db.transaction(async () => {
+    if ((await P.lockRow('pur_rfqs', r.id)).status !== 'open') throw new HttpError(400, "Cet appel d'offres est terminé.");
     await db.prepare('DELETE FROM pur_rfq_prices WHERE rfq_id = ? AND supplier_id = ?').run(r.id, sid);
     for (const [lid, p] of prices) await db.prepare('INSERT INTO pur_rfq_prices (rfq_id, supplier_id, line_id, unit_price) VALUES (?, ?, ?, ?)').run(r.id, sid, lid, p);
     await db.prepare("UPDATE pur_rfq_suppliers SET status = 'quoted', delivery_days = ?, payment_days = ?, terms = ?, valid_until = ?, note = ?, updated_at = ? WHERE rfq_id = ? AND supplier_id = ?")
@@ -388,25 +401,27 @@ router.put('/rfqs/:id/quotes/:supplierId', mgr, async (req, res) => {
   res.json({ ok: true });
 });
 router.post('/rfqs/:id/award', mgr, async (req, res) => {
-  const r = await rfqOf(req, req.params.id);
-  if (r.status !== 'open') throw new HttpError(400, "Cet appel d'offres est terminé.");
+  const r0 = await rfqOf(req, req.params.id);
   const b = req.body || {};
   const sid = A.id(b.supplierId, 'Choisissez le fournisseur.');
-  const cmp = await comparison(r);
-  const s = cmp.suppliers.find((x) => x.supplierId === sid);
-  if (!s || s.total === null) throw new HttpError(400, "Le fournisseur n'a pas remis de devis.");
-  if (s.expired) throw new HttpError(400, 'Ce devis a expiré : demandez au fournisseur de le renouveler.');
   const reason = cleanText(String(b.reason || ''), 500);
-  if (sid !== cmp.recommended && !reason) throw new HttpError(400, "Pourquoi ne pas retenir l'offre la moins chère ?");
-  const supplier = await supplierForOrder(req, sid);
-  const savings = cmp.baseline !== null ? Math.max(0, cmp.baseline - s.total) : 0;
-  const lines = cmp.lines.map((l) => ({ itemId: l.itemId, description: l.description, unit: l.unit, quantity: l.quantity, unitPrice: s.prices[l.id] }));
-  const o = await db.transaction(async () => {
-    const x = await createDraftOrder(req, { supplier, lines, category: r.category, notes: `Appel d'offres ${r.number} : ${r.title}`, rfqId: r.id, paymentDays: s.paymentDays, expectedDate: s.deliveryDays !== null ? P.addDays(P.today(), s.deliveryDays) : null });
-    await db.prepare("UPDATE pur_rfqs SET status = 'awarded', awarded_supplier_id = ?, awarded_total = ?, baseline = ?, savings = ?, award_reason = ?, order_id = ?, awarded_at = ? WHERE id = ?").run(sid, s.total, cmp.baseline, savings, reason, x.id, nowISO(), r.id);
+  // Sous verrou : un double envoi ne crée pas deux bons de commande, et les devis comparés sont ceux du moment de l'attribution.
+  const { r, s, savings, o } = await db.transaction(async () => {
+    const r = await P.lockRow('pur_rfqs', r0.id);
+    if (r.status !== 'open') throw new HttpError(400, "Cet appel d'offres est terminé.");
+    const cmp = await comparison(r);
+    const s = cmp.suppliers.find((x) => x.supplierId === sid);
+    if (!s || s.total === null) throw new HttpError(400, "Le fournisseur n'a pas remis de devis.");
+    if (s.expired) throw new HttpError(400, 'Ce devis a expiré : demandez au fournisseur de le renouveler.');
+    if (sid !== cmp.recommended && !reason) throw new HttpError(400, "Pourquoi ne pas retenir l'offre la moins chère ?");
+    const supplier = await supplierForOrder(req, sid);
+    const savings = cmp.baseline !== null ? Math.max(0, cmp.baseline - s.total) : 0;
+    const lines = cmp.lines.map((l) => ({ itemId: l.itemId, description: l.description, unit: l.unit, quantity: l.quantity, unitPrice: s.prices[l.id] }));
+    const o = await createDraftOrder(req, { supplier, lines, category: r.category, notes: `Appel d'offres ${r.number} : ${r.title}`, rfqId: r.id, paymentDays: s.paymentDays, expectedDate: s.deliveryDays !== null ? P.addDays(P.today(), s.deliveryDays) : null });
+    await db.prepare("UPDATE pur_rfqs SET status = 'awarded', awarded_supplier_id = ?, awarded_total = ?, baseline = ?, savings = ?, award_reason = ?, order_id = ?, awarded_at = ? WHERE id = ?").run(sid, s.total, cmp.baseline, savings, reason, o.id, nowISO(), r.id);
     // Les prix obtenus deviennent les prix connus du fournisseur pour ces articles.
     for (const l of lines) if (l.itemId) await db.prepare('INSERT INTO supplier_prices (org_id, item_id, supplier_id, unit_price, lead_days) VALUES (?, ?, ?, ?, ?) ON CONFLICT (item_id, supplier_id) DO UPDATE SET unit_price = excluded.unit_price, lead_days = COALESCE(excluded.lead_days, supplier_prices.lead_days)').run(req.org.id, l.itemId, sid, l.unitPrice, s.deliveryDays);
-    return x;
+    return { r, s, savings, o };
   })();
   await A.logActivity(req.org.id, req.user.id, 'purchasing', `Appel d'offres ${r.number} attribué à ${s.name}`);
   res.json({ savings, orderId: o.id, number: o.number });
@@ -416,7 +431,8 @@ router.post('/rfqs/:id/cancel', mgr, async (req, res) => {
   if (r.status !== 'open') throw new HttpError(400, "Cet appel d'offres est terminé.");
   const reason = cleanText(String((req.body || {}).reason || ''), 500);
   if (!reason) throw new HttpError(400, 'Indiquez le motif.');
-  await db.prepare("UPDATE pur_rfqs SET status = 'cancelled', cancel_reason = ? WHERE id = ?").run(reason, r.id);
+  const c = await db.prepare("UPDATE pur_rfqs SET status = 'cancelled', cancel_reason = ? WHERE id = ? AND status = 'open'").run(reason, r.id);
+  if (!c.changes) throw new HttpError(400, "Cet appel d'offres est terminé.");
   res.json({ ok: true });
 });
 

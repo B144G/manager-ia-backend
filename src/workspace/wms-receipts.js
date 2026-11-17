@@ -72,6 +72,7 @@ router.post('/receipts', mgr, async (req, res) => {
   if (b.supplierId) { const s = await db.prepare('SELECT id FROM suppliers WHERE id = ? AND org_id = ?').get(A.id(b.supplierId), req.org.id); if (!s) throw new HttpError(404, 'Fournisseur introuvable.'); supplierId = s.id; }
   let locationId;
   if (b.locationId) { const l = await W.locationOf(req.org.id, A.id(b.locationId)); if (!Number(l.active) || l.kind === 'transit') throw new HttpError(400, 'Choisissez un emplacement actif (pas « En transit »).'); locationId = l.id; }
+  const crossDock = [];
   const out = await db.transaction(async () => {
     const code = await W.nextCode(req.org.id, 'RC');
     const id = Number((await db.prepare('INSERT INTO wms_receipts (org_id, code, supplier_id, reference, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(req.org.id, code, supplierId, cleanText(String(b.reference || ''), 80), req.user.id, nowISO())).lastInsertRowid);
@@ -79,9 +80,13 @@ router.post('/receipts', mgr, async (req, res) => {
       await L.adjust(req, l.it, l.quantity, `Réception ${code}${b.reference ? ' (' + cleanText(String(b.reference), 60) + ')' : ''}`, { unitCost: l.landedUnit, lotNo: l.lotNo, expiry: l.expiry, serials: l.serials, strict: true, locationId, refKind: 'wms_receipt', refId: id });
       await db.prepare('UPDATE stock_items SET unit_cost = ? WHERE id = ?').run(Math.round(l.unitCost), l.itemId);
       await db.prepare('INSERT INTO wms_receipt_lines (receipt_id, item_id, quantity, unit_cost, weight, landed_total) VALUES (?, ?, ?, ?, ?, ?)').run(id, l.itemId, l.quantity, l.unitCost, l.weight, l.landedTotal);
+      // Transbordement : la marchandise attendue par une commande est mise de côté pour partir directement en dépose.
+      crossDock.push(...await require('./wms-xdock').onReceipt(req, { itemId: l.itemId, quantity: l.quantity, locationId, sourceKind: 'receipt', sourceId: id, sourceCode: code }));
     }
     for (const c of costs) await db.prepare('INSERT INTO wms_receipt_costs (receipt_id, kind, label, amount, basis, expensed, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)').run(id, c.kind, c.label, c.amount, c.basis, nowISO());
-    return { id, code };
+    await require('./wms-pilot').record(req, 'receive', { lines: lines.length, units: lines.reduce((s, l) => s + Number(l.quantity), 0), refKind: 'wms_receipt', refId: id });
+    await require('./wms-vas').autoAttach(req, 'receipt', id, { items: lines.map((l) => ({ itemId: l.itemId, quantity: l.quantity })) });
+    return { id, code, crossDock };
   })();
   await A.logActivity(req.org.id, req.user.id, 'stock', `Réception ${out.code} enregistrée`);
   res.status(201).json(out);

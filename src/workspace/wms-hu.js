@@ -17,7 +17,7 @@ const H = () => require('./wms');
 const TYPES = { pallet: 'Palette', box: 'Colis', container: 'Conteneur', tote: 'Bac' };
 const PREFIX = { pallet: 'PAL', box: 'COL', container: 'CNT', tote: 'BAC' };
 const CAN_HOLD = { pallet: ['box', 'tote'], container: ['pallet', 'box', 'tote'], box: [], tote: [] };
-const STATUS = { open: 'En cours', empty: 'Vide' };
+const STATUS = { open: 'En cours', empty: 'Vide', closed: 'Fermé', shipped: 'Expédié' };
 
 async function huOf(req, idv) {
   const h = await db.prepare('SELECT * FROM wms_hus WHERE id = ? AND org_id = ?').get(A.id(idv, 'Palette introuvable.'), req.org.id);
@@ -48,7 +48,10 @@ const lotKey = (v) => cleanText(String(v || ''), 40);
 
 /** Met `qty` d'un article (stock en vrac de l'emplacement de l'unité) dans l'unité. */
 async function pack(req, hu, it, qty, { lotNo = '', expiry = null } = {}) {
+  if (hu.status === 'shipped') throw new HttpError(400, 'Ce colis est déjà expédié.');
+  if (hu.status === 'closed') throw new HttpError(400, 'Ce colis est fermé : rouvrez-le pour y ajouter des articles.');
   if (!hu.location_id) throw new HttpError(400, "Cette palette n'a pas d'emplacement.");
+  await W.lockItem(req.org.id, it.id); // le stock « en vrac » se relit sous le verrou de l'article
   const loose = await W.looseAt(hu.location_id, it.id);
   if (loose + W.EPS < qty) throw new HttpError(400, `Pas assez de « ${it.name} » en vrac dans cet emplacement : ${Math.max(0, loose)} ${it.unit}.`);
   const lot = lotKey(lotNo);
@@ -86,13 +89,14 @@ async function huView(h) {
   const c = await db.prepare('SELECT COUNT(DISTINCT item_id) AS n, COALESCE(SUM(quantity), 0) AS q FROM wms_hu_contents WHERE hu_id = ?').get(h.id);
   const kids = Number((await db.prepare('SELECT COUNT(*) AS c FROM wms_hus WHERE parent_id = ?').get(h.id)).c);
   return { id: Number(h.id), code: h.code, type: h.type, typeLabel: TYPES[h.type], status: h.status, statusLabel: STATUS[h.status] || h.status, locationId: h.location_id ? Number(h.location_id) : null, location: h.loc || null, warehouse: h.wh || null,
-    parentId: h.parent_id ? Number(h.parent_id) : null, parentCode: h.parent_code || null, items: Number(c.n), quantity: r3(Number(c.q)), children: kids, note: h.note || '', createdAt: h.created_at, updatedAt: h.updated_at };
+    parentId: h.parent_id ? Number(h.parent_id) : null, parentCode: h.parent_code || null, pickId: h.pick_id ? Number(h.pick_id) : null,
+    weight: h.weight === null || h.weight === undefined ? null : Number(h.weight), length: h.length_cm == null ? null : Number(h.length_cm), width: h.width_cm == null ? null : Number(h.width_cm), height: h.height_cm == null ? null : Number(h.height_cm), items: Number(c.n), quantity: r3(Number(c.q)), children: kids, note: h.note || '', createdAt: h.created_at, updatedAt: h.updated_at };
 }
 const BASE = `SELECT h.*, l.code AS loc, w.name AS wh, p.code AS parent_code FROM wms_hus h LEFT JOIN wms_locations l ON l.id = h.location_id LEFT JOIN wms_warehouses w ON w.id = l.warehouse_id LEFT JOIN wms_hus p ON p.id = h.parent_id`;
 router.get('/hus', async (req, res) => {
   const q = req.query || {};
   let where = ' WHERE h.org_id = ?'; const args = [req.org.id];
-  if (q.status === 'empty') where += " AND h.status = 'empty'"; else if (q.status !== 'all') where += " AND h.status != 'empty'";
+  if (q.status === 'empty') where += " AND h.status = 'empty'"; else if (q.status === 'shipped') where += " AND h.status = 'shipped'"; else if (q.status !== 'all') where += " AND h.status NOT IN ('empty','shipped')";
   if (q.locationId) { where += ' AND h.location_id = ?'; args.push(A.id(q.locationId)); }
   if (TYPES[q.type]) { where += ' AND h.type = ?'; args.push(q.type); }
   if (q.itemId) { where += ' AND EXISTS (SELECT 1 FROM wms_hu_contents c WHERE c.hu_id = h.id AND c.item_id = ?)'; args.push(A.id(q.itemId)); }
@@ -140,16 +144,19 @@ router.post('/hus/receive', async (req, res) => {
   const lines = await readLines(req, b.lines);
   if (lines.some((l) => l.unitCost !== undefined && l.unitCost !== '') && !A.can(req, 'manager')) throw new HttpError(403, 'Seul un responsable peut valoriser une entrée.');
   const ref = cleanText(String(b.reference || ''), 80);
+  const crossDock = [];
   const hu = await db.transaction(async () => {
     const h = await createHu(req, { type, locationId: loc.id, note: ref });
     for (const l of lines) {
       const cost = l.unitCost === undefined || l.unitCost === '' ? undefined : A.amount(l.unitCost);
       await L.adjust(req, l.it, l.quantity, `Réception sur ${TYPES[type].toLowerCase()} ${h.code}${ref ? ' (' + ref + ')' : ''}`, { unitCost: cost, lotNo: l.lotNo, expiry: l.expiry || undefined, serials: l.serials, strict: true, locationId: loc.id, refKind: 'hu', refId: h.id });
       await pack(req, h, l.it, l.quantity, l);
+      crossDock.push(...await require('./wms-xdock').onReceipt(req, { itemId: l.it.id, quantity: l.quantity, locationId: loc.id, huId: h.id, sourceKind: 'hu', sourceId: h.id, sourceCode: h.code }));
     }
+    await require('./wms-pilot').record(req, 'receive', { lines: lines.length, units: lines.reduce((s, l) => s + Number(l.quantity), 0), refKind: 'hu', refId: h.id });
     return h;
   })();
-  res.status(201).json({ id: Number(hu.id), code: hu.code, location: loc.code });
+  res.status(201).json({ id: Number(hu.id), code: hu.code, location: loc.code, crossDock });
 });
 
 // ---------- Déplacement en un scan (avec les colis posés dessus) ----------
@@ -166,16 +173,25 @@ async function moveHu(req, hu, to) {
 }
 router.post('/hus/:id/move', async (req, res) => {
   const hu = await huOf(req, req.params.id);
+  if (hu.status === 'shipped') throw new HttpError(400, 'Ce colis est déjà expédié.');
   if (hu.parent_id) throw new HttpError(400, `Ce ${TYPES[hu.type].toLowerCase()} est posé sur une palette : déplacez la palette, ou retirez-le d'abord.`);
   const b = req.body || {};
   const to = await locFrom(req, b.toLocationId, b.toLocationCode);
-  await db.transaction(() => moveHu(req, hu, to))();
+  await db.transaction(async () => {
+    const cur = await W.lockRow('wms_hus', hu.id); // deux déplacements simultanés de la même palette : un seul part de l'emplacement d'origine
+    if (cur.parent_id) throw new HttpError(400, `Ce ${TYPES[cur.type].toLowerCase()} est posé sur une palette : déplacez la palette, ou retirez-le d'abord.`);
+    const from = cur.location_id ? await db.prepare('SELECT kind FROM wms_locations WHERE id = ?').get(cur.location_id) : null;
+    await moveHu(req, cur, to);
+    await require('./wms-pilot').record(req, from && from.kind === 'reception' ? 'putaway' : 'move', { lines: 1, units: 0, refKind: 'hu', refId: cur.id });
+  })();
   res.json({ ok: true, to: to.code });
 });
 
 // ---------- Contenu ----------
+const packingGuard = (hu) => { if (hu.pick_id) throw new HttpError(400, "Ce colis appartient à une commande : modifiez-le depuis le poste d'emballage."); };
 router.post('/hus/:id/add', async (req, res) => {
   const hu = await huOf(req, req.params.id);
+  packingGuard(hu);
   const b = req.body || {};
   const it = await H().itemOf(req, b.itemId);
   await db.transaction(() => pack(req, hu, it, H().qty(b.quantity), { lotNo: b.lotNo, expiry: A.date(b.expiry) || null }))();
@@ -183,6 +199,7 @@ router.post('/hus/:id/add', async (req, res) => {
 });
 router.post('/hus/:id/remove', async (req, res) => {
   const hu = await huOf(req, req.params.id);
+  packingGuard(hu);
   const b = req.body || {};
   const it = await H().itemOf(req, b.itemId);
   const q = H().qty(b.quantity);
@@ -205,6 +222,7 @@ router.post('/hus/:id/remove', async (req, res) => {
 /** Défaire l'unité : tout son contenu redevient du stock en vrac au même emplacement (les colis posés dessus sont détachés). */
 router.post('/hus/:id/unpack', async (req, res) => {
   const hu = await huOf(req, req.params.id);
+  packingGuard(hu);
   await db.transaction(async () => {
     await db.prepare('DELETE FROM wms_hu_contents WHERE hu_id = ?').run(hu.id);
     await db.prepare('UPDATE wms_hus SET parent_id = NULL, updated_at = ? WHERE parent_id = ?').run(nowISO(), hu.id);
@@ -217,10 +235,12 @@ router.post('/hus/:id/nest', async (req, res) => {
   const hu = await huOf(req, req.params.id);
   const b = req.body || {};
   const parent = b.parentId ? await huOf(req, b.parentId) : await huByCode(req, b.parentCode);
+  if (hu.status === 'shipped' || parent.status === 'shipped') throw new HttpError(400, 'Ce colis est déjà expédié.');
   if (Number(parent.id) === Number(hu.id) || (await family(hu.id)).includes(Number(parent.id))) throw new HttpError(400, 'Une palette ne peut pas être posée sur elle-même.');
   if (!CAN_HOLD[parent.type].includes(hu.type)) throw new HttpError(400, `Un ${TYPES[hu.type].toLowerCase()} ne se pose pas sur ce contenant (${TYPES[parent.type].toLowerCase()}).`);
   await db.transaction(async () => {
-    if (Number(parent.location_id) !== Number(hu.location_id)) await moveHu(req, hu, await W.locationOf(req.org.id, parent.location_id));
+    const cur = await W.lockRow('wms_hus', hu.id);
+    if (Number(parent.location_id) !== Number(cur.location_id)) await moveHu(req, cur, await W.locationOf(req.org.id, parent.location_id));
     await db.prepare('UPDATE wms_hus SET parent_id = ?, updated_at = ? WHERE id = ?').run(parent.id, nowISO(), hu.id);
     await W.markEmpty(parent.id);
     if (hu.parent_id) await W.markEmpty(hu.parent_id);
@@ -278,3 +298,4 @@ router.get('/hus/:id/label', async (req, res) => {
 });
 
 module.exports = router;
+Object.assign(module.exports, { TYPES, STATUS, huOf, huByCode, locFrom, family, pack, createHu, moveHu, huView, labelPdf });

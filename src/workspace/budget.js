@@ -11,6 +11,7 @@ router.use(A.need('manager'));
 const KINDS = ['income', 'expense'];
 const Annual = require('./budget-annual'); // budget annuel, trésorerie, seuil de validation (VAGUE 2)
 router.use(Annual);
+router.use(require('./budget-pro')); // pilotage : tableau de bord, prévisions, scénarios, détail, export (administrateurs)
 
 /** Totaux du mois : entrées, sorties, solde, détail par catégorie avec la limite prévue. */
 async function summary(req, month) {

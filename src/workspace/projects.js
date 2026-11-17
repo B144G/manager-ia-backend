@@ -79,8 +79,9 @@ router.post('/tasks', async (req, res) => {
   let pid = null;
   if (b.projectId) { const p = await getProject(req, b.projectId); pid = p.id; branch = p.branch_id; } else branch = await A.branchOf(req, b.branchId);
   const assignee = await A.memberOf(req, b.assigneeId);
-  const id = (await db.prepare('INSERT INTO tasks (org_id, project_id, branch_id, title, description, status, priority, assignee_id, due, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(req.org.id, pid, branch, title, A.text(b.description, 1000), A.oneOf(b.status, TSTATUS, 'todo'), A.oneOf(b.priority, PRIORITY, 'normal'), assignee, A.date(b.due), req.user.id, nowISO())).lastInsertRowid;
+  const status = A.oneOf(b.status, TSTATUS, 'todo');
+  const id = (await db.prepare('INSERT INTO tasks (org_id, project_id, branch_id, title, description, status, priority, assignee_id, due, created_by, created_at, done_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(req.org.id, pid, branch, title, A.text(b.description, 1000), status, A.oneOf(b.priority, PRIORITY, 'normal'), assignee, A.date(b.due), req.user.id, nowISO(), status === 'done' ? nowISO().slice(0, 10) : null)).lastInsertRowid;
   res.status(201).json({ id: Number(id) });
 });
 
@@ -101,7 +102,9 @@ router.put('/tasks/:id', async (req, res) => {
     due: b.due === undefined ? t.due : A.date(b.due),
   } : { title: t.title, description: t.description, priority: t.priority, assignee: t.assignee_id, due: t.due };
   const startDate = n.due !== t.due && t.start_date && n.due && t.start_date > n.due ? n.due : t.start_date;
-  await db.prepare('UPDATE tasks SET title = ?, description = ?, status = ?, priority = ?, assignee_id = ?, due = ?, start_date = ? WHERE id = ?').run(n.title, n.description, status, n.priority, n.assignee, n.due, startDate, t.id);
+  // Date de fin réelle (valeur acquise du module Projets) : posée quand la tâche passe à « terminé », effacée si elle est rouverte.
+  const doneAt = status === 'done' ? (t.status === 'done' && t.done_at ? t.done_at : nowISO().slice(0, 10)) : null;
+  await db.prepare('UPDATE tasks SET title = ?, description = ?, status = ?, priority = ?, assignee_id = ?, due = ?, start_date = ?, done_at = ? WHERE id = ?').run(n.title, n.description, status, n.priority, n.assignee, n.due, startDate, doneAt, t.id);
   if (status === 'done' && t.status !== 'done') await A.logActivity(req.org.id, req.user.id, 'projects', `Tâche terminée : ${t.title}`);
   if (t.project_id && (n.due !== t.due || status !== t.status)) await require('./projects-w6').autoReplan(req.org.id, t.project_id);
   res.json({ ok: true });

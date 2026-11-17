@@ -11,6 +11,10 @@ const router = express.Router({ mergeParams: true });
 // Parc : véhicules, chauffeurs, échéances réglementaires, carburant (logistics-fleet.js)
 const fleet = require('./logistics-fleet');
 router.use(fleet);
+// Transport (TMS) : planification, exécution chauffeur, suivi client, coûts et tarifs, indicateurs (tms*.js)
+router.use(require('./tms'));
+router.use(require('./tms-costs'));
+router.use(require('./tms-kpi'));
 
 const STATUSES = ['to_prepare', 'shipped', 'on_route', 'delivered', 'failed', 'returned'];
 const STATUS_LABEL = { to_prepare: 'À préparer', shipped: 'Expédiée', on_route: 'En route', delivered: 'Livrée', failed: 'Échec', returned: 'Retournée' };
@@ -31,10 +35,15 @@ const delOf = async (req, id) => {
 };
 
 const isLate = (d) => OPEN.includes(d.status) && d.planned_date && d.planned_date < today();
-const view = (d, names = {}) => ({
+const numOrNull = (v) => (v === null || v === undefined ? null : Number(v));
+const view = (d, names = {}, req = null) => ({
   id: d.id, docId: d.doc_id, docNumber: names.docNumber || null, customerName: d.customer_name, phone: d.phone, address: d.address, zoneId: d.zone_id, zone: names.zone || null,
   carrierId: d.carrier_id, carrier: names.carrier || null, roundId: d.round_id, roundPos: Number(d.round_pos), fee: Number(d.fee), plannedDate: d.planned_date, status: d.status,
   statusLabel: STATUS_LABEL[d.status], tracking: d.tracking, receivedBy: d.received_by, proof: d.proof, note: d.note, branchId: d.branch_id, late: isLate(d), createdAt: d.created_at, updatedAt: d.updated_at,
+  // Transport (TMS)
+  weight: Number(d.weight_kg || 0), volume: Number(d.volume_m3 || 0), pallets: Number(d.pallets || 0), lat: numOrNull(d.lat), lng: numOrNull(d.lng), windowStart: d.window_start || '', windowEnd: d.window_end || '',
+  priority: Number(d.priority || 0), codAmount: Number(d.cod_amount || 0), codCollected: Number(d.cod_collected || 0), attempts: Number(d.attempts || 0), outcome: d.outcome || '', failureReason: d.failure_reason || '',
+  eta: d.eta || '', arrivedAt: d.arrived_at || null, deliveredAt: d.delivered_at || null, estCost: req && !A.can(req, 'manager') ? undefined : Number(d.est_cost || 0), allocCost: req && !A.can(req, 'manager') ? undefined : Number(d.alloc_cost || 0),
 });
 const BASE = `SELECT d.*, z.name AS zone_name, c.name AS carrier_name, o.number AS doc_number FROM logistics_deliveries d
   LEFT JOIN logistics_zones z ON z.id = d.zone_id LEFT JOIN logistics_carriers c ON c.id = d.carrier_id LEFT JOIN documents o ON o.id = d.doc_id`;
@@ -70,13 +79,19 @@ async function stockBridge(req, d, status) {
   if (['shipped', 'on_route', 'delivered'].includes(status) && (!d.stock_out || d.stock_back)) {
     for (const x of rows) {
       const r = await L.adjust(req, x.item_id, -x.quantity, `Expédition livraison #${d.id}`, { serials: JSON.parse(x.serials), refKind: 'delivery', refId: d.id });
-      await db.prepare('UPDATE logistics_delivery_items SET allocations = ? WHERE id = ?').run(JSON.stringify(r.allocations), x.id);
+      await db.prepare('UPDATE logistics_delivery_items SET allocations = ?, returned_qty = 0 WHERE id = ?').run(JSON.stringify(r.allocations), x.id);
     }
     await db.prepare('UPDATE logistics_deliveries SET stock_out = 1, stock_back = 0 WHERE id = ?').run(d.id);
     return 'Stock sorti';
   }
   if (status === 'returned' && d.stock_out && !d.stock_back) {
-    for (const x of rows) await L.adjust(req, x.item_id, x.quantity, `Retour livraison #${d.id}`, { serials: JSON.parse(x.serials), allocations: JSON.parse(x.allocations), refKind: 'delivery', refId: d.id });
+    // Une livraison partielle a déjà réintégré sa part non livrée (returned_qty) : seul le reste revient ici, jamais deux fois.
+    for (const x of rows) {
+      const back = L.round3(Number(x.quantity) - Number(x.returned_qty || 0));
+      if (back <= 1e-9) continue;
+      const p = require('./tms').returnPart(x, back);
+      await L.adjust(req, x.item_id, back, `Retour livraison #${d.id}`, { serials: p.serials, allocations: p.allocations, refKind: 'delivery', refId: d.id });
+    }
     await db.prepare('UPDATE logistics_deliveries SET stock_back = 1 WHERE id = ?').run(d.id);
     return 'Stock réintégré';
   }
@@ -103,7 +118,7 @@ router.get('/', async (req, res) => {
       monthCost: all.filter((d) => day(d) >= m.from && day(d) < m.to && d.status !== 'returned').reduce((a, d) => a + Number(d.fee), 0),
       open: all.filter((d) => OPEN.includes(d.status)).length,
     },
-    deliveries: all.map((d) => view(d, names(d))),
+    deliveries: all.map((d) => view(d, names(d), req)),
     statuses: STATUS_LABEL,
   });
 });
@@ -129,7 +144,7 @@ router.get('/deliveries/:id', async (req, res) => {
   const d = await delOf(req, req.params.id);
   const full = await db.prepare(`${BASE} WHERE d.id = ?`).get(d.id);
   const events = await db.prepare('SELECT e.id, e.status, e.note, e.created_at, u.name AS who FROM logistics_events e LEFT JOIN users u ON u.id = e.user_id WHERE e.delivery_id = ? ORDER BY e.id').all(d.id);
-  res.json({ delivery: { ...view(full, names(full)), stockOut: Boolean(Number(d.stock_out)), stockBack: Boolean(Number(d.stock_back)), items: await itemsOf(d.id) }, events: events.map((e) => ({ id: e.id, status: e.status, statusLabel: STATUS_LABEL[e.status] || e.status, note: e.note, at: e.created_at, who: e.who })) });
+  res.json({ delivery: { ...view(full, names(full), req), stockOut: Boolean(Number(d.stock_out)), stockBack: Boolean(Number(d.stock_back)), items: await itemsOf(d.id) }, events: events.map((e) => ({ id: e.id, status: e.status, statusLabel: STATUS_LABEL[e.status] || (e.status === 'arrived' ? 'Arrivé chez le client' : e.status), note: e.note, at: e.created_at, who: e.who })) });
 });
 
 async function checkLinks(req, b, cur) {
@@ -162,6 +177,7 @@ router.post('/deliveries', async (req, res) => {
       req.org.id, branch === null && b.branchId !== undefined ? await A.branchOf(req, b.branchId) : branch, docId, name, A.text(b.phone, 40) || phone, A.text(b.address, 300), links.zoneId, links.carrierId, links.roundId, fee, planned,
       'to_prepare', A.text(b.tracking, 80), A.text(b.note, 500), req.user.id, now, now)).lastInsertRowid);
     await saveItems(req, id, await cleanItems(req, b.items));
+    await require('./tms').saveTmsFields(req, id, b, null);
     await addEvent(req, id, 'to_prepare', 'Livraison créée');
   })();
   await A.logActivity(req.org.id, req.user.id, 'logistics', `Livraison pour ${name} créée`);
@@ -176,6 +192,7 @@ router.put('/deliveries/:id', async (req, res) => {
   await db.prepare('UPDATE logistics_deliveries SET customer_name = ?, phone = ?, address = ?, zone_id = ?, carrier_id = ?, round_id = ?, fee = ?, planned_date = ?, tracking = ?, note = ?, updated_at = ? WHERE id = ?').run(
     b.customerName === undefined ? d.customer_name : A.text(b.customerName, 100, { required: true, msg: 'Indiquez le nom du client.' }), upd('phone', d.phone), upd('address', d.address), links.zoneId, links.carrierId, links.roundId,
     b.fee === undefined ? d.fee : money0(b.fee), b.plannedDate === undefined ? d.planned_date : A.date(b.plannedDate), upd('tracking', d.tracking), upd('note', d.note), nowISO(), d.id);
+  await require('./tms').saveTmsFields(req, d.id, b, d);
   res.json({ ok: true });
 });
 
@@ -191,6 +208,9 @@ router.put('/deliveries/:id/status', async (req, res) => {
   await db.transaction(async () => {
     const stock = await stockBridge(req, d, st);
     await db.prepare('UPDATE logistics_deliveries SET status = ?, received_by = ?, proof = ?, updated_at = ? WHERE id = ?').run(st, st === 'delivered' ? receivedBy : d.received_by, st === 'delivered' ? proof : d.proof, nowISO(), d.id);
+    // Transport : horodatage de l'issue et nombre de tentatives (indicateurs « à l'heure » et « au premier passage »).
+    if (st === 'delivered' && d.status !== 'delivered') await db.prepare("UPDATE logistics_deliveries SET delivered_at = ?, outcome = CASE WHEN outcome = '' OR outcome = 'failed' THEN 'delivered' ELSE outcome END, attempts = attempts + 1 WHERE id = ?").run(nowISO(), d.id);
+    if (st === 'failed' && d.status !== 'failed') await db.prepare("UPDATE logistics_deliveries SET outcome = 'failed', attempts = attempts + 1, failure_reason = CASE WHEN failure_reason = '' THEN 'other' ELSE failure_reason END WHERE id = ?").run(d.id);
     await addEvent(req, d.id, st, [A.text(b.note, 300), st === 'delivered' && receivedBy ? `Reçu par ${receivedBy}` : '', stock].filter(Boolean).join(' · '));
   })();
   res.json({ ok: true });
@@ -272,13 +292,15 @@ router.get('/rounds', async (req, res) => {
   const sc = A.scope(req, 'd.branch_id');
   const rounds = await db.prepare('SELECT r.*, c.name AS carrier, v.plate AS vehicle, dr.name AS driver FROM logistics_rounds r LEFT JOIN logistics_carriers c ON c.id = r.carrier_id LEFT JOIN logistics_vehicles v ON v.id = r.vehicle_id LEFT JOIN logistics_drivers dr ON dr.id = r.driver_id WHERE r.org_id = ? ORDER BY r.date DESC, r.id DESC LIMIT 60').all(req.org.id);
   const ds = await db.prepare(`${BASE} WHERE d.org_id = ? AND d.round_id IS NOT NULL${sc.sql} ORDER BY d.round_pos, d.id`).all(req.org.id, ...sc.args);
-  res.json({ rounds: rounds.map((r) => ({ id: r.id, name: r.name, date: r.date, carrierId: r.carrier_id, carrier: r.carrier, vehicleId: r.vehicle_id, vehicle: r.vehicle, driverId: r.driver_id, driver: r.driver, note: r.note, deliveries: ds.filter((d) => d.round_id === r.id).map((d) => view(d, names(d))) })) });
+  res.json({ rounds: rounds.map((r) => ({ id: r.id, name: r.name, date: r.date, carrierId: r.carrier_id, carrier: r.carrier, vehicleId: r.vehicle_id, vehicle: r.vehicle, driverId: r.driver_id, driver: r.driver, note: r.note,
+    status: r.status || 'planned', startTime: r.start_time || '08:00', plannedKm: Number(r.planned_km || 0), actualKm: r.actual_km === null || r.actual_km === undefined ? null : Number(r.actual_km),
+    deliveries: ds.filter((d) => d.round_id === r.id).map((d) => view(d, names(d), req)) })) });
 });
 /** Affectation d'un véhicule et d'un chauffeur à une tournée : actifs, et pas déjà pris par une autre tournée le même jour. */
 async function assignment(req, b, cur, date) {
   const vid = b.vehicleId === undefined ? (cur ? cur.vehicle_id : null) : (b.vehicleId === null || b.vehicleId === '' ? null : A.id(b.vehicleId));
   const did = b.driverId === undefined ? (cur ? cur.driver_id : null) : (b.driverId === null || b.driverId === '' ? null : A.id(b.driverId));
-  const other = (col, v) => db.prepare(`SELECT name FROM logistics_rounds WHERE org_id = ? AND date = ? AND ${col} = ?${cur ? ' AND id <> ?' : ''}`).get(req.org.id, date, v, ...(cur ? [cur.id] : []));
+  const other = (col, v) => db.prepare(`SELECT name FROM logistics_rounds WHERE org_id = ? AND date = ? AND ${col} = ? AND status <> 'cancelled'${cur ? ' AND id <> ?' : ''}`).get(req.org.id, date, v, ...(cur ? [cur.id] : []));
   if (vid) {
     const v = await fleet.vehicleOf(req, vid);
     if (v.status !== 'active') throw new HttpError(400, `Le véhicule ${v.plate} n'est pas disponible (${v.status === 'maintenance' ? 'en maintenance' : 'retiré du parc'}).`);
@@ -314,6 +336,7 @@ router.put('/rounds/:id', async (req, res) => {
 });
 router.delete('/rounds/:id', A.need('manager'), async (req, res) => {
   const r = await one(req, 'logistics_rounds', req.params.id, 'Tournée');
+  if (r.status === 'in_progress') throw new HttpError(409, 'Cette tournée est en cours : terminez-la avant de la supprimer.');
   await db.prepare('DELETE FROM logistics_rounds WHERE id = ?').run(r.id); // les livraisons restent, simplement sans tournée
   res.json({ ok: true });
 });
@@ -335,6 +358,8 @@ router.put('/rounds/:id/order', async (req, res) => {
 
 module.exports = router;
 module.exports.STATUS_LABEL = STATUS_LABEL;
+// Partagé avec le Transport (tms*.js)
+Object.assign(module.exports, { BASE, OPEN, view, names, delOf, one, stockBridge, addEvent, itemsOf, assignment, isLate });
 // Crochets lus par ai.js
 module.exports.ctx = async (req) => {
   const cur = req.org.currency;

@@ -68,6 +68,8 @@ router.put('/orders/:id', mgr, async (req, res) => {
   if (o.status !== 'draft') throw new HttpError(400, 'Seul un bon de commande en brouillon se modifie.');
   const v = await readOrder(req, req.body || {});
   await db.transaction(async () => {
+    // Sous verrou : une modification ne peut pas se glisser pendant l'approbation (le montant approuvé est celui qui est enregistré).
+    if ((await P.lockRow('pur_orders', o.id)).status !== 'draft') throw new HttpError(400, 'Seul un bon de commande en brouillon se modifie.');
     await db.prepare('UPDATE pur_orders SET supplier_id = ?, order_date = ?, expected_date = ?, payment_days = ?, vat_rate = ?, category = ?, delivery_address = ?, notes = ?, updated_at = ? WHERE id = ?')
       .run(v.supplier.id, v.orderDate, v.expected, v.paymentDays, v.vat, v.category, v.address, v.notes, nowISO(), o.id);
     await db.prepare('DELETE FROM pur_order_lines WHERE order_id = ?').run(o.id);
@@ -112,15 +114,20 @@ router.get('/orders/:id', mgr, async (req, res) => {
 
 // ---------- Cycle de vie ----------
 router.post('/orders/:id/approve', mgr, async (req, res) => {
-  const o = await orderOf(req, req.params.id);
-  if (o.status !== 'draft') throw new HttpError(400, 'Ce bon de commande est déjà approuvé.');
-  const s = await db.prepare('SELECT * FROM suppliers WHERE id = ?').get(o.supplier_id);
-  if (s && Number(s.blocked)) throw new HttpError(400, 'Ce fournisseur est bloqué : il ne peut plus recevoir de commande.');
-  const t = await P.orderTotalsOf(o);
-  const role = P.requiredRole(await P.settingsOf(req.org), 'order', t.ttc);
-  if (A.RANK[req.member.role] < A.RANK[role]) throw new HttpError(403, `Ce montant doit être approuvé par : ${A.ROLE_LABEL[role]}.`);
-  const warn = o.category ? await P.budgetCheck(req, o.category, P.yearOf(o.order_date), t.ttc, { exceptOrder: o.id }) : {};
-  await db.prepare("UPDATE pur_orders SET status = 'approved', approved_by = ?, approved_at = ?, updated_at = ? WHERE id = ?").run(req.user.id, nowISO(), nowISO(), o.id);
+  const o0 = await orderOf(req, req.params.id);
+  // Tout se relit sous verrou : le montant contrôlé (seuil, budget) est celui des lignes approuvées, même si quelqu'un modifie la commande au même moment.
+  const { o, warn } = await db.transaction(async () => {
+    const o = await P.lockRow('pur_orders', o0.id);
+    if (o.status !== 'draft') throw new HttpError(400, 'Ce bon de commande est déjà approuvé.');
+    const s = await db.prepare('SELECT * FROM suppliers WHERE id = ?').get(o.supplier_id);
+    if (s && Number(s.blocked)) throw new HttpError(400, 'Ce fournisseur est bloqué : il ne peut plus recevoir de commande.');
+    const t = await P.orderTotalsOf(o);
+    const role = P.requiredRole(await P.settingsOf(req.org), 'order', t.ttc);
+    if (A.RANK[req.member.role] < A.RANK[role]) throw new HttpError(403, `Ce montant doit être approuvé par : ${A.ROLE_LABEL[role]}.`);
+    const warn = o.category ? await P.budgetCheck(req, o.category, P.yearOf(o.order_date), t.ttc, { exceptOrder: o.id }) : {};
+    await db.prepare("UPDATE pur_orders SET status = 'approved', approved_by = ?, approved_at = ?, updated_at = ? WHERE id = ?").run(req.user.id, nowISO(), nowISO(), o.id);
+    return { o, warn };
+  })();
   await A.logActivity(req.org.id, req.user.id, 'purchasing', `Bon de commande ${o.number} approuvé`);
   res.json({ ok: true, ...warn });
 });
@@ -171,12 +178,13 @@ async function releaseRequest(o) {
   if (o.request_id) await db.prepare("UPDATE pur_requests SET status = 'approved', order_id = NULL, updated_at = ? WHERE id = ? AND status = 'ordered'").run(nowISO(), o.request_id);
 }
 router.post('/orders/:id/cancel', mgr, async (req, res) => {
-  const o = await orderOf(req, req.params.id);
-  if (!['draft', 'approved', 'sent'].includes(o.status)) throw new HttpError(400, 'Ce bon de commande ne peut plus être annulé.');
-  if (await db.prepare('SELECT 1 FROM pur_receipts WHERE order_id = ?').get(o.id)) throw new HttpError(400, 'Des marchandises ont déjà été reçues : clôturez le bon de commande à la place.');
+  const o0 = await orderOf(req, req.params.id);
   const reason = cleanText(String((req.body || {}).reason || ''), 500);
-  if (o.status !== 'draft' && !reason) throw new HttpError(400, 'Indiquez le motif.');
   await db.transaction(async () => {
+    const o = await P.lockRow('pur_orders', o0.id); // une réception enregistrée au même moment verrouille aussi la commande
+    if (!['draft', 'approved', 'sent'].includes(o.status)) throw new HttpError(400, 'Ce bon de commande ne peut plus être annulé.');
+    if (await db.prepare('SELECT 1 FROM pur_receipts WHERE order_id = ?').get(o.id)) throw new HttpError(400, 'Des marchandises ont déjà été reçues : clôturez le bon de commande à la place.');
+    if (o.status !== 'draft' && !reason) throw new HttpError(400, 'Indiquez le motif.');
     await db.prepare("UPDATE pur_orders SET status = 'cancelled', cancel_reason = ?, updated_at = ? WHERE id = ?").run(reason, nowISO(), o.id);
     await releaseRequest(o);
   })();
@@ -186,6 +194,7 @@ router.delete('/orders/:id', mgr, async (req, res) => {
   const o = await orderOf(req, req.params.id);
   if (o.status !== 'draft') throw new HttpError(400, 'Seul un brouillon se supprime.');
   await db.transaction(async () => {
+    if ((await P.lockRow('pur_orders', o.id)).status !== 'draft') throw new HttpError(400, 'Seul un brouillon se supprime.');
     await releaseRequest(o);
     if (o.rfq_id) await db.prepare("UPDATE pur_rfqs SET order_id = NULL WHERE id = ?").run(o.rfq_id);
     await db.prepare('DELETE FROM pur_orders WHERE id = ?').run(o.id);
@@ -203,26 +212,30 @@ router.get('/orders/:id/invoice-draft', mgr, async (req, res) => {
 // ---------- Réceptions ----------
 const entryReason = (rc, o) => `Réception ${rc} (commande ${o.number})`;
 router.post('/orders/:id/receipts', mgr, async (req, res) => {
-  const o = await orderOf(req, req.params.id);
-  if (!['approved', 'sent', 'partial'].includes(o.status)) throw new HttpError(400, "Approuvez le bon de commande avant d'enregistrer une réception.");
+  const o0 = await orderOf(req, req.params.id);
   const b = req.body || {};
   const date = P.dateOrNull(b.receiptDate) || P.today();
   if (date > P.today()) throw new HttpError(400, 'La date de réception ne peut pas être dans le futur.');
-  const state = Object.fromEntries((await P.orderLineState(o.id)).map((l) => [Number(l.id), l]));
   const settings = await P.settingsOf(req.org);
-  const todo = [];
-  for (const x of Array.isArray(b.lines) ? b.lines : []) {
-    const l = state[A.id(x && x.orderLineId, 'Ligne inconnue.')];
-    if (!l) throw new HttpError(400, 'Ligne inconnue.');
-    const acc = P.qtyOf(x.receivedQty || 0, { zero: true }); const rej = P.qtyOf(x.rejectedQty || 0, { zero: true });
-    if (!acc && !rej) continue;
-    if (acc > P.round3(l.remaining * (1 + settings.tolQtyPct / 100)) + 1e-9) throw new HttpError(400, `Quantité reçue supérieure à la quantité restante pour « ${l.description} » (${l.remaining} ${l.unit}).`);
-    if (rej && !cleanText(String(x.reason || ''), 200)) throw new HttpError(400, `Indiquez le motif du refus pour « ${l.description} ».`);
-    todo.push({ l, acc, rej, x });
-  }
-  if (!todo.length) throw new HttpError(400, 'Aucune quantité reçue ou refusée : rien à enregistrer.');
   const now = nowISO();
+  let o;
+  const crossDock = [];
   const out = await db.transaction(async () => {
+    // Le reste à recevoir se calcule sous verrou : deux réceptions simultanées ne dépassent pas la quantité commandée.
+    o = await P.lockRow('pur_orders', o0.id);
+    if (!['approved', 'sent', 'partial'].includes(o.status)) throw new HttpError(400, "Approuvez le bon de commande avant d'enregistrer une réception.");
+    const state = Object.fromEntries((await P.orderLineState(o.id)).map((l) => [Number(l.id), l]));
+    const todo = [];
+    for (const x of Array.isArray(b.lines) ? b.lines : []) {
+      const l = state[A.id(x && x.orderLineId, 'Ligne inconnue.')];
+      if (!l) throw new HttpError(400, 'Ligne inconnue.');
+      const acc = P.qtyOf(x.receivedQty || 0, { zero: true }); const rej = P.qtyOf(x.rejectedQty || 0, { zero: true });
+      if (!acc && !rej) continue;
+      if (acc > P.round3(l.remaining * (1 + settings.tolQtyPct / 100)) + 1e-9) throw new HttpError(400, `Quantité reçue supérieure à la quantité restante pour « ${l.description} » (${l.remaining} ${l.unit}).`);
+      if (rej && !cleanText(String(x.reason || ''), 200)) throw new HttpError(400, `Indiquez le motif du refus pour « ${l.description} ».`);
+      todo.push({ l, acc, rej, x });
+    }
+    if (!todo.length) throw new HttpError(400, 'Aucune quantité reçue ou refusée : rien à enregistrer.');
     const number = await P.nextNumber(req.org.id, 'BR', date);
     const rid = Number((await db.prepare('INSERT INTO pur_receipts (org_id, number, order_id, date, delivery_note, note, received_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(req.org.id, number, o.id, date, cleanText(String(b.deliveryNote || ''), 60), cleanText(String(b.note || ''), 500), req.user.id, now)).lastInsertRowid);
@@ -241,6 +254,8 @@ router.post('/orders/:id/receipts', mgr, async (req, res) => {
         const W = require('./wms-core');
         const locationId = inspection ? (await W.quarantineOf(req.org.id)).id : (x.locationId ? (await W.locationOf(req.org.id, A.id(x.locationId))).id : undefined);
         await L.adjust(req, it, acc, entryReason(number, o) + (inspection ? ' : quarantaine' : ''), { unitCost: l.unit_price, lotNo, expiry, serials, strict: true, refKind: 'pur_receipt', refId: rid, locationId });
+        // Transbordement (entrepôt) : hors contrôle qualité, la marchandise attendue par une commande client part directement en dépose.
+        if (!inspection) crossDock.push(...await require('./wms-xdock').onReceipt(req, { itemId: it.id, quantity: acc, locationId, sourceKind: 'pur_receipt', sourceId: rid, sourceCode: number, purchaseOrderId: o.id }));
       }
       if (it && acc) {
         await db.prepare('UPDATE stock_items SET unit_cost = ? WHERE id = ?').run(l.unit_price, it.id);
@@ -251,7 +266,7 @@ router.post('/orders/:id/receipts', mgr, async (req, res) => {
   })();
   const status = await refreshStatus(await orderOf(req, o.id));
   await A.logActivity(req.org.id, req.user.id, 'purchasing', `Réception ${out.number} enregistrée (commande ${o.number})`);
-  res.status(201).json({ ...out, status });
+  res.status(201).json({ ...out, status, crossDock });
 });
 
 async function receiptRows(req, where, args) {
@@ -293,9 +308,10 @@ router.get('/inspections', mgr, async (req, res) => {
 router.post('/inspections', mgr, async (req, res) => {
   const list = Array.isArray((req.body || {}).lines) ? req.body.lines : [];
   const touched = new Set();
+  const crossDock = [];
   await db.transaction(async () => {
     for (const x of list) {
-      const rl = await db.prepare(`SELECT rl.*, ol.item_id, ol.unit_price, ol.description, r.number AS receipt, r.order_id, r.org_id FROM pur_receipt_lines rl JOIN pur_receipts r ON r.id = rl.receipt_id JOIN pur_order_lines ol ON ol.id = rl.order_line_id WHERE rl.id = ? AND r.org_id = ?`).get(A.id(x && x.receiptLineId), req.org.id);
+      const rl = await db.prepare(`SELECT rl.*, ol.item_id, ol.unit_price, ol.description, r.number AS receipt, r.order_id, r.org_id FROM pur_receipt_lines rl JOIN pur_receipts r ON r.id = rl.receipt_id JOIN pur_order_lines ol ON ol.id = rl.order_line_id WHERE rl.id = ? AND r.org_id = ? FOR UPDATE OF rl`).get(A.id(x && x.receiptLineId), req.org.id);
       if (!rl) throw new HttpError(404, 'Ligne de contrôle introuvable.');
       const acc = P.qtyOf(x.acceptedQty || 0, { zero: true }); const rej = P.qtyOf(x.rejectedQty || 0, { zero: true });
       if (!acc && !rej) continue;
@@ -311,6 +327,8 @@ router.post('/inspections', mgr, async (req, res) => {
           const it = await db.prepare('SELECT * FROM stock_items WHERE id = ?').get(rl.item_id);
           const dests = x.toLocationId ? [{ location: await W.locationOf(req.org.id, A.id(x.toLocationId)), quantity: acc }] : await W.destinationsFor(req.org.id, it, acc);
           for (const d of dests) await W.move(req, rl.item_id, q.id, d.location.id, d.quantity, { kind: 'internal', refKind: 'pur_receipt', refId: rl.receipt_id, reason: `Contrôle qualité ${rl.receipt} : libéré` });
+          // Libérée du contrôle qualité, la marchandise attendue par une commande client peut partir en transbordement.
+          crossDock.push(...await require('./wms-xdock').onReceipt(req, { itemId: rl.item_id, quantity: acc, locationId: dests.length === 1 ? dests[0].location.id : undefined, sourceKind: 'inspection', sourceId: rl.receipt_id, sourceCode: rl.receipt, purchaseOrderId: rl.order_id }));
         }
         if (rej) await L.adjust(req, rl.item_id, -rej, `Contrôle qualité ${rl.receipt} : refusé (${reason})`, { locationId: q.id, refKind: 'pur_receipt', refId: rl.receipt_id, allowExpired: true });
       }
@@ -320,7 +338,7 @@ router.post('/inspections', mgr, async (req, res) => {
     }
   })();
   for (const id of touched) await refreshStatus(await db.prepare('SELECT * FROM pur_orders WHERE id = ?').get(id));
-  res.json({ ok: true });
+  res.json({ ok: true, crossDock });
 });
 
 module.exports = router;

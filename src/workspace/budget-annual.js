@@ -284,3 +284,6 @@ module.exports.annualView = annualView;
 module.exports.cashflow = cashflow;
 module.exports.commitments = commitments;
 module.exports.NOTICE = NOTICE;
+module.exports.mapOf = mapOf;
+module.exports.categoryOf = categoryOf;
+module.exports.UNCOVERED = UNCOVERED;

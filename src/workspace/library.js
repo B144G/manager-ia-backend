@@ -428,31 +428,36 @@ router.put('/blocks/:id/perms', A.need('admin'), async (req, res) => {
 });
 
 // ---------- Entrer, refermer ----------
+// Verrou consultatif par personne : les essais d'une même personne passent un par un (pas de rafale d'essais simultanés avant le blocage).
+const UNLOCK_LOCK_NS = 727276;
 router.post('/blocks/:id/unlock', unlockLimit, async (req, res) => {
   const { b } = await loadBlock(req, req.params.id);
-  const since = new Date(Date.now() - FAIL_WINDOW_MIN * 60000).toISOString();
-  const fails = Number((await db.prepare("SELECT COUNT(*) AS c FROM lib_audit WHERE org_id = ? AND user_id = ? AND action = 'unlock_fail' AND at > ?").get(req.org.id, req.user.id, since)).c);
-  if (fails >= FAIL_MAX) {
-    await audit(req, 'unlock_locked', b);
-    throw new HttpError(429, 'Trop d’essais : ce bloc est fermé pour votre compte pendant 15 minutes.');
-  }
   const pass = typeof (req.body || {}).password === 'string' ? req.body.password.slice(0, 200) : '';
-  if (!pass || !(await bcrypt.compare(pass, req.user.pass_hash))) {
-    await audit(req, 'unlock_fail', b);
+  const set = await settingsOf(req.org);
+  const outcome = await db.transaction(async () => {
+    await db.prepare('SELECT pg_advisory_xact_lock(CAST(? AS INTEGER), CAST(? AS INTEGER))').get(UNLOCK_LOCK_NS, Number(req.user.id) % 2147483647);
+    // Les essais ratés se comptent pour la personne, toutes organisations confondues : en créer une autre ne remet pas le compteur à zéro.
+    const since = new Date(Date.now() - FAIL_WINDOW_MIN * 60000).toISOString();
+    const fails = Number((await db.prepare("SELECT COUNT(*) AS c FROM lib_audit WHERE user_id = ? AND action = 'unlock_fail' AND at > ?").get(req.user.id, since)).c);
+    if (fails >= FAIL_MAX) { await audit(req, 'unlock_locked', b); return { locked: true }; }
+    if (!pass || !(await bcrypt.compare(pass, req.user.pass_hash))) { await audit(req, 'unlock_fail', b); return { failed: true }; }
+    const now = Date.now();
+    const exp = new Date(now + set.grantMinutes * 60000).toISOString();
+    const hard = new Date(now + Math.max(set.grantMaxMinutes, set.grantMinutes) * 60000).toISOString();
+    await db.prepare(`INSERT INTO lib_grants (session_id, block_id, org_id, user_id, expires_at, hard_expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (session_id, block_id) DO UPDATE SET user_id = excluded.user_id, expires_at = excluded.expires_at, hard_expires_at = excluded.hard_expires_at, created_at = excluded.created_at`)
+      .run(String(req.sessionId), b.id, req.org.id, req.user.id, exp, hard, nowISO());
+    await audit(req, 'unlock', b);
+    return { exp, hard };
+  })();
+  if (outcome.locked) throw new HttpError(429, 'Trop d’essais : ce bloc est fermé pour votre compte pendant 15 minutes.');
+  if (outcome.failed) {
     const central = require('../security');
     await central.audit.record(req, 'library.unlock_fail', { severity: 'warn', orgId: req.org.id, target: `bloc ${b.id}` });
     await central.abuse.strike(req, 'login_fail');
     throw new HttpError(403, 'Mot de passe incorrect.');
   }
-  const set = await settingsOf(req.org);
-  const now = Date.now();
-  const exp = new Date(now + set.grantMinutes * 60000).toISOString();
-  const hard = new Date(now + Math.max(set.grantMaxMinutes, set.grantMinutes) * 60000).toISOString();
-  await db.prepare(`INSERT INTO lib_grants (session_id, block_id, org_id, user_id, expires_at, hard_expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (session_id, block_id) DO UPDATE SET user_id = excluded.user_id, expires_at = excluded.expires_at, hard_expires_at = excluded.hard_expires_at, created_at = excluded.created_at`)
-    .run(String(req.sessionId), b.id, req.org.id, req.user.id, exp, hard, nowISO());
-  await audit(req, 'unlock', b);
-  res.json({ ok: true, expiresAt: exp, hardExpiresAt: hard });
+  res.json({ ok: true, expiresAt: outcome.exp, hardExpiresAt: outcome.hard });
 });
 router.post('/blocks/:id/lock', async (req, res) => {
   const b = await db.prepare('SELECT * FROM lib_blocks WHERE id = ? AND org_id = ?').get(A.id(req.params.id, 'Bloc invalide.'), req.org.id);

@@ -47,7 +47,8 @@ async function complianceRows(req) {
     kind: c.kind, reference: c.reference, expiresAt: c.expires_at, note: c.note, state: dueState(c.expires_at), daysLeft: Math.round((Date.parse(c.expires_at) - Date.parse(today())) / 86400000) }));
 }
 
-const vehicleView = (v, extra = {}) => ({ id: v.id, plate: v.plate, label: v.label, kind: v.kind, vin: v.vin, capacity: v.capacity, odometer: v.odometer, status: v.status, equipmentId: v.equipment_id, note: v.note, branchId: v.branch_id, ...extra });
+const vehicleView = (v, extra = {}) => ({ id: v.id, plate: v.plate, label: v.label, kind: v.kind, vin: v.vin, capacity: v.capacity, odometer: v.odometer, status: v.status, equipmentId: v.equipment_id, note: v.note, branchId: v.branch_id,
+  capacityKg: Number(v.capacity_kg || 0), capacityM3: Number(v.capacity_m3 || 0), capacityPallets: Number(v.capacity_pallets || 0), kmRate: Number(v.cost_per_km || 0), co2: Number(v.co2_g_km || 0), ...extra });
 
 router.get('/fleet', async (req, res) => {
   const sc = A.scope(req, 'v.branch_id');
@@ -57,11 +58,12 @@ router.get('/fleet', async (req, res) => {
   for (const v of vs) {
     const c = await consumption(v.id);
     const plans = v.equipment_id ? await db.prepare('SELECT task, next_due_at, next_meter FROM maintenance_plans WHERE equipment_id = ? ORDER BY next_due_at IS NULL, next_due_at LIMIT 3').all(v.equipment_id) : [];
-    list.push(vehicleView(v, { equipment: v.equipment, avgConsumption: c.avg, fuelLiters: c.total, fuelSpent: A.can(req, 'manager') ? c.spent : undefined, costPerKm: A.can(req, 'manager') ? c.costPerKm : undefined,
+    list.push(vehicleView(v, { equipment: v.equipment, kmRate: A.can(req, 'manager') ? Number(v.cost_per_km || 0) : undefined, avgConsumption: c.avg, fuelLiters: c.total, fuelSpent: A.can(req, 'manager') ? c.spent : undefined, costPerKm: A.can(req, 'manager') ? c.costPerKm : undefined,
       deadlines: comp.filter((x) => x.vehicleId === v.id), maintenance: plans.map((p) => ({ task: p.task, dueAt: p.next_due_at, dueMeter: p.next_meter })) }));
   }
   const drivers = (await db.prepare('SELECT * FROM logistics_drivers WHERE org_id = ? ORDER BY active DESC, name').all(req.org.id))
-    .map((d) => ({ id: d.id, name: d.name, phone: d.phone, licenseNo: d.license_no, licenseCategory: d.license_category, active: Boolean(Number(d.active)), note: d.note, deadlines: comp.filter((x) => x.driverId === d.id) }));
+    .map((d) => ({ id: d.id, name: d.name, phone: d.phone, licenseNo: d.license_no, licenseCategory: d.license_category, active: Boolean(Number(d.active)), note: d.note, deadlines: comp.filter((x) => x.driverId === d.id),
+      userId: d.user_id ? Number(d.user_id) : null, dailyAllowance: A.can(req, 'manager') ? Number(d.daily_allowance || 0) : undefined }));
   res.json({ vehicles: list, drivers, summary: { vehicles: vs.length, active: vs.filter((v) => v.status === 'active').length, expired: comp.filter((c) => c.state === 'expired').length, soon: comp.filter((c) => c.state === 'critical' || c.state === 'soon').length } });
 });
 
@@ -73,6 +75,10 @@ function vFields(b, cur) {
     plate, label: has('label') ? A.text(b.label, 100) : cur ? cur.label : '', kind: has('kind') ? A.oneOf(b.kind, KINDS, undefined, 'Type de véhicule inconnu.') : cur ? cur.kind : 'van',
     vin: has('vin') ? A.text(b.vin, 30).toUpperCase() : cur ? cur.vin : '', capacity: has('capacity') ? A.text(b.capacity, 60) : cur ? cur.capacity : '',
     odometer: has('odometer') ? num(b.odometer) : cur ? cur.odometer : 0, status: has('status') ? A.oneOf(b.status, V_STATUS, undefined, 'Statut inconnu.') : cur ? cur.status : 'active', note: has('note') ? A.text(b.note, 300) : cur ? cur.note : '',
+    // Capacités (contrôlées par la planification) et coûts : 0 = non renseigné
+    capacityKg: has('capacityKg') ? num(b.capacityKg, 0, 1e6) : cur ? Number(cur.capacity_kg || 0) : 0, capacityM3: has('capacityM3') ? num(b.capacityM3, 0, 1e4) : cur ? Number(cur.capacity_m3 || 0) : 0,
+    capacityPallets: has('capacityPallets') ? num(b.capacityPallets, 0, 1e3) : cur ? Number(cur.capacity_pallets || 0) : 0, costPerKm: has('kmRate') ? Math.round(num(b.kmRate, 0, 1e7)) : cur ? Number(cur.cost_per_km || 0) : 0,
+    co2: has('co2') ? num(b.co2, 0, 1e5) : cur ? Number(cur.co2_g_km || 0) : 0,
   };
 }
 async function equipmentLink(req, v) {
@@ -87,7 +93,7 @@ router.post('/vehicles', A.need('manager'), async (req, res) => {
   const b = req.body || {}; const f = vFields(b, null);
   if (await db.prepare('SELECT 1 FROM logistics_vehicles WHERE org_id = ? AND plate = ?').get(req.org.id, f.plate)) throw new HttpError(409, 'Un véhicule avec cette immatriculation existe déjà.');
   const eq = await equipmentLink(req, b.equipmentId);
-  const id = (await db.prepare('INSERT INTO logistics_vehicles (org_id, branch_id, plate, label, kind, vin, capacity, odometer, status, equipment_id, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, await A.branchOf(req, b.branchId), f.plate, f.label, f.kind, f.vin, f.capacity, f.odometer, f.status, eq, f.note, nowISO())).lastInsertRowid;
+  const id = (await db.prepare('INSERT INTO logistics_vehicles (org_id, branch_id, plate, label, kind, vin, capacity, odometer, status, equipment_id, note, created_at, capacity_kg, capacity_m3, capacity_pallets, cost_per_km, co2_g_km) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, await A.branchOf(req, b.branchId), f.plate, f.label, f.kind, f.vin, f.capacity, f.odometer, f.status, eq, f.note, nowISO(), f.capacityKg, f.capacityM3, f.capacityPallets, f.costPerKm, f.co2)).lastInsertRowid;
   res.status(201).json({ id: Number(id) });
 });
 router.put('/vehicles/:id', A.need('manager'), async (req, res) => {
@@ -95,7 +101,7 @@ router.put('/vehicles/:id', A.need('manager'), async (req, res) => {
   if (f.plate !== v.plate && await db.prepare('SELECT 1 FROM logistics_vehicles WHERE org_id = ? AND plate = ?').get(req.org.id, f.plate)) throw new HttpError(409, 'Un véhicule avec cette immatriculation existe déjà.');
   let eq = v.equipment_id;
   if (b.equipmentId !== undefined && String(b.equipmentId || '') !== String(v.equipment_id || '')) eq = await equipmentLink(req, b.equipmentId);
-  await db.prepare('UPDATE logistics_vehicles SET plate = ?, label = ?, kind = ?, vin = ?, capacity = ?, odometer = ?, status = ?, equipment_id = ?, note = ? WHERE id = ?').run(f.plate, f.label, f.kind, f.vin, f.capacity, f.odometer, f.status, eq, f.note, v.id);
+  await db.prepare('UPDATE logistics_vehicles SET plate = ?, label = ?, kind = ?, vin = ?, capacity = ?, odometer = ?, status = ?, equipment_id = ?, note = ?, capacity_kg = ?, capacity_m3 = ?, capacity_pallets = ?, cost_per_km = ?, co2_g_km = ? WHERE id = ?').run(f.plate, f.label, f.kind, f.vin, f.capacity, f.odometer, f.status, eq, f.note, f.capacityKg, f.capacityM3, f.capacityPallets, f.costPerKm, f.co2, v.id);
   res.json({ ok: true });
 });
 router.delete('/vehicles/:id', A.need('manager'), async (req, res) => {
@@ -107,15 +113,23 @@ router.delete('/vehicles/:id', A.need('manager'), async (req, res) => {
 });
 
 // ---------- Chauffeurs ----------
+/** Compte de l'équipe relié au chauffeur (il voit alors « Ma tournée » sur son téléphone) : un membre, une seule fiche chauffeur. */
+async function driverAccount(req, v, selfId) {
+  const uid = await A.memberOf(req, v);
+  if (uid && await db.prepare(`SELECT 1 FROM logistics_drivers WHERE org_id = ? AND user_id = ?${selfId ? ' AND id <> ?' : ''}`).get(req.org.id, uid, ...(selfId ? [selfId] : []))) throw new HttpError(409, 'Ce compte est déjà relié à un autre chauffeur.');
+  return uid;
+}
 router.post('/drivers', A.need('manager'), async (req, res) => {
   const b = req.body || {};
-  const id = (await db.prepare('INSERT INTO logistics_drivers (org_id, name, phone, license_no, license_category, active, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, A.text(b.name, 100, { required: true, msg: 'Indiquez le nom du chauffeur.' }), A.text(b.phone, 40), A.text(b.licenseNo, 40), A.text(b.licenseCategory, 20), b.active === false ? 0 : 1, A.text(b.note, 300), nowISO())).lastInsertRowid;
+  const uid = await driverAccount(req, b.userId, null);
+  const id = (await db.prepare('INSERT INTO logistics_drivers (org_id, name, phone, license_no, license_category, active, note, created_at, user_id, daily_allowance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, A.text(b.name, 100, { required: true, msg: 'Indiquez le nom du chauffeur.' }), A.text(b.phone, 40), A.text(b.licenseNo, 40), A.text(b.licenseCategory, 20), b.active === false ? 0 : 1, A.text(b.note, 300), nowISO(), uid, b.dailyAllowance === undefined || b.dailyAllowance === '' ? 0 : Math.round(num(b.dailyAllowance, 0, 1e7)))).lastInsertRowid;
   res.status(201).json({ id: Number(id) });
 });
 router.put('/drivers/:id', A.need('manager'), async (req, res) => {
   const d = await driverOf(req, req.params.id); const b = req.body || {};
   await db.prepare('UPDATE logistics_drivers SET name = ?, phone = ?, license_no = ?, license_category = ?, active = ?, note = ? WHERE id = ?').run(b.name === undefined ? d.name : A.text(b.name, 100, { required: true, msg: 'Indiquez le nom du chauffeur.' }),
     b.phone === undefined ? d.phone : A.text(b.phone, 40), b.licenseNo === undefined ? d.license_no : A.text(b.licenseNo, 40), b.licenseCategory === undefined ? d.license_category : A.text(b.licenseCategory, 20), b.active === undefined ? d.active : (b.active ? 1 : 0), b.note === undefined ? d.note : A.text(b.note, 300), d.id);
+  if (b.userId !== undefined || b.dailyAllowance !== undefined) await db.prepare('UPDATE logistics_drivers SET user_id = ?, daily_allowance = ? WHERE id = ?').run(b.userId === undefined ? d.user_id : await driverAccount(req, b.userId, d.id), b.dailyAllowance === undefined ? d.daily_allowance : Math.round(num(b.dailyAllowance, 0, 1e7)), d.id);
   res.json({ ok: true });
 });
 router.delete('/drivers/:id', A.need('manager'), async (req, res) => {
