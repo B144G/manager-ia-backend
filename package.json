@@ -12,7 +12,7 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node scripts/run-all-tests.js",
-    "test:chain": "npm run test:margin && npm run test:custom && npm run test:attach && npm run test:ai && npm run test:webhooks && npm run smoke && npm run smoke:signup && npm run smoke:security && npm run smoke:central && npm run smoke:ws && npm run test:finance && npm run test:commerce && npm run test:ops && npm run test:intelligence && npm run test:mail && npm run test:embedded && npm run test:waqr && npm run test:wave1 && npm run test:wave2 && npm run test:accpro && npm run test:acclot3 && npm run test:wave3 && npm run test:digest-email && npm run test:wave4 && npm run test:wave6 && npm run test:wave7 && npm run test:payflow && npm run test:clients && npm run test:aifollow && npm run test:library && npm run test:purchasing && npm run test:wms && npm run test:hu && npm run test:secnew && npm run test:wms4c && npm run test:bp && npm run test:wms4e && npm run test:wms4d && npm run test:tms && npm run test:accstock",
+    "test:chain": "npm run test:margin && npm run test:custom && npm run test:attach && npm run test:ai && npm run test:webhooks && npm run smoke && npm run smoke:signup && npm run smoke:security && npm run smoke:central && npm run smoke:ws && npm run test:finance && npm run test:commerce && npm run test:ops && npm run test:intelligence && npm run test:mail && npm run test:embedded && npm run test:waqr && npm run test:wave1 && npm run test:wave2 && npm run test:accpro && npm run test:acclot3 && npm run test:wave3 && npm run test:digest-email && npm run test:wave4 && npm run test:wave6 && npm run test:wave7 && npm run test:payflow && npm run test:clients && npm run test:aifollow && npm run test:library && npm run test:purchasing && npm run test:wms && npm run test:hu && npm run test:secnew && npm run test:wms4c && npm run test:bp && npm run test:wms4e && npm run test:wms4d && npm run test:tms && npm run test:accstock && npm run test:bankformats",
     "smoke": "node scripts/smoke.js",
     "smoke:ws": "node scripts/smoke-workspace.js",
     "smoke:signup": "node scripts/smoke-signup.js",
@@ -59,7 +59,8 @@
     "test:wave6": "node scripts/test-wave6-projects.js",
     "test:wave4": "node scripts/test-wave4-negotiation.js && node scripts/test-wave4-followups.js && node scripts/test-wave4-relay.js",
     "test:wave3": "node scripts/test-wave3-hr.js && node scripts/test-wave3-ops.js && node scripts/test-wave3-support.js && node scripts/test-wave3-reports.js",
-    "test:bp": "node scripts/test-budget-projets.js"
+    "test:bp": "node scripts/test-budget-projets.js",
+    "test:bankformats": "node scripts/test-bank-formats.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc14",
@@ -70,6 +71,7 @@
     "express": "^4.21.0",
     "express-async-errors": "^3.1.1",
     "express-rate-limit": "^7.4.0",
+    "fflate": "^0.8.3",
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
     "nodemailer": "^10.1.1",
