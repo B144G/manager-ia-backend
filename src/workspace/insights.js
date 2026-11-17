@@ -52,6 +52,7 @@ async function alerts(req) {
     const what = { insurance: 'assurance', inspection: 'visite technique', tax: 'vignette / taxe', license: 'permis', medical: 'visite médicale', other: 'échéance' }[c.kind] || c.kind;
     add(c.state === 'soon' ? 'medium' : 'high', 'logistics', 'Parc', c.state === 'expired' ? `${what} de ${c.who} périmée depuis le ${c.expiresAt}` : `${what} de ${c.who} à renouveler avant le ${c.expiresAt}`, c.expiresAt + 'T00:00:00.000Z');
   }
+  for (const a of await require('./purchasing-lib').alertItems(req)) out.push(a); // module Achats : approbations, retards, factures bloquées, budgets
   if (A.can(req, 'manager')) {
     const lateOrd = (await db.prepare("SELECT o.*, i.name AS item FROM purchase_orders o JOIN stock_items i ON i.id = o.item_id WHERE o.org_id = ? AND o.status IN ('ordered','partial') AND o.promised_date IS NOT NULL AND o.promised_date < ?").all(o, today));
     if (lateOrd.length) add('medium', 'stock', 'Achats', `${plural(lateOrd.length, 'commande fournisseur en retard', 'commandes fournisseurs en retard')} sur la date promise : ${lateOrd.slice(0, 3).map((x) => x.item).join(', ')}`, lateOrd[0].promised_date + 'T00:00:00.000Z');

@@ -162,7 +162,38 @@ const csvCell = (v) => { let s = String(v == null ? '' : v); if (typeof v !== 'n
 const csv = (rows) => '﻿' + rows.map((r) => r.map(csvCell).join(';')).join('\r\n') + '\r\n';
 const addDays = (d, n) => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + Number(n || 0)); return x.toISOString().slice(0, 10); };
 
+// ---------- Alertes (module Alertes) — porté de la ligne B sur le schéma de la ligne A ----------
+const plural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
+async function alertItems(req) {
+  if (!A.can(req, 'manager')) return [];
+  const o = req.org.id; const t = today(); const out = [];
+  const add = (level, title, text, at) => out.push({ level, module: 'purchasing', title, text, at: at || null });
+  const reqs = await db.prepare("SELECT COUNT(*) c, MIN(updated_at) m FROM pur_requests WHERE org_id = ? AND status = 'submitted'").get(o);
+  if (Number(reqs.c)) add('info', 'Achats', `${plural(Number(reqs.c), "demande d'achat attend", "demandes d'achat attendent")} votre décision`, reqs.m);
+  const ords = await db.prepare("SELECT COUNT(*) c, MIN(created_at) m FROM pur_orders WHERE org_id = ? AND status = 'draft'").get(o);
+  if (Number(ords.c)) add('info', 'Achats', plural(Number(ords.c), 'bon de commande à approuver', 'bons de commande à approuver'), ords.m);
+  const late = await db.prepare("SELECT number, expected_date FROM pur_orders WHERE org_id = ? AND status IN ('sent', 'partial') AND expected_date IS NOT NULL AND expected_date < ? ORDER BY expected_date LIMIT 20").all(o, t);
+  if (late.length) add('medium', 'Achats', `${plural(late.length, 'livraison fournisseur en retard', 'livraisons fournisseurs en retard')} : ${late.slice(0, 3).map((x) => x.number).join(', ')}`, `${late[0].expected_date}T00:00:00.000Z`);
+  const blocked = await db.prepare("SELECT COUNT(*) c, MIN(created_at) m FROM pur_invoices WHERE org_id = ? AND status = 'blocked'").get(o);
+  if (Number(blocked.c)) add('medium', 'Achats', `${plural(Number(blocked.c), 'facture fournisseur bloquée', 'factures fournisseurs bloquées')} par le rapprochement (anomalies à traiter)`, blocked.m);
+  if (A.can(req, 'admin')) {
+    const ready = await db.prepare("SELECT COUNT(*) c, MIN(created_at) m FROM pur_invoices WHERE org_id = ? AND status = 'matched'").get(o);
+    if (Number(ready.c)) add('info', 'Achats', `${plural(Number(ready.c), 'facture fournisseur rapprochée à valider', 'factures fournisseurs rapprochées à valider')} pour paiement`, ready.m);
+  }
+  const rfq = await db.prepare("SELECT number FROM pur_rfqs WHERE org_id = ? AND status = 'open' AND deadline IS NOT NULL AND deadline < ? LIMIT 5").all(o, t);
+  if (rfq.length) add('info', 'Achats', `${plural(rfq.length, "appel d'offres dont la date limite est passée", "appels d'offres dont la date limite est passée")} sans attribution : ${rfq.map((x) => x.number).join(', ')}`);
+  const cats = await db.prepare("SELECT DISTINCT category FROM pur_orders WHERE org_id = ? AND category <> '' AND status IN ('approved', 'sent', 'partial', 'received', 'closed') AND SUBSTR(order_date, 1, 4) = ?").all(o, t.slice(0, 4));
+  for (const c of cats) {
+    const b = await budgetOf(o, c.category, t.slice(0, 4));
+    if (!b || !(b.planned > 0)) continue;
+    const used = b.engaged + b.invoiced; const pct = Math.round((used / b.planned) * 100);
+    if (used > b.planned || pct >= 90) add(used > b.planned ? 'high' : 'medium', 'Achats', used > b.planned ? `Budget « ${c.category} » dépassé de ${(used - b.planned).toLocaleString('fr-FR')} FCFA par les achats` : `Budget « ${c.category} » consommé à ${pct} % par les achats`);
+  }
+  return out;
+}
+
 module.exports = {
+  alertItems, plural,
   today, yearOf, round3, amount, vatOf, DEFAULTS, APPROVER_ROLES, settingsOf, requiredRole, nextNumber, dateOrNull, money, qtyOf, pct, category, readLines,
   orderLineState, orderTotals, orderTotalsOf, lockRow, invoiceTotalsOf, OPEN_ORDER, isLate, plannedOf, usedOf, budgetOf, budgetCheck, nameMap, csv, addDays,
 };

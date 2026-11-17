@@ -61,7 +61,9 @@
     "test:wave3": "node scripts/test-wave3-hr.js && node scripts/test-wave3-ops.js && node scripts/test-wave3-support.js && node scripts/test-wave3-reports.js",
     "test:bp": "node scripts/test-budget-projets.js",
     "test:bankformats": "node scripts/test-bank-formats.js",
-    "test:accstock2": "node scripts/test-acc-stock-ecritures.js"
+    "test:accstock2": "node scripts/test-acc-stock-ecritures.js",
+    "test:purchasingb": "node scripts/test-purchasing-b.js",
+    "test:purchasingwms": "node scripts/test-purchasing-wms.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc14",
