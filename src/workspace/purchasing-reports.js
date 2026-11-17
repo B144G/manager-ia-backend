@@ -11,8 +11,9 @@ const mgr = A.need('manager');
 const NO_CAT = 'Sans catégorie';
 
 function yearParam(v) {
-  const y = String(v || P.yearOf());
-  if (!/^\d{4}$/.test(y) || Number(y) < 2000 || Number(y) > 2100) return P.yearOf();
+  if (v === undefined || v === null || v === '') return P.yearOf();
+  const y = String(v);
+  if (!/^\d{4}$/.test(y) || Number(y) < 2000 || Number(y) > 2100) throw new HttpError(400, 'Année invalide.');
   return y;
 }
 const days = (a, b) => (new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 86400000;
@@ -30,8 +31,9 @@ async function yearOrders(orgId, y) {
   return rows;
 }
 async function deliveries(orgId, orders) {
-  let onTime = 0; let timed = 0; const leads = [];
+  let onTime = 0; let timed = 0; let delivered = 0; const leads = [];
   for (const o of orders) {
+    if (['received', 'closed'].includes(o.status) && await db.prepare('SELECT 1 FROM pur_receipts WHERE order_id = ?').get(o.id)) delivered++;
     const r = await db.prepare('SELECT MIN(date) AS first, MAX(date) AS last FROM pur_receipts WHERE order_id = ?').get(o.id);
     if (r && r.first) leads.push(Math.max(0, days(o.order_date, r.first)));
     if (o.expected_date && ['received', 'closed'].includes(o.status) && r && r.last) { timed++; if (r.last <= o.expected_date) onTime++; }
@@ -39,7 +41,7 @@ async function deliveries(orgId, orders) {
   const late = await db.prepare(`SELECT o.*, s.name AS supplier FROM pur_orders o JOIN suppliers s ON s.id = o.supplier_id WHERE o.org_id = ? AND o.status IN ('approved','sent','partial') AND o.expected_date IS NOT NULL AND o.expected_date < ? ORDER BY o.expected_date`).all(orgId, P.today());
   return {
     avgLeadDays: leads.length ? Math.round((leads.reduce((a, b) => a + b, 0) / leads.length) * 10) / 10 : null,
-    onTimeRate: timed ? Math.round((onTime / timed) * 100) : null,
+    onTimeRate: timed ? Math.round((onTime / timed) * 100) : null, delivered, lateDelivered: timed - onTime,
     lateOpen: late.map((o) => ({ id: Number(o.id), number: o.number, supplier: o.supplier, expectedDate: o.expected_date, daysLate: Math.round(days(o.expected_date, P.today())) })),
   };
 }
@@ -51,7 +53,7 @@ async function savingsOf(orgId, y) {
 async function toPayOf(orgId) {
   let toPay = 0;
   for (const i of await db.prepare("SELECT * FROM pur_invoices WHERE org_id = ? AND status = 'approved'").all(orgId)) {
-    const paid = Number((await db.prepare('SELECT COALESCE(SUM(amount), 0) AS s FROM pur_payments WHERE invoice_id = ?').get(i.id)).s);
+    const paid = await P.invoicePaid(i);
     toPay += Math.max(0, (await P.invoiceTotalsOf(i)).ttc - paid);
   }
   return toPay;
@@ -67,19 +69,32 @@ async function engagedTotal(orgId) {
 }
 const groupSum = (rows, key, val) => { const m = new Map(); for (const r of rows) { const k = key(r); m.set(k, (m.get(k) || 0) + val(r)); } return [...m.entries()]; };
 
+/** Compteurs « à traiter » du tableau de bord (mêmes règles que l'aperçu). */
+async function pendingOf(orgId) {
+  const c = async (sql, ...a) => Number((await db.prepare(sql).get(orgId, ...a)).c);
+  return {
+    requests: await c("SELECT COUNT(*) AS c FROM pur_requests WHERE org_id = ? AND status = 'submitted'"),
+    orders: await c("SELECT COUNT(*) AS c FROM pur_orders WHERE org_id = ? AND status = 'draft'"),
+    late: await c("SELECT COUNT(*) AS c FROM pur_orders WHERE org_id = ? AND status IN ('approved','sent','partial') AND expected_date IS NOT NULL AND expected_date < ?", P.today()),
+    invoices: await c("SELECT COUNT(*) AS c FROM pur_invoices WHERE org_id = ? AND status IN ('entered','matched','blocked')"),
+    invoicesBlocked: await c("SELECT COUNT(*) AS c FROM pur_invoices WHERE org_id = ? AND status = 'blocked'"),
+    rfqs: await c("SELECT COUNT(*) AS c FROM pur_rfqs WHERE org_id = ? AND status = 'open'"),
+  };
+}
 router.get('/dashboard', mgr, async (req, res) => {
   const y = yearParam((req.query || {}).year);
   const inv = await approvedInvoices(req.org.id, y);
   const orders = await yearOrders(req.org.id, y);
-  const byMonth = Array.from({ length: 12 }, (_, k) => { const m = `${y}-${String(k + 1).padStart(2, '0')}`; return { month: m, invoicedTtc: inv.filter((i) => i.invoice_date.slice(0, 7) === m).reduce((s, i) => s + i.t.ttc, 0) }; });
+  const byMonth = Array.from({ length: 12 }, (_, k) => { const m = `${y}-${String(k + 1).padStart(2, '0')}`; return { month: m, invoicedTtc: inv.filter((i) => i.invoice_date.slice(0, 7) === m).reduce((s, i) => s + i.t.ttc, 0), invoicedHt: inv.filter((i) => i.invoice_date.slice(0, 7) === m).reduce((s, i) => s + i.t.ht, 0), orderedTtc: orders.filter((o) => o.order_date.slice(0, 7) === m).reduce((s, o) => s + o.t.ttc, 0) }; });
   res.json({
     year: Number(y),
-    spend: { totalTtc: inv.reduce((s, i) => s + i.t.ttc, 0), ordered: orders.reduce((s, o) => s + o.t.ttc, 0) },
+    spend: { totalHt: inv.reduce((s, i) => s + i.t.ht, 0), totalTtc: inv.reduce((s, i) => s + i.t.ttc, 0), invoices: inv.length, ordered: orders.reduce((s, o) => s + o.t.ttc, 0) },
+    pending: await pendingOf(req.org.id),
     commitments: { engaged: await engagedTotal(req.org.id), toPay: await toPayOf(req.org.id) },
     savings: await savingsOf(req.org.id, y),
     deliveries: await deliveries(req.org.id, orders),
-    bySupplier: groupSum(inv, (i) => i.supplier, (i) => i.t.ttc).map(([name, totalTtc]) => ({ name, totalTtc })).sort((a, b) => b.totalTtc - a.totalTtc),
-    byCategory: groupSum(inv, (i) => i.cat || NO_CAT, (i) => i.t.ttc).map(([category, totalTtc]) => ({ category, totalTtc })).sort((a, b) => b.totalTtc - a.totalTtc),
+    bySupplier: groupSum(inv, (i) => i.supplier, (i) => i.t.ttc).map(([name, totalTtc]) => ({ name, totalTtc, totalHt: inv.filter((i) => i.supplier === name).reduce((s, i) => s + i.t.ht, 0), count: inv.filter((i) => i.supplier === name).length, supplierId: Number(inv.find((i) => i.supplier === name).supplier_id) })).sort((a, b) => b.totalTtc - a.totalTtc),
+    byCategory: groupSum(inv, (i) => i.cat || NO_CAT, (i) => i.t.ttc).map(([category, totalTtc]) => ({ category, totalTtc, totalHt: inv.filter((i) => (i.cat || NO_CAT) === category).reduce((s, i) => s + i.t.ht, 0), count: inv.filter((i) => (i.cat || NO_CAT) === category).length })).sort((a, b) => b.totalTtc - a.totalTtc),
     byMonth,
   });
 });
@@ -97,7 +112,7 @@ router.get('/budget', mgr, async (req, res) => {
     const used = u.engaged + u.invoiced;
     out.push({ category: c, planned, engaged: u.engaged, invoiced: u.invoiced, available: planned === null ? 0 : planned - used, usedPct: planned ? Math.round((used / planned) * 1000) / 10 : 0, over: planned !== null && used > planned });
   }
-  res.json({ year: Number(y), categories: out.sort((a, b) => a.category.localeCompare(b.category, 'fr')) });
+  res.json({ year: Number(y), alerts: out.filter((c) => c.over || c.usedPct >= 90).length, categories: out.sort((a, b) => a.category.localeCompare(b.category, 'fr')) });
 });
 
 // ---------- Exports CSV (séparateur « ; », lisible par Excel) ----------

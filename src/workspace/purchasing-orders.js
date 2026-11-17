@@ -5,6 +5,7 @@ const { db, nowISO } = require('../db');
 const A = require('./access');
 const P = require('./purchasing-lib');
 const L = require('./stock-lib');
+const W3 = require('./w3');
 const pdf = require('../services/pdf');
 const { HttpError, cleanText } = require('../util');
 
@@ -14,7 +15,7 @@ const supplierForOrder = (req, id) => require('./purchasing').supplierForOrder(r
 
 async function orderOf(req, idv) {
   const o = await db.prepare('SELECT * FROM pur_orders WHERE id = ? AND org_id = ?').get(A.id(idv), req.org.id);
-  if (!o) throw new HttpError(404, 'Bon de commande introuvable.');
+  if (!o || !A.visible(req, o)) throw new HttpError(404, 'Bon de commande introuvable.');
   return o;
 }
 async function refreshStatus(o) {
@@ -30,14 +31,16 @@ async function refreshStatus(o) {
 // ---------- Liste et création ----------
 router.get('/orders', mgr, async (req, res) => {
   const status = String((req.query || {}).status || '').trim();
-  const all = await db.prepare('SELECT o.*, s.name AS supplier FROM pur_orders o JOIN suppliers s ON s.id = o.supplier_id WHERE o.org_id = ? ORDER BY o.id DESC LIMIT 1000').all(req.org.id);
+  const sc = A.scope(req, 'o.branch_id');
+  const supplierFilter = (req.query || {}).supplierId ? ' AND o.supplier_id = ?' : '';
+  const all = await db.prepare(`SELECT o.*, s.name AS supplier FROM pur_orders o JOIN suppliers s ON s.id = o.supplier_id WHERE o.org_id = ?${sc.sql}${supplierFilter} ORDER BY o.id DESC LIMIT 1000`).all(req.org.id, ...sc.args, ...(supplierFilter ? [A.id(req.query.supplierId, 'Fournisseur invalide.')] : []));
   const counts = {}; let late = 0;
   for (const o of all) { counts[o.status] = (counts[o.status] || 0) + 1; if (P.isLate(o)) late++; }
   const out = [];
-  for (const o of all.filter((x) => !status || x.status === status)) out.push({ id: Number(o.id), number: o.number, supplier: o.supplier, supplierId: Number(o.supplier_id), orderDate: o.order_date, expectedDate: o.expected_date || null, category: o.category || null, late: Boolean(P.isLate(o)), totalTtc: (await P.orderTotalsOf(o)).ttc, status: o.status });
+  for (const o of all.filter((x) => !status || x.status === status)) out.push({ id: Number(o.id), number: o.number, supplier: o.supplier, supplierId: Number(o.supplier_id), orderDate: o.order_date, expectedDate: o.expected_date || null, category: o.category || null, late: Boolean(P.isLate(o)), totalTtc: (await P.orderTotalsOf(o)).ttc, status: o.status, projectId: o.project_id ? Number(o.project_id) : null, branchId: o.branch_id ? Number(o.branch_id) : null });
   res.json({ orders: out, counts, late });
 });
-async function readOrder(req, b) {
+async function readOrder(req, b, cur) {
   const supplier = await supplierForOrder(req, b.supplierId);
   const lines = await P.readLines(req, b.lines, 'unitPrice', { priceRequired: true });
   const orderDate = P.dateOrNull(b.orderDate) || P.today();
@@ -46,18 +49,21 @@ async function readOrder(req, b) {
   const settings = await P.settingsOf(req.org);
   const pdRaw = b.paymentDays === undefined || b.paymentDays === null || b.paymentDays === '' ? (supplier.payment_days !== null ? Number(supplier.payment_days) : settings.defaultTermsDays) : Number(b.paymentDays);
   if (!Number.isInteger(pdRaw) || pdRaw < 0 || pdRaw > 365) throw new HttpError(400, 'Délai de paiement : entre 0 et 365 jours.');
-  const vat = b.vatRate === undefined || b.vatRate === null || b.vatRate === '' ? Number(req.org.vat_rate) || 0 : P.pct(b.vatRate);
-  return { supplier, lines, orderDate, expected, paymentDays: pdRaw, vat, category: P.category(b.category), address: cleanText(String(b.deliveryAddress || ''), 200), notes: cleanText(String(b.notes || ''), 2000) };
+  const vat = b.vatRate === undefined || b.vatRate === null || b.vatRate === '' ? Number(req.org.vat_rate) || 0 : P.pct(b.vatRate, 40);
+  const projectId = b.projectId === undefined && cur ? (cur.project_id ? Number(cur.project_id) : null) : await P.projectOf(req, b.projectId);
+  const branchId = b.branchId === undefined && cur ? (cur.branch_id ? Number(cur.branch_id) : null) : await A.branchOf(req, b.branchId);
+  return { projectId, branchId, supplier, lines, orderDate, expected, paymentDays: pdRaw, vat, category: P.category(b.category), address: cleanText(String(b.deliveryAddress || ''), 200), notes: cleanText(String(b.notes || ''), 2000) };
 }
 router.post('/orders', mgr, async (req, res) => {
   const v = await readOrder(req, req.body || {});
   const now = nowISO();
   const out = await db.transaction(async () => {
     const number = await P.nextNumber(req.org.id, 'BC', v.orderDate);
-    const id = Number((await db.prepare(`INSERT INTO pur_orders (org_id, number, supplier_id, status, order_date, expected_date, payment_days, vat_rate, category, delivery_address, notes, created_by, created_at, updated_at)
-      VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(req.org.id, number, v.supplier.id, v.orderDate, v.expected, v.paymentDays, v.vat, v.category, v.address, v.notes, req.user.id, now, now)).lastInsertRowid);
+    const id = Number((await db.prepare(`INSERT INTO pur_orders (org_id, number, supplier_id, supplier_name, status, order_date, expected_date, payment_days, vat_rate, category, delivery_address, notes, project_id, branch_id, created_by, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(req.org.id, number, v.supplier.id, v.supplier.name, v.orderDate, v.expected, v.paymentDays, v.vat, v.category, v.address, v.notes, v.projectId, v.branchId, req.user.id, now, now)).lastInsertRowid);
     let pos = 0;
     for (const l of v.lines) await db.prepare('INSERT INTO pur_order_lines (order_id, item_id, description, unit, quantity, unit_price, position) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, l.itemId, l.description, l.unit, l.quantity, l.price, pos++);
+    await P.syncOrderTotals(id);
     return { id, number };
   })();
   await A.logActivity(req.org.id, req.user.id, 'purchasing', `Bon de commande ${out.number} créé`);
@@ -66,15 +72,16 @@ router.post('/orders', mgr, async (req, res) => {
 router.put('/orders/:id', mgr, async (req, res) => {
   const o = await orderOf(req, req.params.id);
   if (o.status !== 'draft') throw new HttpError(400, 'Seul un bon de commande en brouillon se modifie.');
-  const v = await readOrder(req, req.body || {});
+  const v = await readOrder(req, req.body || {}, o);
   await db.transaction(async () => {
     // Sous verrou : une modification ne peut pas se glisser pendant l'approbation (le montant approuvé est celui qui est enregistré).
     if ((await P.lockRow('pur_orders', o.id)).status !== 'draft') throw new HttpError(400, 'Seul un bon de commande en brouillon se modifie.');
-    await db.prepare('UPDATE pur_orders SET supplier_id = ?, order_date = ?, expected_date = ?, payment_days = ?, vat_rate = ?, category = ?, delivery_address = ?, notes = ?, updated_at = ? WHERE id = ?')
-      .run(v.supplier.id, v.orderDate, v.expected, v.paymentDays, v.vat, v.category, v.address, v.notes, nowISO(), o.id);
+    await db.prepare('UPDATE pur_orders SET supplier_id = ?, supplier_name = ?, order_date = ?, expected_date = ?, payment_days = ?, vat_rate = ?, category = ?, delivery_address = ?, notes = ?, project_id = ?, branch_id = ?, updated_at = ? WHERE id = ?')
+      .run(v.supplier.id, v.supplier.name, v.orderDate, v.expected, v.paymentDays, v.vat, v.category, v.address, v.notes, v.projectId, v.branchId, nowISO(), o.id);
     await db.prepare('DELETE FROM pur_order_lines WHERE order_id = ?').run(o.id);
     let pos = 0;
     for (const l of v.lines) await db.prepare('INSERT INTO pur_order_lines (order_id, item_id, description, unit, quantity, unit_price, position) VALUES (?, ?, ?, ?, ?, ?, ?)').run(o.id, l.itemId, l.description, l.unit, l.quantity, l.price, pos++);
+    await P.syncOrderTotals(o.id);
   })();
   res.json({ ok: true });
 });
@@ -82,6 +89,7 @@ router.put('/orders/:id', mgr, async (req, res) => {
 // ---------- Détail ----------
 async function canApproveOrder(req, o, ttc) {
   if (o.status !== 'draft') return false;
+  if (P.ownDocError(req, o.created_by, 'bon de commande')) return false;
   const role = P.requiredRole(await P.settingsOf(req.org), 'order', ttc);
   return A.RANK[req.member.role] >= A.RANK[role];
 }
@@ -101,6 +109,8 @@ router.get('/orders/:id', mgr, async (req, res) => {
   res.json({ order: {
     id: Number(o.id), number: o.number, supplierId: Number(o.supplier_id), supplier: s ? s.name : '', supplierEmail: s && s.email ? s.email : null, status: o.status, late: Boolean(P.isLate(o)),
     orderDate: o.order_date, expectedDate: o.expected_date || null, paymentDays: Number(o.payment_days), category: o.category || null, deliveryAddress: o.delivery_address || null, notes: o.notes || null,
+    requestId: o.request_id ? Number(o.request_id) : null, rfqId: o.rfq_id ? Number(o.rfq_id) : null, projectId: o.project_id ? Number(o.project_id) : null, branchId: o.branch_id ? Number(o.branch_id) : null,
+    requiredRole: P.requiredRole(settings, 'order', t.ttc),
     creator: names[Number(o.created_by)] || '', approver: o.approved_by ? names[Number(o.approved_by)] || '' : null,
     sentAt: o.sent_at || null, sentTo: o.sent_to || null, cancelReason: o.cancel_reason || null,
     requiredRoleLabel: A.ROLE_LABEL[P.requiredRole(settings, 'order', t.ttc)], canApprove: await canApproveOrder(req, o, t.ttc),
@@ -119,12 +129,14 @@ router.post('/orders/:id/approve', mgr, async (req, res) => {
   const { o, warn } = await db.transaction(async () => {
     const o = await P.lockRow('pur_orders', o0.id);
     if (o.status !== 'draft') throw new HttpError(400, 'Ce bon de commande est déjà approuvé.');
+    const own = P.ownDocError(req, o.created_by, 'bon de commande');
+    if (own) throw new HttpError(403, own);
     const s = await db.prepare('SELECT * FROM suppliers WHERE id = ?').get(o.supplier_id);
     if (s && Number(s.blocked)) throw new HttpError(400, 'Ce fournisseur est bloqué : il ne peut plus recevoir de commande.');
     const t = await P.orderTotalsOf(o);
     const role = P.requiredRole(await P.settingsOf(req.org), 'order', t.ttc);
     if (A.RANK[req.member.role] < A.RANK[role]) throw new HttpError(403, `Ce montant doit être approuvé par : ${A.ROLE_LABEL[role]}.`);
-    const warn = o.category ? await P.budgetCheck(req, o.category, P.yearOf(o.order_date), t.ttc, { exceptOrder: o.id }) : {};
+    const warn = o.category ? await P.budgetCheck(req, o.category, P.yearOf(o.order_date), t.ttc, { exceptOrder: o.id, override: (req.body || {}).overrideBudget === true }) : {};
     await db.prepare("UPDATE pur_orders SET status = 'approved', approved_by = ?, approved_at = ?, updated_at = ? WHERE id = ?").run(req.user.id, nowISO(), nowISO(), o.id);
     return { o, warn };
   })();
@@ -161,9 +173,14 @@ router.post('/orders/:id/send', mgr, async (req, res) => {
   if (via === 'email') {
     const notify = require('../services/notify');
     if (!notify.mailEnabled()) throw new HttpError(400, "L'envoi d'e-mails n'est pas activé sur ce serveur. Téléchargez le PDF, puis choisissez « Marquer comme envoyé ».");
+    if (!to) { const sp = await db.prepare('SELECT email FROM suppliers WHERE id = ?').get(o.supplier_id); to = sp && sp.email ? sp.email : ''; }
+    if (!to) throw new HttpError(400, "Indiquez l'adresse e-mail du fournisseur (ou renseignez-la dans sa fiche).");
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(to)) throw new HttpError(400, 'Adresse e-mail invalide.');
     const buf = await orderPdf(req, o);
-    await notify.sendMail({ to, subject: `Bon de commande ${o.number} - ${req.org.name}`, text: `Bonjour,\n\nVeuillez trouver ci-joint notre bon de commande ${o.number}.\n\nCordialement,\n${req.org.name}`, fromName: req.org.name, attachments: [{ filename: `${o.number}.pdf`, content: buf }] });
+    const t = await P.orderTotalsOf(o);
+    try {
+      await notify.sendMail({ to, subject: `Bon de commande ${o.number} - ${req.org.name}`, text: `Bonjour,\n\nVeuillez trouver ci-joint notre bon de commande ${o.number} (${t.ttc.toLocaleString('fr-FR')} FCFA TTC)${o.expected_date ? `, livraison souhaitée le ${pdf.dfr(o.expected_date)}` : ''}.\nMerci de nous en accuser réception et de rappeler ce numéro sur votre bon de livraison et votre facture.\n\nCordialement,\n${req.org.name}`, fromName: req.org.name, attachments: [{ filename: `${o.number}.pdf`, content: buf, contentType: 'application/pdf' }] });
+    } catch (e) { throw new HttpError(502, "L'e-mail n'a pas pu partir. Le bon de commande reste inchangé ; réessayez ou téléchargez le PDF."); }
   } else to = to || '';
   await db.prepare('UPDATE pur_orders SET status = ?, sent_at = ?, sent_to = ?, updated_at = ? WHERE id = ?').run(o.status === 'approved' ? 'sent' : o.status, nowISO(), via === 'email' ? to : (to || 'envoi manuel'), nowISO(), o.id);
   res.json({ ok: true, via, to });
@@ -184,6 +201,7 @@ router.post('/orders/:id/cancel', mgr, async (req, res) => {
     const o = await P.lockRow('pur_orders', o0.id); // une réception enregistrée au même moment verrouille aussi la commande
     if (!['draft', 'approved', 'sent'].includes(o.status)) throw new HttpError(400, 'Ce bon de commande ne peut plus être annulé.');
     if (await db.prepare('SELECT 1 FROM pur_receipts WHERE order_id = ?').get(o.id)) throw new HttpError(400, 'Des marchandises ont déjà été reçues : clôturez le bon de commande à la place.');
+    if (await db.prepare("SELECT 1 FROM pur_invoices WHERE order_id = ? AND status != 'cancelled'").get(o.id)) throw new HttpError(400, "Une facture fournisseur est liée à ce bon de commande : supprimez-la ou annulez sa validation d'abord.");
     if (o.status !== 'draft' && !reason) throw new HttpError(400, 'Indiquez le motif.');
     await db.prepare("UPDATE pur_orders SET status = 'cancelled', cancel_reason = ?, updated_at = ? WHERE id = ?").run(reason, nowISO(), o.id);
     await releaseRequest(o);
@@ -216,31 +234,41 @@ router.post('/orders/:id/receipts', mgr, async (req, res) => {
   const b = req.body || {};
   const date = P.dateOrNull(b.receiptDate) || P.today();
   if (date > P.today()) throw new HttpError(400, 'La date de réception ne peut pas être dans le futur.');
+  if (date < o0.order_date) throw new HttpError(400, 'La réception précède la date de la commande.');
   const settings = await P.settingsOf(req.org);
   const now = nowISO();
   let o;
-  const crossDock = [];
+  const crossDock = []; let rejectedAny = false;
   const out = await db.transaction(async () => {
     // Le reste à recevoir se calcule sous verrou : deux réceptions simultanées ne dépassent pas la quantité commandée.
     o = await P.lockRow('pur_orders', o0.id);
     if (!['approved', 'sent', 'partial'].includes(o.status)) throw new HttpError(400, "Approuvez le bon de commande avant d'enregistrer une réception.");
     const state = Object.fromEntries((await P.orderLineState(o.id)).map((l) => [Number(l.id), l]));
-    const todo = [];
+    const todo = []; const seenLines = new Set();
     for (const x of Array.isArray(b.lines) ? b.lines : []) {
       const l = state[A.id(x && x.orderLineId, 'Ligne inconnue.')];
       if (!l) throw new HttpError(400, 'Ligne inconnue.');
+      if (seenLines.has(Number(l.id))) throw new HttpError(400, `La ligne « ${l.description} » apparaît deux fois.`);
+      seenLines.add(Number(l.id));
+      if (x.locationId !== undefined && x.locationId !== null && x.locationId !== '') {
+        // Emplacement d'entrepôt : inconnu (ou d'une autre organisation) = refusé, jamais ignoré en silence.
+        try { await require('./wms-core').locationOf(req.org.id, A.id(x.locationId, 'Emplacement invalide.')); } catch (e) { throw new HttpError(400, e.status === 400 ? e.message : 'Emplacement inconnu : choisissez un emplacement existant de votre entrepôt.'); }
+      }
       const acc = P.qtyOf(x.receivedQty || 0, { zero: true }); const rej = P.qtyOf(x.rejectedQty || 0, { zero: true });
       if (!acc && !rej) continue;
-      if (acc > P.round3(l.remaining * (1 + settings.tolQtyPct / 100)) + 1e-9) throw new HttpError(400, `Quantité reçue supérieure à la quantité restante pour « ${l.description} » (${l.remaining} ${l.unit}).`);
+      // Tolérance de sur-réception : le cumul reçu ne dépasse pas la quantité commandée majorée de la tolérance.
+      if (P.round3(l.received + acc) > P.round3(l.quantity * (1 + settings.tolQtyPct / 100)) + 1e-9) throw new HttpError(400, `« ${l.description} » : ${P.round3(l.received + acc)} reçu(s) pour ${l.quantity} commandé(s) (tolérance ${settings.tolQtyPct} %) : quantité reçue supérieure au reste à recevoir (${l.remaining} ${l.unit}).`);
       if (rej && !cleanText(String(x.reason || ''), 200)) throw new HttpError(400, `Indiquez le motif du refus pour « ${l.description} ».`);
       todo.push({ l, acc, rej, x });
     }
     if (!todo.length) throw new HttpError(400, 'Aucune quantité reçue ou refusée : rien à enregistrer.');
+    rejectedAny = todo.some((t) => t.rej > 0);
     const number = await P.nextNumber(req.org.id, 'BR', date);
     const rid = Number((await db.prepare('INSERT INTO pur_receipts (org_id, number, order_id, date, delivery_note, note, received_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(req.org.id, number, o.id, date, cleanText(String(b.deliveryNote || ''), 60), cleanText(String(b.note || ''), 500), req.user.id, now)).lastInsertRowid);
     for (const { l, acc, rej, x } of todo) {
       const it = l.item_id ? await db.prepare('SELECT * FROM stock_items WHERE id = ? AND org_id = ?').get(l.item_id, req.org.id) : null;
+      if (x.inspection && it && it.tracking === 'serial' && acc) throw new HttpError(400, `« ${it.name} » est suivi par numéro de série : le contrôle qualité à l'entrée n'est pas disponible pour ce type d'article.`);
       const inspection = Boolean(x.inspection) && it && it.tracking !== 'serial';
       const lotNo = cleanText(String(x.lotNo || ''), 40); const expiry = P.dateOrNull(x.expiry, 'Date de péremption invalide (AAAA-MM-JJ).');
       const serials = it && it.tracking === 'serial' ? L.parseSerials(x.serials) : [];
@@ -266,7 +294,8 @@ router.post('/orders/:id/receipts', mgr, async (req, res) => {
   })();
   const status = await refreshStatus(await orderOf(req, o.id));
   await A.logActivity(req.org.id, req.user.id, 'purchasing', `Réception ${out.number} enregistrée (commande ${o.number})`);
-  res.status(201).json({ ...out, status, crossDock });
+  if (rejectedAny) await W3.pushRole(req.org.id, 'manager', 'purchasing', `Réception ${out.number} : des marchandises ont été refusées sur ${o.number}.`, `pur-order:${o.id}`);
+  res.status(201).json({ ...out, status, orderStatus: status, crossDock });
 });
 
 async function receiptRows(req, where, args) {
@@ -276,12 +305,22 @@ async function receiptRows(req, where, args) {
     const lines = await db.prepare('SELECT rl.*, ol.description, ol.quantity AS ordered, ol.unit FROM pur_receipt_lines rl JOIN pur_order_lines ol ON ol.id = rl.order_line_id WHERE rl.receipt_id = ? ORDER BY rl.id').all(r.id);
     out.push({
       id: Number(r.id), number: r.number, orderId: Number(r.order_id), orderNumber: r.order_number, supplier: r.supplier, date: r.date, deliveryNote: r.delivery_note || null, note: r.note || null, receiver: r.receiver || '',
-      lines: lines.map((l) => ({ id: Number(l.id), description: l.description, ordered: Number(l.ordered), unit: l.unit, lotNo: l.lot_no || null, expiry: l.expiry || null, reason: [l.reason, l.insp_reason].filter(Boolean).join(' · ') || null, receivedQty: P.round3(Number(l.received_qty) - Number(l.insp_rejected)), rejectedQty: P.round3(Number(l.rejected_qty) + Number(l.insp_rejected)), inspectionPending: Number(l.insp_pending) })),
+      lines: lines.map((l) => ({ id: Number(l.id), description: l.description, ordered: Number(l.ordered), unit: l.unit, lotNo: l.lot_no || null, expiry: l.expiry || null, orderLineId: Number(l.order_line_id), locationId: l.location_id ? Number(l.location_id) : null, reason: [l.reason, l.insp_reason].filter(Boolean).join(' · ') || null, receivedQty: P.round3(Number(l.received_qty) - Number(l.insp_rejected)), rejectedQty: P.round3(Number(l.rejected_qty) + Number(l.insp_rejected)), inspectionPending: Number(l.insp_pending) })),
     });
   }
   return out;
 }
 router.get('/receipts', mgr, async (req, res) => res.json({ receipts: await receiptRows(req, '', []) }));
+router.get('/receipts/:id', mgr, async (req, res) => {
+  const [r] = await receiptRows(req, ' AND r.id = ?', [A.id(req.params.id)]);
+  if (!r) throw new HttpError(404, 'Bon de réception introuvable.');
+  res.json({ receipt: r, ...r });
+});
+router.get('/orders/:id/receipts', mgr, async (req, res) => {
+  const o = await orderOf(req, req.params.id);
+  const rows = await receiptRows(req, ' AND r.order_id = ?', [o.id]);
+  res.json({ receipts: rows.reverse() });
+});
 router.get('/receipts/:id/pdf', mgr, async (req, res) => {
   const [r] = await receiptRows(req, ' AND r.id = ?', [A.id(req.params.id)]);
   if (!r) throw new HttpError(404, 'Bon de réception introuvable.');
@@ -308,9 +347,13 @@ router.get('/inspections', mgr, async (req, res) => {
 router.post('/inspections', mgr, async (req, res) => {
   const list = Array.isArray((req.body || {}).lines) ? req.body.lines : [];
   const touched = new Set();
-  const crossDock = [];
+  const crossDock = []; const out = { accepted: 0, rejected: 0 }; const seen = new Set();
+  if (!list.length) throw new HttpError(400, 'Indiquez les quantités contrôlées.');
   await db.transaction(async () => {
     for (const x of list) {
+      const rid = A.id(x && x.receiptLineId, 'Ligne de contrôle invalide.');
+      if (seen.has(rid)) throw new HttpError(400, 'Une ligne de réception apparaît deux fois.');
+      seen.add(rid);
       const rl = await db.prepare(`SELECT rl.*, ol.item_id, ol.unit_price, ol.description, r.number AS receipt, r.order_id, r.org_id FROM pur_receipt_lines rl JOIN pur_receipts r ON r.id = rl.receipt_id JOIN pur_order_lines ol ON ol.id = rl.order_line_id WHERE rl.id = ? AND r.org_id = ? FOR UPDATE OF rl`).get(A.id(x && x.receiptLineId), req.org.id);
       if (!rl) throw new HttpError(404, 'Ligne de contrôle introuvable.');
       const acc = P.qtyOf(x.acceptedQty || 0, { zero: true }); const rej = P.qtyOf(x.rejectedQty || 0, { zero: true });
@@ -319,13 +362,19 @@ router.post('/inspections', mgr, async (req, res) => {
       const reason = cleanText(String(x.reason || ''), 200);
       if (rej && !reason) throw new HttpError(400, `Indiquez le motif du refus pour « ${rl.description} ».`);
       const o = await db.prepare('SELECT * FROM pur_orders WHERE id = ?').get(rl.order_id);
+      let toLoc = null;
+      if (acc && x.toLocationId) {
+        try { toLoc = await require('./wms-core').locationOf(req.org.id, A.id(x.toLocationId, 'Emplacement invalide.')); } catch (e) { throw new HttpError(400, 'Emplacement inconnu : choisissez un emplacement existant de votre entrepôt.'); }
+        if (!['storage', 'picking', 'reception'].includes(toLoc.kind) || (toLoc.active !== undefined && Number(toLoc.active) === 0)) throw new HttpError(400, "On ne libère pas la marchandise vers cet emplacement : choisissez un emplacement de rangement, de préparation ou de réception.");
+      }
+      out.accepted = P.round3(out.accepted + acc); out.rejected = P.round3(out.rejected + rej);
       if (rl.item_id) {
         const W = require('./wms-core');
         const q = await W.quarantineOf(req.org.id);
         // Accepté : sort de quarantaine vers l'emplacement choisi (sinon règles de rangement). Refusé : sort du stock (retour au fournisseur).
         if (acc) {
           const it = await db.prepare('SELECT * FROM stock_items WHERE id = ?').get(rl.item_id);
-          const dests = x.toLocationId ? [{ location: await W.locationOf(req.org.id, A.id(x.toLocationId)), quantity: acc }] : await W.destinationsFor(req.org.id, it, acc);
+          const dests = toLoc ? [{ location: toLoc, quantity: acc }] : await W.destinationsFor(req.org.id, it, acc);
           for (const d of dests) await W.move(req, rl.item_id, q.id, d.location.id, d.quantity, { kind: 'internal', refKind: 'pur_receipt', refId: rl.receipt_id, reason: `Contrôle qualité ${rl.receipt} : libéré` });
           // Libérée du contrôle qualité, la marchandise attendue par une commande client peut partir en transbordement.
           crossDock.push(...await require('./wms-xdock').onReceipt(req, { itemId: rl.item_id, quantity: acc, locationId: dests.length === 1 ? dests[0].location.id : undefined, sourceKind: 'inspection', sourceId: rl.receipt_id, sourceCode: rl.receipt, purchaseOrderId: rl.order_id }));
@@ -338,7 +387,8 @@ router.post('/inspections', mgr, async (req, res) => {
     }
   })();
   for (const id of touched) await refreshStatus(await db.prepare('SELECT * FROM pur_orders WHERE id = ?').get(id));
-  res.json({ ok: true, crossDock });
+  if (!out.accepted && !out.rejected) throw new HttpError(400, 'Aucune quantité contrôlée : rien à enregistrer.');
+  res.json({ ok: true, ...out, crossDock });
 });
 
 module.exports = router;

@@ -199,7 +199,7 @@ run('Module Achats', async ({ check, owner, mgr, mem, other, org2, O, ws, dbx, o
   const inv = (o) => ({ supplierRef: 'FA-100', orderId: BC1, lines: draft.lines.map((l) => ({ orderLineId: l.orderLineId, quantity: l.quantity, unitPrice: l.unitPrice })), ...o });
   for (const [lab, body] of [['sans numéro de facture', { supplierRef: '' }], ['date future', { invoiceDate: addD(today, 4) }], ['échéance avant la facture', { invoiceDate: today, dueDate: addD(today, -2) }], ['compte hors classe 6', { expenseAccount: '411' }],
     ['sans ligne', { lines: [] }], ['quantité nulle', { lines: [{ orderLineId: lCim, quantity: 0, unitPrice: 1 }] }], ['ligne d\'un autre bon', { lines: [{ orderLineId: lLait, quantity: 1, unitPrice: 1 }] }], ['fournisseur ≠ bon', { supplierId: supB }],
-    ['bon inconnu', { orderId: 99999 }], ['total annoncé inférieur au HT', { declaredTotal: 10 }], ['TVA absurde', { vatRate: 120 }]]) {
+    ['bon inconnu', { orderId: 99999 }], ['TVA absurde', { vatRate: 120 }]]) {
     r = await mgr('POST', `${P}/invoices`, inv(body));
     check(`facture refusée : ${lab}`, r.status === 400, [r.status, r.json && r.json.error]);
   }
@@ -230,13 +230,13 @@ run('Module Achats', async ({ check, owner, mgr, mem, other, org2, O, ws, dbx, o
   r = await mgr('PUT', `${P}/invoices/${I1}`, { notes: 'x' }); check('une facture validée ne se modifie pas', r.status === 400, r.status);
   r = await mgr('DELETE', `${P}/invoices/${I1}`); check('une facture validée ne se supprime pas', r.status === 400, r.status);
   // Règlement
-  r = await owner('POST', `${P}/invoices/${I1}/pay`, { amount: 300000, method: 'bank', reference: 'VIR-1' }); check('règlement partiel de 300 000', r.status === 201 && r.json.balance === 475125, r.json);
+  r = await owner('POST', `${P}/invoices/${I1}/pay`, { amount: 300000, method: 'bank', reference: 'VIR-1' }); check('règlement partiel de 300 000', r.status === 200 && r.json.balance === 475125, r.json);
   r = await owner('POST', `${P}/invoices/${I1}/pay`, { amount: 999999999, method: 'bank' }); check('règlement supérieur au solde refusé', r.status === 400, r.json);
   r = await owner('POST', `${P}/invoices/${I1}/pay`, { amount: 100, method: 'cheval' }); check('mode de règlement inconnu refusé', r.status === 400, r.json);
   r = await owner('POST', `${P}/invoices/${I1}/pay`, { amount: 0, method: 'bank' }); check('règlement nul refusé', r.status === 400, r.json);
   r = await mgr('POST', `${P}/invoices/${I1}/pay`, { amount: 100, method: 'bank' }); check('droit : régler = administrateur', r.status === 403, r.status);
   r = await owner('POST', `${P}/invoices/${I1}/unapprove`, { reason: 'x' }); check('on n\'annule pas la validation d\'une facture déjà en partie réglée', r.status === 400, r.json);
-  r = await owner('POST', `${P}/invoices/${I1}/pay`, { method: 'mobile', reference: 'OM-9' }); check('règlement du solde (mobile money)', r.status === 201 && r.json.balance === 0, r.json);
+  r = await owner('POST', `${P}/invoices/${I1}/pay`, { method: 'mobile', reference: 'OM-9' }); check('règlement du solde (mobile money)', r.status === 200 && r.json.balance === 0, r.json);
   r = await owner('GET', `${P}/invoices/${I1}`); check('facture payée : statut de paiement « paid »', r.json.invoice.paymentStatus === 'paid' && r.json.invoice.payments.length === 2, r.json.invoice);
   const pays = await entriesOf('supplier_payment'); check('deux écritures de règlement (journaux BQ et MM)', pays.length === 2 && pays.map((p) => p.journal).sort().join() === 'BQ,MM', pays.map((p) => p.journal));
   const a401 = await accSum('401'); check('compte 401 soldé : 775 125 au crédit et au débit', a401.c - f401.c === 775125 && a401.d - f401.d === 775125, a401);
@@ -256,6 +256,10 @@ run('Module Achats', async ({ check, owner, mgr, mem, other, org2, O, ws, dbx, o
   r = await mgr('POST', `${P}/invoices/${I2}/match`); check('nouveau rapprochement avec la tolérance réglée : rapprochée', r.json.status === 'matched', r.json);
   await owner('PUT', `${P}/settings`, { tolPricePct: 2 });
   r = await mgr('POST', `${P}/invoices/${I2}/match`); check('tolérance remise à 2 % : de nouveau bloquée', r.json.status === 'blocked', r.json);
+  // Fusion : un total annoncé inférieur au HT n'est pas refusé à la saisie (ligne A) : la facture est saisie puis BLOQUÉE par le rapprochement (« total_mismatch »).
+  r = await mgr('POST', `${P}/invoices`, { supplierRef: 'W-0', orderId: BC2, declaredTotal: 10, lines: [{ orderLineId: lLait, quantity: 30, unitPrice: 500 }] });
+  check('total annoncé inférieur au HT : facture bloquée (total_mismatch)', r.status === 201 && r.json.status === 'blocked' && r.json.issues.some((x) => x.code === 'total_mismatch'), r.json);
+  await mgr('DELETE', `${P}/invoices/${r.json.id}`);
   r = await mgr('POST', `${P}/invoices`, { supplierRef: 'W-2', orderId: BC2, declaredTotal: 123456, lines: [{ orderLineId: lLait, quantity: 30, unitPrice: 500 }] }); const I3 = r.json.id;
   check('total annoncé ≠ total calculé : anomalie « total_mismatch »', r.json.issues.some((x) => x.code === 'total_mismatch'), r.json);
   r = await mgr('POST', `${P}/invoices`, { supplierRef: 'W-3', orderId: BC2, vatRate: 19.25, lines: [{ orderLineId: lLait, quantity: 30, unitPrice: 500 }, { description: 'Transport', quantity: 1, unitPrice: 5000 }] }); const I4 = r.json.id;
@@ -273,7 +277,7 @@ run('Module Achats', async ({ check, owner, mgr, mem, other, org2, O, ws, dbx, o
   ents = await entriesOf('pur_invoice'); const mine5 = ents.filter((e) => Number(e.source_id) === I5 * 100 + 1);
   check('l\'écriture d\'origine est marquée annulée', mine5.length === 1 && Number(mine5[0].rev) === 1, mine5);
   const bill5 = await dbx.prepare("SELECT status FROM supplier_bills WHERE org_id = ? AND source_id = ?").get(org, I5 * 100 + 1); check('la dette liée est annulée', bill5.status === 'cancelled', bill5);
-  r = await owner('GET', `${P}/invoices/${I5}`); check('la facture est rouverte (bloquée, à corriger)', r.json.invoice.status === 'blocked' && r.json.invoice.entry === '', r.json.invoice);
+  r = await owner('GET', `${P}/invoices/${I5}`); check('la facture est rouverte (bloquée, à corriger)', r.json.invoice.status === 'blocked' && !r.json.invoice.entry, r.json.invoice);
   r = await mgr('PUT', `${P}/invoices/${I5}`, { expenseAccount: '622' }); check('correction du compte de charge', r.status === 200, r.json);
   r = await owner('POST', `${P}/invoices/${I5}/approve`, { override: true, overrideReason: 'Réclamation faite' });
   ents = await entriesOf('pur_invoice'); const act = ents.filter((e) => Number(e.source_id) === I5 * 100 + 2);
@@ -307,7 +311,7 @@ run('Module Achats', async ({ check, owner, mgr, mem, other, org2, O, ws, dbx, o
   r = await mgr('POST', `${P}/rfqs/${AO}/award`, { supplierId: supC }); check('attribution à un fournisseur qui a décliné refusée', r.status === 400, r.json);
   r = await mgr('POST', `${P}/rfqs/${AO}/award`, { supplierId: supA }); check('choisir une offre plus chère exige un motif', r.status === 400 && /motif/.test(r.json.error), r.json);
   r = await mgr('POST', `${P}/rfqs/${AO}/award`, { supplierId: supB }); const BCAO = r.json.orderId;
-  check('attribution à B : bon de commande généré, économie = 1 300 000 − 1 180 000 = 120 000', r.status === 201 && BCAO && r.json.savings === 120000 && r.json.total === 1180000, r.json);
+  check('attribution à B : bon de commande généré, économie = 1 300 000 − 1 180 000 = 120 000', r.status === 200 && BCAO && r.json.savings === 120000 && r.json.total === 1180000, r.json);
   const oao = (await mgr('GET', `${P}/orders/${BCAO}`)).json.order;
   check('bon généré : brouillon, fournisseur B, 200 sacs à 5 900, catégorie reprise', oao.status === 'draft' && oao.supplierId === supB && oao.lines[0].unitPrice === 5900 && oao.lines[0].quantity === 200 && oao.category === 'Chantier' && oao.rfqId === AO && oao.totalHt === 1180000, oao);
   r = await mgr('POST', `${P}/rfqs/${AO}/award`, { supplierId: supB }); check('appel d\'offres déjà attribué : pas de seconde attribution', r.status === 400, r.json);
@@ -320,7 +324,7 @@ run('Module Achats', async ({ check, owner, mgr, mem, other, org2, O, ws, dbx, o
   await mgr('PUT', `${P}/rfqs/${AO2}/quotes/${supA}`, { deliveryDays: 5, lines: [{ rfqLineId: l2, unitPrice: 690000 }] });
   await mgr('PUT', `${P}/rfqs/${AO2}/quotes/${supB}`, { deliveryDays: 20, validUntil: addD(today, -1), lines: [{ rfqLineId: l2, unitPrice: 600000 }] });
   r = await mgr('POST', `${P}/rfqs/${AO2}/award`, { supplierId: supB, reason: 'x' }); check('devis expiré non attribuable', r.status === 400 && /valable/.test(r.json.error), r.json);
-  r = await mgr('POST', `${P}/rfqs/${AO2}/award`, { supplierId: supA }); check('attribution au seul devis valable', r.status === 201, r.json);
+  r = await mgr('POST', `${P}/rfqs/${AO2}/award`, { supplierId: supA }); check('attribution au seul devis valable', r.status === 200, r.json);
   check('la demande liée passe à « commandée »', (await mgr('GET', `${P}/requests/${R2}`)).json.request.status === 'ordered', 0);
   r = await mgr('POST', `${P}/rfqs`, { title: 'À annuler', supplierIds: [supA], lines: [{ description: 'x', quantity: 1 }] }); const AO3 = r.json.id;
   r = await mgr('POST', `${P}/rfqs/${AO3}/cancel`, {}); check('annulation : motif obligatoire', r.status === 400, r.status);
@@ -334,7 +338,7 @@ run('Module Achats', async ({ check, owner, mgr, mem, other, org2, O, ws, dbx, o
   r = await mgr('GET', `${P}/orders?status=sent`); check('liste filtrée par statut, bon en retard signalé', r.json.orders.some((x) => x.id === BCL && x.late) && r.json.late >= 1, r.json.late);
   r = await mgr('GET', `${P}/suppliers/${supA}`); const sa = r.json.supplier;
   check('fiche : coordonnées, historique des commandes et des factures', sa.email === 'ventes@biya.exemple.com' && sa.taxId === 'M0123456789' && sa.orders.length >= 2 && sa.invoices.length >= 1, sa);
-  check('note calculée : qualité 110 acceptés / 5 refusés, 1 livraison en retard, note /5 présente', sa.stats.qualityRate !== null && Math.abs(sa.stats.qualityRate - 95.7) < 0.1 && sa.stats.late >= 1 && sa.stats.score >= 1 && sa.stats.score <= 5 && sa.stats.grade, sa.stats);
+  check('note calculée : qualité 110 acceptés / 5 refusés, 1 livraison en retard, note /5 présente', sa.stats.qualityRateExact !== null && Math.abs(sa.stats.qualityRateExact - 95.7) < 0.1 /* fusion : qualityRate reste entier (ligne A), qualityRateExact porte la décimale */ && sa.stats.late >= 1 && sa.stats.score >= 1 && sa.stats.score <= 5 && sa.stats.grade, sa.stats);
   r = await mgr('POST', `${P}/suppliers/${supA}/evaluations`, { deliveryScore: 6, qualityScore: 4, priceScore: 3 }); check('évaluation : note > 5 refusée', r.status === 400, r.json);
   r = await mgr('POST', `${P}/suppliers/${supA}/evaluations`, { deliveryScore: 0, qualityScore: 4, priceScore: 3 }); check('évaluation : note 0 refusée', r.status === 400, r.json);
   r = await mgr('POST', `${P}/suppliers/${supA}/evaluations`, { deliveryScore: 2.5, qualityScore: 4, priceScore: 3 }); check('évaluation : note décimale refusée', r.status === 400, r.json);
@@ -362,9 +366,9 @@ run('Module Achats', async ({ check, owner, mgr, mem, other, org2, O, ws, dbx, o
   r = await mgr('POST', `${P}/orders`, { supplierId: supA, category: 'Chantier', lines: [{ description: 'Fers à béton', quantity: 100, unitPrice: 5000 }] }); const BCB = r.json.id;
   r = await owner('POST', `${P}/orders/${BCB}/approve`);
   check('dépassement de budget : approbation possible mais avertissement', r.status === 200 && r.json.budgetWarning && r.json.budgetWarning.over === true, r.json);
-  r = await owner('PUT', `${P}/settings`, { budgetBlock: true }); check('blocage du dépassement activé', r.status === 200 && r.json.budgetBlock === 1, r.json);
+  r = await owner('PUT', `${P}/settings`, { budgetBlock: true }); check('blocage du dépassement activé', r.status === 200 && Boolean(r.json.budgetBlock), r.json);
   r = await mgr('POST', `${P}/orders`, { supplierId: supA, category: 'Chantier', lines: [{ description: 'Briques', quantity: 100, unitPrice: 1000 }] }); const BCB2 = r.json.id;
-  r = await owner('POST', `${P}/orders/${BCB2}/approve`); check('avec blocage : approbation refusée si le budget est dépassé', r.status === 400 && /budget/i.test(r.json.error), r.json);
+  r = await owner('POST', `${P}/orders/${BCB2}/approve`); check('avec blocage : approbation refusée si le budget est dépassé', r.status === 403 && /budget/i.test(r.json.error), r.json);
   r = await owner('POST', `${P}/orders/${BCB2}/approve`, { overrideBudget: true }); check('un administrateur passe outre explicitement', r.status === 200, r.json);
   r = await mgr('GET', `${P}/budget`); check('alertes de budget comptées', r.json.alerts >= 1 && r.json.categories.find((c) => c.category === 'Chantier').over === true, r.json);
   r = await owner('GET', `${O}/dashboard/alerts`); const al = r.json.alerts.filter((a) => a.module === 'purchasing');
@@ -397,9 +401,34 @@ run('Module Achats', async ({ check, owner, mgr, mem, other, org2, O, ws, dbx, o
   const nums = (await dbx.prepare("SELECT number FROM pur_orders WHERE org_id = ? ORDER BY id").all(org)).map((x) => x.number);
   check('numérotation des bons : BC-AAAA-NNNN, croissante, sans doublon (le brouillon supprimé laisse son numéro)', new Set(nums).size === nums.length && nums.every((n, i) => /^BC-\d{4}-\d{4}$/.test(n) && (i === 0 || n > nums[i - 1])) && nums[0] === `BC-${today.slice(0, 4)}-0001`, nums);
   check('numérotation de l\'autre organisation indépendante', (await other('POST', `${P2}/orders`, { supplierId: otherSup, lines: [{ description: 'x', quantity: 1, unitPrice: 100 }] })).status === 201 && (await dbx.prepare("SELECT number FROM pur_orders WHERE org_id = ?").get(org2)).number === `BC-${today.slice(0, 4)}-0001`, 0);
+  // ---------- Fusion : capacités propres à la ligne B, prouvées une à une ----------
+  const prj = (await owner('POST', `${O}/projects`, { name: 'Chantier route' })).json.id;
+  const brn = (await owner('POST', `${O}/branches`, { name: 'Antenne Douala' })).json.id;
+  const prjOther = (await other('POST', `${P2.replace('/purchasing', '')}/projects`, { name: 'Projet de Zoé' })).json.id;
+  r = await mem('POST', `${P}/requests`, { title: 'Liée au projet', projectId: prj, branchId: brn, lines: [line()] });
+  check('demande liée à un projet et à une antenne de l\'organisation : acceptée et relue', r.status === 201 && (await mem('GET', `${P}/requests/${r.json.id}`)).json.request.projectId === prj && (await mem('GET', `${P}/requests/${r.json.id}`)).json.request.branchId === brn, r.json);
+  r = await mem('POST', `${P}/requests`, { title: 'Projet étranger', projectId: prjOther, lines: [line()] }); check('demande liée au projet d\'une AUTRE organisation : refusée', r.status === 400, r.status);
+  r = await mgr('POST', `${P}/rfqs`, { title: 'Ajout et retrait', supplierIds: [supA], lines: [{ description: 'Peinture', quantity: 5, refPrice: 10000 }] }); const AO4 = r.json.id;
+  r = await mgr('POST', `${P}/rfqs/${AO4}/suppliers`, { supplierId: supB }); check('AO : ajouter un fournisseur consulté', r.status === 201, r.json);
+  r = await mgr('POST', `${P}/rfqs/${AO4}/suppliers`, { supplierId: supB }); check('AO : le même fournisseur deux fois refusé (409)', r.status === 409, r.status);
+  r = await mgr('POST', `${P}/rfqs/${AO4}/suppliers`, { supplierId: otherSup }); check('AO : fournisseur d\'une autre organisation refusé', r.status === 404, r.status);
+  check('AO : 2 fournisseurs consultés', (await mgr('GET', `${P}/rfqs/${AO4}`)).json.rfq.comparison.suppliers.length === 2, 0);
+  const lAO4 = (await mgr('GET', `${P}/rfqs/${AO4}`)).json.rfq.comparison.lines[0].id;
+  await mgr('PUT', `${P}/rfqs/${AO4}/quotes/${supA}`, { lines: [{ rfqLineId: lAO4, unitPrice: 9000 }] });
+  r = await mgr('DELETE', `${P}/rfqs/${AO4}/suppliers/${supA}`); check('AO : on ne retire pas un fournisseur qui a remis un devis', r.status === 400, r.json);
+  r = await mgr('DELETE', `${P}/rfqs/${AO4}/suppliers/${supB}`); check('AO : retirer un fournisseur sans devis', r.status === 200, r.json);
+  r = await mgr('DELETE', `${P}/rfqs/${AO4}/suppliers/${supB}`); check('AO : retirer deux fois : introuvable', r.status === 404, r.status);
+  r = await mgr('PUT', `${P}/rfqs/${AO4}/quotes/${supA}`, { lines: [{ rfqLineId: lAO4, unitPrice: 9000 }, { rfqLineId: lAO4, unitPrice: 8000 }] }); check('devis : la même ligne deux fois refusée', r.status === 400, r.status);
+  r = await mgr('GET', `${P}/receipts/${BR1}`); check('bon de réception relu par son numéro : lignes, motif, quantités', r.status === 200 && r.json.receipt.number.startsWith('BR-') && r.json.receipt.lines.length === 2, r.json);
+  r = await mgr('GET', `${P}/suppliers/${supA}`); check('fiche enrichie : ville, NIU, délai de paiement, évaluation liée au bon', r.json.supplier.taxId === 'M0123456789' && r.json.supplier.paymentDays === 30 && r.json.supplier.evaluations.some((e) => e.orderId === BCL), r.json.supplier);
+  r = await mgr('GET', `${P}/orders/${BC1}`); check('BC : rôle requis, demande d\'origine et appel d\'offres exposés', r.json.order.requestId === R1 && r.json.order.requiredRole === 'manager' && 'rfqId' in r.json.order, r.json.order);
+  const totRow = await dbx.prepare('SELECT total_ht, vat_amount, total_ttc FROM pur_orders WHERE id = ?').get(BC1);
+  check('totaux enregistrés (HT, TVA, TTC) = totaux affichés', Number(totRow.total_ht) === 650000 && Number(totRow.vat_amount) === 125125 && Number(totRow.total_ttc) === 775125, totRow);
+
   // Fournisseur supprimé dans Stock et achats : l'historique d'achats survit
-  r = await mgr('DELETE', `${O}/stock/suppliers/${supC}`); check('le module Stock supprime encore un fournisseur sans casser l\'historique des achats', r.status === 200, r.status);
-  r = await mgr('GET', `${P}/orders?supplierId=${supC}`); check('…les commandes de ce fournisseur restent lisibles (nom conservé)', r.status === 200, r.status);
+  // Fusion : la ligne A protège l'historique en REFUSANT (409) la suppression d'un fournisseur qui a des commandes ou des factures ; la ligne B la permettait.
+  r = await mgr('DELETE', `${O}/stock/suppliers/${supC}`); check('le module Stock refuse de supprimer un fournisseur qui a des achats (l\'historique est protégé)', r.status === 409, r.status);
+  r = await mgr('GET', `${P}/orders?supplierId=${supC}`); check('…les commandes de ce fournisseur restent lisibles', r.status === 200 && r.json.orders.length >= 1 && r.json.orders[0].supplier === 'Papeterie Centrale', r.json);
 }, {
   setup: async () => { smtp = await fakeSmtp(box); return { env: { SMTP_HOST: '127.0.0.1', SMTP_PORT: String(smtp.port), SMTP_FROM: 'noreply@manager-ia.test' } }; },
   teardown: async () => { if (smtp) smtp.srv.close(); },

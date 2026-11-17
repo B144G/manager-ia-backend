@@ -162,12 +162,12 @@ run('Achats : de la demande au paiement', async ({ check, owner, mgr, mem, other
   check('facture : annulée', r.status === 200, r.json);
   r = await owner('POST', `${PU}/invoices/${inv1}/approve`, {});
   check('validation : écriture comptable passée', r.status === 200 && r.json.entry, r.json);
-  const e1 = await dbx.prepare("SELECT e.id FROM acc_entries e WHERE e.org_id = ? AND e.source = 'pur_invoice' AND e.source_id = ?").get(org, inv1);
+  const e1 = await dbx.prepare("SELECT e.id FROM acc_entries e WHERE e.org_id = ? AND e.source = 'pur_invoice' AND e.source_id = ?").get(org, inv1 * 100 + 1); // fusion : identifiant d'origine = facture × 100 + n° de tentative (idempotence, comme la ligne B)
   const lines = await dbx.prepare('SELECT account, debit, credit FROM acc_lines WHERE entry_id = ? ORDER BY id').all(e1.id);
   const ht = 525000; const tva = Math.round(ht * 0.1925);
   check('écriture : 601 au débit (HT), 4452 TVA, 401 au crédit (TTC)', lines.find((l) => l.account === '601').debit === ht && lines.find((l) => l.account === '4452').debit === tva && lines.find((l) => l.account === '401').credit === ht + tva, lines);
   r = await owner('POST', `${PU}/invoices/${inv1}/approve`, {});
-  check('validation : pas deux fois', r.status === 400 && r.json.error === 'Cette facture est déjà validée pour paiement.', r.json);
+  check('validation : pas deux fois (409, conflit)', r.status === 409 && r.json.error === 'Cette facture est déjà validée pour paiement.', r.json);
   r = await owner('POST', `${PU}/invoices/${inv1}/unapprove`, { reason: 'Erreur de compte' });
   check('validation annulée (pas encore payée)', r.status === 200, r.json);
   r = await owner('POST', `${PU}/invoices/${inv1}/approve`, {});
@@ -183,7 +183,7 @@ run('Achats : de la demande au paiement', async ({ check, owner, mgr, mem, other
   r = await owner('POST', `${PU}/invoices/${inv1}/pay`, { method: 'bank', date: today });
   r = await owner('GET', `${PU}/invoices`);
   check('factures : soldée, plus rien à payer', r.json.invoices.find((x) => x.id === inv1).paymentStatus === 'paid' && r.json.toPay === 0, r.json);
-  const pay = await dbx.prepare("SELECT l.account, l.debit, l.credit FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id WHERE e.org_id = ? AND e.source = 'pur_payment' ORDER BY l.id").all(org);
+  const pay = await dbx.prepare("SELECT l.account, l.debit, l.credit FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id WHERE e.org_id = ? AND e.source = 'supplier_payment' ORDER BY l.id").all(org);
   check('règlements : 401 au débit, 589 (mobile) et 521 (banque) au crédit', pay.some((l) => l.account === '589' && l.credit === 200000) && pay.some((l) => l.account === '521') && pay.filter((l) => l.account === '401').reduce((s, l) => s + l.debit, 0) === ht + tva, pay);
   r = await owner('POST', `${PU}/orders/${po}/close`, {});
   check('commande close', r.status === 200, r.json);

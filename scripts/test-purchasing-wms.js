@@ -12,8 +12,9 @@ run('Achats × Stock WMS', async ({ check, owner, mgr, mem, other, org2, O, ws }
   const lotItem = (await owner('POST', `${O}/stock/items`, { name: 'Peinture 5 L', unit: 'pot', unitCost: 9000, tracking: 'lot' })).json.id;
   const serialItem = (await owner('POST', `${O}/stock/items`, { name: 'Imprimante', unit: 'pièce', unitCost: 90000, tracking: 'serial' })).json.id;
   const sup = (await mgr('POST', `${P}/suppliers`, { name: 'Céramiques du Wouri' })).json.id;
-  await mgr('GET', `${WM}/locations`); // crée l'entrepôt principal
-  const loc = async (code, kind) => (await mgr('POST', `${WM}/locations`, { code, name: code, kind })).json.id;
+  // Entrepôt principal de la ligne A : il faut désigner l'entrepôt à la création d'un emplacement (la ligne B le choisissait d'office).
+  const mainWh = (await owner('GET', `${WM}/overview`)).json.warehouses.find((w) => w.isDefault).id;
+  const loc = async (code, kind) => (await mgr('POST', `${WM}/locations`, { warehouseId: mainWh, code, name: code, kind })).json.id;
   const rayon = await loc('A-01-01', 'storage'); const rayon2 = await loc('A-01-02', 'storage'); const quar = await loc('Q-01', 'quarantine');
   check('emplacements créés (2 rayonnages, 1 quarantaine)', rayon && rayon2 && quar, [rayon, rayon2, quar]);
   const levels = async (id) => (await owner('GET', `${WM}/items/${id}/levels`)).json.levels.filter((l) => l.quantity > 0).map((l) => `${l.code}:${l.quantity}`).sort().join();
@@ -36,7 +37,7 @@ run('Achats × Stock WMS', async ({ check, owner, mgr, mem, other, org2, O, ws }
   // Contrôle qualité à l'entrée
   o = await order([{ itemId: lotItem, quantity: 40, unitPrice: 9000 }]);
   r = await mgr('POST', `${P}/orders/${o.id}/receipts`, { lines: [{ orderLineId: o.lines[0].id, receivedQty: 40, lotNo: 'P-77', inspection: true }] });
-  check('réception avec contrôle : la marchandise entre en quarantaine', r.status === 201 && await levels(lotItem) === 'Q-01:40', [r.status, await levels(lotItem)]);
+  check('réception avec contrôle : la marchandise entre en quarantaine', r.status === 201 && await levels(lotItem) === 'QUARANTAINE:40', [r.status, await levels(lotItem)]);
   const usable = (await owner('GET', `${WM}/items/${lotItem}/levels`)).json;
   check('stock disponible = 0 tant que le contrôle n\'est pas fait', usable.usable === 0 && usable.quantity === 40, usable);
   r = await mgr('GET', `${P}/inspections`); const ins = r.json.inspections[0];
@@ -46,9 +47,9 @@ run('Achats × Stock WMS', async ({ check, owner, mgr, mem, other, org2, O, ws }
     r = await mgr('POST', `${P}/inspections`, { lines });
     check(`contrôle refusé : ${lab}`, r.status === 400 || r.status === 404, [r.status, r.json && r.json.error]);
   }
-  check('aucun mouvement après ces refus', await levels(lotItem) === 'Q-01:40', await levels(lotItem));
+  check('aucun mouvement après ces refus', await levels(lotItem) === 'QUARANTAINE:40', await levels(lotItem));
   r = await mgr('POST', `${P}/inspections`, { lines: [{ receiptLineId: ins.receiptLineId, acceptedQty: 33, toLocationId: rayon, rejectedQty: 5, reason: 'Pots abîmés' }] });
-  check('inspection : 33 libérés vers A-01-01, 5 refusés (retour fournisseur)', r.status === 200 && r.json.accepted === 33 && r.json.rejected === 5 && await levels(lotItem) === 'A-01-01:33,Q-01:2', [r.json, await levels(lotItem)]);
+  check('inspection : 33 libérés vers A-01-01, 5 refusés (retour fournisseur)', r.status === 200 && r.json.accepted === 33 && r.json.rejected === 5 && await levels(lotItem) === 'A-01-01:33,QUARANTAINE:2', [r.json, await levels(lotItem)]);
   const st = (await owner('GET', `${WM}/items/${lotItem}/levels`)).json;
   check('stock disponible = 33, quantité de l\'article = 35', st.usable === 33 && st.quantity === 35, st);
   o = (await mgr('GET', `${P}/orders/${o.id}`)).json.order;
