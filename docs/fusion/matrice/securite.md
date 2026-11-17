@@ -11,7 +11,7 @@
 | Contenu réel des pièces jointes (signatures) | non | oui | B ; `test-plan-margin` adapté (fichiers à vraie signature) | test-ai-attach, test-plan-margin |
 | Chiffrement des champs sensibles (CNPS, NIU, CNI, compte de paie, secrets de webhooks, jetons) | jetons v1 seulement | v1 + v2 | B ; lecture tolérante (clair accepté), DATA_KEY absente → dérivée de JWT_SECRET, `SKIP_STARTUP_ENCRYPTION=1` pour couper le chiffrement des anciennes lignes au démarrage | test-security-data, test-fusion-integration |
 | Vérification du journal d'audit (chaîne + ancrages signés) | non | oui | B | test-security-data |
-| Limites de corps JSON avant connexion | non | oui | B | test-security-auth |
+| Limites de corps JSON avant connexion (gros corps lus seulement après vérification de la connexion) | non | oui | B | test-ai-attach (413) ; test-security-auth |
 | Verrouillage progressif, alerte d'appareil inconnu, sessions actives, 2FA exigible par organisation | non | oui | B | test-security-auth |
 | Suppression complète d'une organisation (aucune ligne restante dans aucune table `org_id`) | non | oui | B ; contrôle étendu à toutes les tables de A (215 tables) | test-security-privacy, test-fusion-integration |
 | Export des données d'une personne et d'une organisation, suppression avec anonymisation et délai de réflexion, consentements versionnés, conservation configurable, registre des accès paie/RH | non | oui | B | test-security-privacy (37) |
