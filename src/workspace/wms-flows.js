@@ -569,7 +569,7 @@ router.get('/returns/:id', async (req, res) => {
   const lines = await db.prepare('SELECT rl.*, i.name, l.code FROM wms_return_lines rl JOIN stock_items i ON i.id = rl.item_id LEFT JOIN wms_locations l ON l.id = rl.location_id WHERE rl.return_id = ? ORDER BY rl.id').all(r.id);
   res.json({ return: {
     id: Number(r.id), code: r.code, status: r.status, kind: r.kind, kindLabel: RETURN_KIND[r.kind], customer: r.customer || null, supplier: r.supplier || null, documentNumber: r.doc || null, reason: r.reason || null,
-    creditAmount: !m ? undefined : r.credit_amount === null ? null : Number(r.credit_amount), creditedAt: r.credited_at || null, value: m ? retValue(lines) : undefined,
+    creditAmount: !m ? undefined : r.credit_amount === null ? null : Number(r.credit_amount), creditedAt: r.credited_at || null, creditBooked: Boolean(r.credit_entry_id), creditNoteDocId: r.credit_note_doc_id ? Number(r.credit_note_doc_id) : null, value: m ? retValue(lines) : undefined,
     rmaNo: r.rma_no || null, purchaseOrderId: r.purchase_order_id ? Number(r.purchase_order_id) : null, purchaseOrder: r.po || null, purchaseInvoiceId: r.purchase_invoice_id ? Number(r.purchase_invoice_id) : null, purchaseInvoice: r.pi || null, creditStatus: r.credit_status || null,
     lines: lines.map((l) => ({ id: Number(l.id), itemId: Number(l.item_id), name: l.name, quantity: r3(l.quantity), reasonCode: l.reason_code, reasonLabel: (REASONS[r.kind] || {})[l.reason_code] || 'Autre', disposition: l.disposition, final: l.final || null, location: l.code || null, value: m ? Math.round(Number(l.quantity) * Number(l.unit_value)) : undefined })),
   } });
