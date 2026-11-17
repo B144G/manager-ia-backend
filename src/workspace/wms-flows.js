@@ -59,6 +59,7 @@ router.get('/transfers/:id', async (req, res) => {
   const journal = await db.prepare('SELECT g.*, u.name FROM wms_transfer_log g LEFT JOIN users u ON u.id = g.by_id WHERE g.transfer_id = ? ORDER BY g.id').all(t.id);
   res.json({ transfer: {
     id: Number(t.id), code: t.code, status: t.status, from: await wh(t.from_warehouse_id), to: await wh(t.to_warehouse_id), note: t.note,
+    gapQty: r3(lines.reduce((a, l) => a + Number(l.gap_qty), 0)), gapValue: m ? lines.reduce((a, l) => a + Number(l.gap_value), 0) : undefined,
     lines: lines.map((l) => ({ id: Number(l.id), itemId: Number(l.item_id), name: l.name, unit: l.unit, tracking: l.tracking || 'none', quantity: r3(l.quantity), shippedQty: r3(l.shipped_qty), receivedQty: r3(l.received_qty), gapQty: r3(l.gap_qty), gapValue: m ? Number(l.gap_value) : undefined, gapReason: l.gap_reason || null })),
     journal: journal.map((j) => ({ at: j.at, action: j.action, by: j.name || null, note: j.note || null })),
   } });
@@ -68,13 +69,21 @@ router.post('/transfers', async (req, res) => {
   const from = await db.prepare('SELECT * FROM wms_warehouses WHERE id = ? AND org_id = ?').get(A.id(b.fromWarehouseId, 'Choisissez un entrepôt.'), req.org.id);
   const to = await db.prepare('SELECT * FROM wms_warehouses WHERE id = ? AND org_id = ?').get(A.id(b.toWarehouseId, 'Choisissez un entrepôt.'), req.org.id);
   if (!from || !to) throw new HttpError(404, 'Entrepôt introuvable.');
-  if (Number(from.id) === Number(to.id)) throw new HttpError(400, "Entre deux emplacements d'un même entrepôt, indiquez l'emplacement de départ et celui d'arrivée.");
+  const sameWh = Number(from.id) === Number(to.id);
   if (!Number(from.active) || !Number(to.active)) throw new HttpError(400, 'Cet entrepôt est désactivé.');
   const lines = await readLines(req, b.lines);
+  // Entre deux emplacements d'un même entrepôt (ligne B) : chaque ligne indique l'emplacement de départ et celui d'arrivée.
+  for (const l of lines) {
+    const fl = l.raw.fromLocationId ? await W.locationFor(req, l.raw.fromLocationId) : null; const tl = l.raw.toLocationId ? await W.locationFor(req, l.raw.toLocationId) : null;
+    if (sameWh && (!fl || !tl || Number(fl.id) === Number(tl.id))) throw new HttpError(400, "Entre deux emplacements d'un même entrepôt, indiquez l'emplacement de départ et celui d'arrivée.");
+    if (fl && Number(fl.warehouse_id) !== Number(from.id)) throw new HttpError(400, "L'emplacement de départ n'est pas dans l'entrepôt de départ.");
+    if (tl && (Number(tl.warehouse_id) !== Number(to.id) || !Number(tl.active) || tl.kind === 'transit')) throw new HttpError(400, "Choisissez un emplacement d'arrivée actif dans l'entrepôt d'arrivée.");
+    l.fromLoc = fl ? Number(fl.id) : null; l.toLoc = tl ? Number(tl.id) : null;
+  }
   const out = await db.transaction(async () => {
     const code = await W.nextCode(req.org.id, 'TR');
     const id = Number((await db.prepare('INSERT INTO wms_transfers (org_id, code, status, from_warehouse_id, to_warehouse_id, note, requested_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, code, 'requested', from.id, to.id, cleanText(String(b.note || ''), 500), req.user.id, nowISO())).lastInsertRowid);
-    for (const l of lines) await db.prepare('INSERT INTO wms_transfer_lines (transfer_id, item_id, quantity) VALUES (?, ?, ?)').run(id, l.it.id, l.quantity);
+    for (const l of lines) await db.prepare('INSERT INTO wms_transfer_lines (transfer_id, item_id, quantity, from_location_id, to_location_id) VALUES (?, ?, ?, ?, ?)').run(id, l.it.id, l.quantity, l.fromLoc, l.toLoc);
     await log(id, 'requested', req.user.id, '');
     return { id, code };
   })();
@@ -89,14 +98,24 @@ router.post('/transfers/:id/ship', mgr, async (req, res) => {
     // Double envoi : le statut se relit sous verrou, le second appel trouve le transfert déjà expédié.
     if ((await W.lockRow('wms_transfers', t.id)).status !== 'requested') throw new HttpError(400, 'Ce transfert a déjà été expédié ou annulé.');
     const lines = await db.prepare('SELECT * FROM wms_transfer_lines WHERE transfer_id = ?').all(t.id);
+    const given = Object.fromEntries((Array.isArray((req.body || {}).lines) ? req.body.lines : []).map((x) => [Number(x && x.lineId), x]));
     for (const l of lines) {
-      const locs = await db.prepare(`SELECT s.location_id, s.quantity FROM wms_stock s JOIN wms_locations l ON l.id = s.location_id WHERE s.item_id = ? AND l.warehouse_id = ? AND l.active = 1 AND l.kind IN ('picking','storage','reception') AND s.quantity > 0
+      // Quantité à expédier : celle de la demande, ou moins (jamais plus) si l'expéditeur la précise.
+      const g = given[Number(l.id)];
+      if (g && g.quantity !== undefined && g.quantity !== '') {
+        const q = H().qty(g.quantity);
+        if (q > r3(l.quantity) + W.EPS) throw new HttpError(400, 'Vous ne pouvez pas expédier plus que la quantité demandée.');
+        l.quantity = q;
+      }
+      const locs = l.from_location_id
+        ? await db.prepare('SELECT location_id, quantity FROM wms_stock WHERE item_id = ? AND location_id = ? AND quantity > 0').all(l.item_id, l.from_location_id)
+        : await db.prepare(`SELECT s.location_id, s.quantity FROM wms_stock s JOIN wms_locations l ON l.id = s.location_id WHERE s.item_id = ? AND l.warehouse_id = ? AND l.active = 1 AND l.kind IN ('picking','storage','reception') AND s.quantity > 0
         ORDER BY CASE l.kind WHEN 'picking' THEN 0 WHEN 'storage' THEN 1 ELSE 2 END, s.quantity DESC`).all(l.item_id, t.from_warehouse_id);
       let left = r3(l.quantity); const origins = [];
       for (const s of locs) {
         if (left <= W.EPS) break;
         const q = r3(Math.min(left, Number(s.quantity)));
-        await W.move(req, l.item_id, s.location_id, transit.id, q, { kind: 'transfer_out', refKind: 'transfer', refId: t.id, reason: `Transfert ${t.code} : sortie`, allowTransit: true });
+        await W.move(req, l.item_id, s.location_id, transit.id, q, { kind: 'transfer_out', refKind: 'transfer', refId: t.id, reason: `Transfert ${t.code} : sortie`, allowTransit: true, guardReserved: true });
         origins.push({ locationId: Number(s.location_id), quantity: q }); left = r3(left - q);
       }
       const shipped = r3(Number(l.quantity) - left);
@@ -116,7 +135,7 @@ router.post('/transfers/:id/receive', mgr, async (req, res) => {
   const transit = await W.transitOf(req.org.id);
   const linesOf = () => db.prepare('SELECT l.*, i.name, i.tracking, i.avg_cost, i.unit_cost FROM wms_transfer_lines l JOIN stock_items i ON i.id = l.item_id WHERE l.transfer_id = ?').all(t.id);
   const input = Object.fromEntries((Array.isArray((req.body || {}).lines) ? req.body.lines : []).map((x) => [Number(x && x.lineId), x]));
-  let gapTotal = 0;
+  let gapTotal = 0; let gapVal = 0;
   await db.transaction(async () => {
     const cur = await W.lockRow('wms_transfers', t.id);
     if (cur.status !== 'shipped') throw new HttpError(400, 'Ce transfert est terminé.');
@@ -127,16 +146,20 @@ router.post('/transfers/:id/receive', mgr, async (req, res) => {
       const x = input[Number(l.id)];
       let got = x && x.receivedQty !== undefined && x.receivedQty !== '' ? r3(Number(String(x.receivedQty).replace(',', '.'))) : shipped;
       if (!Number.isFinite(got) || got < 0) throw new HttpError(400, 'Quantité invalide : indiquez un nombre positif.');
-      got = Math.min(got, shipped);
+      if (got > shipped + W.EPS) throw new HttpError(400, 'Vous ne pouvez pas recevoir plus que la quantité expédiée.');
       const gap = r3(shipped - got);
-      if (got > W.EPS) for (const d of await W.putawayPlan(req.org.id, { id: l.item_id, tracking: l.tracking }, got, { warehouseId: t.to_warehouse_id }).then(async (p) => (p.left > W.EPS ? [...p.plan, { location: await W.defaultOf(req.org.id, t.to_warehouse_id), quantity: p.left }] : p.plan))) {
+      if (gap > W.EPS && !cleanText(String((x && x.reason) || ''), 200)) throw new HttpError(400, `Indiquez le motif de l'écart pour « ${l.name} » (manquant ou abîmé).`);
+      const dest = x && x.toLocationId ? await W.locationFor(req, x.toLocationId) : (l.to_location_id ? await W.locationOf(req.org.id, l.to_location_id) : null);
+      if (dest && (Number(dest.warehouse_id) !== Number(t.to_warehouse_id) || !Number(dest.active) || dest.kind === 'transit')) throw new HttpError(400, "Choisissez un emplacement d'arrivée actif dans l'entrepôt d'arrivée.");
+      if (got > W.EPS && dest) await W.move(req, l.item_id, transit.id, dest.id, got, { kind: 'transfer_in', refKind: 'transfer', refId: t.id, reason: `Transfert ${t.code} : arrivée`, allowTransit: true });
+      else if (got > W.EPS) for (const d of await W.putawayPlan(req.org.id, { id: l.item_id, tracking: l.tracking }, got, { warehouseId: t.to_warehouse_id }).then(async (p) => (p.left > W.EPS ? [...p.plan, { location: await W.defaultOf(req.org.id, t.to_warehouse_id), quantity: p.left }] : p.plan))) {
         await W.move(req, l.item_id, transit.id, d.location.id, d.quantity, { kind: 'transfer_in', refKind: 'transfer', refId: t.id, reason: `Transfert ${t.code} : arrivée`, allowTransit: true });
       }
       let gapValue = 0;
       if (gap > W.EPS) {
         const reason = cleanText(String((x && x.reason) || ''), 200) || 'Écart à la réception du transfert';
         await W.withLocation(req, { locationId: transit.id }, () => L.adjust(req, l.item_id, -gap, `Transfert ${t.code} : écart (${reason})`, { serials: l.tracking === 'serial' ? (x && x.serials) : undefined, refKind: 'transfer', refId: t.id, allowExpired: true }));
-        gapValue = Math.round(gap * unitValue(l)); gapTotal = r3(gapTotal + gap);
+        gapValue = Math.round(gap * unitValue(l)); gapTotal = r3(gapTotal + gap); gapVal += gapValue;
         await db.prepare('UPDATE wms_transfer_lines SET gap_reason = ? WHERE id = ?').run(reason, l.id);
       }
       await db.prepare('UPDATE wms_transfer_lines SET received_qty = ?, gap_qty = ?, gap_value = ? WHERE id = ?').run(got, gap, gapValue, l.id);
@@ -144,7 +167,7 @@ router.post('/transfers/:id/receive', mgr, async (req, res) => {
     await db.prepare("UPDATE wms_transfers SET status = 'received' WHERE id = ?").run(t.id);
     await log(t.id, 'received', req.user.id, gapTotal ? `Écart : ${gapTotal}` : '');
   })();
-  res.json({ ok: true, gapQty: gapTotal });
+  res.json({ ok: true, gapQty: gapTotal, gapValue: gapVal });
 });
 router.post('/transfers/:id/cancel', async (req, res) => {
   const t = await transferOf(req, req.params.id);
@@ -179,12 +202,8 @@ router.post('/transfers/:id/cancel', async (req, res) => {
 // Réservations
 // =====================================================================
 const SOURCE = { document: 'Commande ou devis client', internal: 'Demande interne', manual: 'Réservation libre', pick: 'Liste de préparation', crossdock: 'Transbordement', kit: "Ordre d'assemblage" };
-/** Une commande annulée ou refusée libère ses réservations. */
-async function syncReservations(orgId) {
-  await W.expireReservations(orgId);
-  await db.prepare(`UPDATE wms_reservations SET status = 'released', close_reason = 'Document annulé ou refusé' WHERE org_id = ? AND status = 'active' AND source_kind = 'document'
-    AND document_id IN (SELECT id FROM documents WHERE org_id = ? AND status IN ('cancelled','refused'))`).run(orgId, orgId);
-}
+/** Une commande annulée, refusée ou supprimée libère ses réservations (voir wms-core.expireReservations). */
+const syncReservations = (orgId) => W.expireReservations(orgId);
 async function documentOf(req, idv) {
   const d = await db.prepare('SELECT d.*, c.name AS customer FROM documents d LEFT JOIN customers c ON c.id = d.customer_id WHERE d.id = ? AND d.org_id = ?').get(A.id(idv), req.org.id);
   if (!d) throw new HttpError(404, 'Commande, devis ou facture introuvable.');
@@ -199,20 +218,29 @@ function docNeeds(d) {
   for (const l of lines) if (l && Number(l.itemId) > 0) need[Number(l.itemId)] = r3((need[Number(l.itemId)] || 0) + Number(l.quantity || 0));
   return need;
 }
-async function reserve(req, { itemId, quantity, sourceKind, documentId = null, pickId = null, label = '', neededBy = null, expiresAt = null }) {
-  return Number((await db.prepare('INSERT INTO wms_reservations (org_id, item_id, quantity, status, source_kind, document_id, pick_id, label, needed_by, expires_at, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(req.org.id, itemId, r3(quantity), 'active', sourceKind, documentId, pickId, label, neededBy, expiresAt, req.user.id, nowISO())).lastInsertRowid);
+async function reserve(req, { itemId, quantity, sourceKind, documentId = null, pickId = null, label = '', neededBy = null, expiresAt = null, warehouseId = null }) {
+  return Number((await db.prepare('INSERT INTO wms_reservations (org_id, item_id, quantity, status, source_kind, document_id, pick_id, label, needed_by, expires_at, created_by, created_at, warehouse_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(req.org.id, itemId, r3(quantity), 'active', sourceKind, documentId, pickId, label, neededBy, expiresAt, req.user.id, nowISO(), warehouseId)).lastInsertRowid);
 }
+const resView = (req) => (r) => ({
+  id: Number(r.id), itemId: Number(r.item_id), item: r.item, unit: r.unit, quantity: r3(r.quantity), remaining: r3(r.quantity - r.fulfilled_qty), status: r.status,
+  label: r.label || (r.doc ? r.doc : r.pick) || null, sourceLabel: SOURCE[r.source_kind], sourceKind: r.source_kind, fulfilledQty: r3(r.fulfilled_qty),
+  neededBy: r.needed_by || null, expiresAt: r.expires_at || null, closeReason: r.close_reason || null, mine: Number(r.created_by) === Number(req.user.id),
+  warehouseId: r.warehouse_id ? Number(r.warehouse_id) : null, documentId: r.document_id ? Number(r.document_id) : null, documentNumber: r.doc || null,
+});
+const RES_SQL = 'SELECT r.*, i.name AS item, i.unit, d.number AS doc, p.code AS pick FROM wms_reservations r JOIN stock_items i ON i.id = r.item_id LEFT JOIN documents d ON d.id = r.document_id LEFT JOIN wms_picks p ON p.id = r.pick_id';
+router.get('/documents/:id/reservations', async (req, res) => {
+  await syncReservations(req.org.id);
+  const rows = await db.prepare(`${RES_SQL} WHERE r.org_id = ? AND r.source_kind = 'document' AND r.document_id = ? ORDER BY r.id`).all(req.org.id, A.id(req.params.id));
+  res.json({ reservations: rows.map(resView(req)) });
+});
 router.get('/reservations', async (req, res) => {
   await syncReservations(req.org.id);
-  const st = ['active', 'fulfilled', 'released'].includes(req.query.status) ? req.query.status : 'active';
-  const rows = await db.prepare(`SELECT r.*, i.name AS item, i.unit, d.number AS doc, p.code AS pick FROM wms_reservations r JOIN stock_items i ON i.id = r.item_id LEFT JOIN documents d ON d.id = r.document_id LEFT JOIN wms_picks p ON p.id = r.pick_id
-    WHERE r.org_id = ? AND r.status = ? ORDER BY r.id DESC LIMIT 500`).all(req.org.id, st);
-  res.json({ reservations: rows.map((r) => ({
-    id: Number(r.id), itemId: Number(r.item_id), item: r.item, unit: r.unit, quantity: r3(r.quantity), remaining: r3(r.quantity - r.fulfilled_qty), status: r.status,
-    label: r.label || (r.doc ? r.doc : r.pick) || null, sourceLabel: SOURCE[r.source_kind], sourceKind: r.source_kind, fulfilledQty: r3(r.fulfilled_qty),
-    neededBy: r.needed_by || null, expiresAt: r.expires_at || null, closeReason: r.close_reason || null, mine: Number(r.created_by) === Number(req.user.id),
-  })) });
+  const item = req.query.itemId ? A.id(req.query.itemId) : null;
+  // Forme de A : sans filtre, les réservations actives. Ajout (ligne B) : avec un article, tous les statuts (sauf si un statut est demandé).
+  const st = ['active', 'fulfilled', 'released'].includes(req.query.status) ? req.query.status : (item ? null : 'active');
+  const rows = await db.prepare(`${RES_SQL} WHERE r.org_id = ?${st ? ' AND r.status = ?' : ''}${item ? ' AND r.item_id = ?' : ''} ORDER BY (r.status = 'active') DESC, r.id DESC LIMIT 500`).all(req.org.id, ...(st ? [st] : []), ...(item ? [item] : []));
+  res.json({ reservations: rows.map(resView(req)), active: rows.filter((r) => r.status === 'active').length });
 });
 router.post('/reservations', async (req, res) => {
   const b = req.body || {};
@@ -222,10 +250,20 @@ router.post('/reservations', async (req, res) => {
   const kind = b.kind === 'manual' ? 'manual' : 'internal';
   if (kind === 'manual' && !A.can(req, 'manager')) throw new HttpError(403, 'Une réservation libre est réservée aux responsables (une demande interne est ouverte à tous).');
   const expires = A.date(b.expiresAt) || null;
+  const wh = b.warehouseId ? await db.prepare('SELECT * FROM wms_warehouses WHERE id = ? AND org_id = ?').get(A.id(b.warehouseId, 'Entrepôt invalide.'), req.org.id) : null;
+  if (b.warehouseId && (!wh || !A.visible(req, wh))) throw new HttpError(404, 'Entrepôt introuvable.');
   await syncReservations(req.org.id);
-  const av = await W.availability(it.id);
-  if (av.available + W.EPS < q) throw new HttpError(400, `Pas assez de stock disponible pour « ${it.name} » : ${Math.max(0, av.available)} ${it.unit}.`);
-  res.status(201).json({ id: await reserve(req, { itemId: it.id, quantity: q, sourceKind: kind, label, expiresAt: expires }) });
+  const id = await db.transaction(async () => {
+    await W.lockItem(req.org.id, it.id); // deux réservations simultanées ne dépassent jamais le disponible
+    const av = await W.availability(it.id);
+    if (av.available + W.EPS < q) throw new HttpError(400, `Pas assez de stock disponible pour « ${it.name} » : ${Math.max(0, av.available)} ${it.unit}.`);
+    if (wh) {
+      const free = r3((await W.usableIn(it.id, wh.id)) - (await W.reservedFor(it.id, wh.id)));
+      if (q - free > W.EPS) throw new HttpError(409, `« ${it.name} » : ${Math.max(free, 0)} ${it.unit} seulement disponible(s) à promettre dans cet entrepôt.`);
+    }
+    return reserve(req, { itemId: it.id, quantity: q, sourceKind: kind, label, expiresAt: expires, neededBy: A.date(b.neededBy) || null, warehouseId: wh ? Number(wh.id) : null });
+  })();
+  res.status(201).json({ id });
 });
 router.post('/reservations/from-document', mgr, async (req, res) => {
   const b = req.body || {};
@@ -233,6 +271,8 @@ router.post('/reservations/from-document', mgr, async (req, res) => {
   if (d.kind === 'invoice' && ['paid', 'credited'].includes(d.status)) throw new HttpError(400, 'Ce document est terminé ou refusé : il ne réserve plus de stock.');
   const need = docNeeds(d);
   if (!Object.keys(need).length) throw new HttpError(400, "Aucune ligne de ce document n'est rattachée à un article du stock.");
+  let docLines = []; try { docLines = JSON.parse(d.lines); } catch { docLines = []; }
+  const ignoredLines = docLines.filter((l) => !(l && Number(l.itemId) > 0)).length;
   await syncReservations(req.org.id);
   const reserved = []; const short = [];
   await db.transaction(async () => {
@@ -247,8 +287,10 @@ router.post('/reservations/from-document', mgr, async (req, res) => {
       if (take > W.EPS) { await reserve(req, { itemId, quantity: take, sourceKind: 'document', documentId: d.id, label: d.number }); reserved.push({ itemId, name: it.name, quantity: take }); }
       if (take + W.EPS < want) short.push({ itemId, name: it.name, missing: r3(want - take) });
     }
+    // Ajout (ligne B) : « partial: false » explicite = tout ou rien (rien n'est réservé si un article manque).
+    if (b.partial === false && short.length) throw new HttpError(409, `Stock insuffisant pour cette commande : ${short.map((x) => `${x.name} (il manque ${x.missing})`).join(', ')}.`);
   })();
-  res.json({ reserved, short });
+  res.json({ reserved, short, ignoredLines });
 });
 async function reservationOf(req, idv) {
   const r = await db.prepare('SELECT r.*, i.name, i.unit FROM wms_reservations r JOIN stock_items i ON i.id = r.item_id WHERE r.id = ? AND r.org_id = ?').get(A.id(idv), req.org.id);
@@ -266,11 +308,13 @@ router.post('/reservations/:id/fulfill', mgr, async (req, res) => {
     const cur = await W.lockRow('wms_reservations', r.id);
     const left = r3(cur.quantity - cur.fulfilled_qty);
     if (cur.status !== 'active' || q > left + W.EPS) throw new HttpError(400, cur.status !== 'active' ? 'Cette réservation est déjà terminée.' : `Il reste ${left} ${r.unit} à livrer sur cette réservation.`);
-    await L.adjust(req, r.item_id, -q, `Réservation livrée${r.label ? ' : ' + r.label : ''}`, { refKind: 'reservation', refId: r.id, serials: (req.body || {}).serials });
+    const locId = (req.body || {}).locationId ? Number((await W.locationFor(req, A.id(req.body.locationId, 'Emplacement introuvable.'))).id) : undefined;
+    await L.adjust(req, r.item_id, -q, `Réservation livrée${r.label ? ' : ' + r.label : ''}`, { refKind: 'reservation', refId: r.id, serials: (req.body || {}).serials, locationId: locId, covered: r.warehouse_id ? { [Number(r.warehouse_id)]: q } : undefined });
     const done = r3(Number(cur.fulfilled_qty) + q);
     await db.prepare('UPDATE wms_reservations SET fulfilled_qty = ?, status = ? WHERE id = ?').run(done, done + W.EPS >= Number(cur.quantity) ? 'fulfilled' : 'active', r.id);
   })();
-  res.json({ ok: true });
+  const after = await db.prepare('SELECT r.quantity, r.fulfilled_qty, r.status, i.quantity AS stock FROM wms_reservations r JOIN stock_items i ON i.id = r.item_id WHERE r.id = ?').get(r.id);
+  res.json({ ok: true, status: after.status, remaining: r3(after.quantity - after.fulfilled_qty), quantity: r3(Number(after.stock)) }); // ajouts : état de la réservation et stock restant
 });
 router.post('/reservations/:id/release', async (req, res) => {
   const r = await reservationOf(req, req.params.id);
@@ -307,9 +351,15 @@ async function allocate(itemId, qty, { exceptDocument } = {}) {
   return { plan, got: r3(got - left) };
 }
 /** Crée une liste de préparation (dans la transaction de l'appelant) : emplacements alloués, réservation de la liste. Renvoie { id, code, short }. */
-async function createPick(req, { doc = null, wants, priority = 2, label = '', assigned = null, waveId = null }) {
+async function createPick(req, { doc = null, wants, priority = 2, label = '', assigned = null, waveId = null, strict = false }) {
   const plans = [];
-  for (const w of wants) { const a = await allocate(w.itemId, w.quantity, { exceptDocument: doc ? doc.id : undefined }); if (a.got > W.EPS) plans.push({ ...w, ...a }); }
+  for (const w of wants) {
+    await W.lockItem(req.org.id, w.itemId); // deux listes simultanées ne promettent jamais deux fois le même stock
+    const a = await allocate(w.itemId, w.quantity, { exceptDocument: doc ? doc.id : undefined });
+    // « strict » (ligne B) : tout ou rien — si un article manque, rien n'est créé (409).
+    if (strict && a.got + W.EPS < w.quantity) throw new HttpError(409, `Stock disponible insuffisant pour préparer cette liste (article n° ${w.itemId} : ${a.got} sur ${w.quantity}).`);
+    if (a.got > W.EPS) plans.push({ ...w, ...a });
+  }
   if (!plans.length) throw new HttpError(400, doc ? `Rien à préparer pour ${doc.number} : aucun stock disponible.` : 'Rien à préparer : aucun stock disponible.');
   const code = await W.nextCode(req.org.id, 'PR');
   const id = Number((await db.prepare('INSERT INTO wms_picks (org_id, code, status, priority, document_id, label, assigned_to, created_by, created_at, wave_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
@@ -324,6 +374,7 @@ async function createPick(req, { doc = null, wants, priority = 2, label = '', as
   await require('./wms-vas').autoAttach(req, 'pick', id, { customerId: doc ? doc.customer_id : null, items: plans.map((p) => ({ itemId: p.itemId, quantity: p.got })) });
   return { id, code, short: plans.length < wants.length || plans.some((p) => p.got + W.EPS < p.quantity) };
 }
+const PRIORITY = { 1: 'Urgente', 2: 'Normale', 3: 'Basse' };
 router.get('/picks', async (req, res) => {
   const st = String(req.query.status || '');
   const all = A.can(req, 'manager') || String(req.query.mine) === '0';
@@ -331,7 +382,7 @@ router.get('/picks', async (req, res) => {
     FROM wms_picks p LEFT JOIN documents d ON d.id = p.document_id LEFT JOIN customers c ON c.id = d.customer_id LEFT JOIN users u ON u.id = p.assigned_to LEFT JOIN wms_waves wv ON wv.id = p.wave_id
     WHERE p.org_id = ?${st ? ' AND p.status = ?' : " AND p.status != 'cancelled'"}${all ? '' : ' AND (p.assigned_to IS NULL OR p.assigned_to = ?)'} ORDER BY CASE WHEN p.status IN ('open','in_progress') THEN 0 ELSE 1 END, p.priority, p.id DESC LIMIT 300`)
     .all(req.org.id, ...(st ? [st] : []), ...(all ? [] : [req.user.id]));
-  res.json({ picks: rows.map((p) => ({ id: Number(p.id), code: p.code, status: p.status, priority: Number(p.priority), documentNumber: p.doc || null, customer: p.customer || null, label: p.label || null, lineCount: Number(p.n), createdAt: p.created_at, assignedName: p.assignee || null, short: Number(p.sh) > 0, waveId: p.wave_id ? Number(p.wave_id) : null, waveCode: p.wave || null, packedAt: p.packed_at || null, shippedAt: p.shipped_at || null })) });
+  res.json({ waiting: rows.filter((p) => ['open', 'in_progress'].includes(p.status)).length, picks: rows.map((p) => ({ id: Number(p.id), code: p.code, status: p.status, priority: Number(p.priority), priorityLabel: PRIORITY[Number(p.priority)], documentNumber: p.doc || null, customer: p.customer || null, label: p.label || null, lineCount: Number(p.n), createdAt: p.created_at, assignedName: p.assignee || null, short: Number(p.sh) > 0, waveId: p.wave_id ? Number(p.wave_id) : null, waveCode: p.wave || null, packedAt: p.packed_at || null, shippedAt: p.shipped_at || null })) });
 });
 router.get('/picks/:id', async (req, res) => {
   const p = await pickOf(req, req.params.id);
@@ -339,7 +390,7 @@ router.get('/picks/:id', async (req, res) => {
   const lines = await db.prepare(`SELECT pl.*, i.name, i.unit, i.tracking, l.code, l.aisle, l.rack, l.bin FROM wms_pick_lines pl JOIN stock_items i ON i.id = pl.item_id LEFT JOIN wms_locations l ON l.id = pl.location_id
     WHERE pl.pick_id = ? ORDER BY COALESCE(l.aisle, ''), COALESCE(l.rack, ''), COALESCE(l.bin, ''), COALESCE(l.code, ''), pl.id`).all(p.id);
   res.json({ pick: {
-    id: Number(p.id), code: p.code, status: p.status, priority: Number(p.priority), documentNumber: d ? d.number : null, customer: d ? d.customer : null, label: p.label || null,
+    id: Number(p.id), code: p.code, status: p.status, priority: Number(p.priority), priorityLabel: PRIORITY[Number(p.priority)], documentNumber: d ? d.number : null, customer: d ? d.customer : null, label: p.label || null,
     waveId: p.wave_id ? Number(p.wave_id) : null, packedAt: p.packed_at || null, shippedAt: p.shipped_at || null,
     toPick: r3(lines.reduce((s, l) => s + Number(l.quantity), 0)), picked: r3(lines.reduce((s, l) => s + Number(l.picked_qty), 0)),
     lines: lines.map((l) => ({ id: Number(l.id), itemId: Number(l.item_id), name: l.name, unit: l.unit, tracking: l.tracking || 'none', location: l.code || null, locationId: l.location_id ? Number(l.location_id) : null, aisle: l.aisle || '', rack: l.rack || '', bin: l.bin || '', quantity: r3(l.quantity), pickedQty: r3(l.picked_qty), done: Boolean(Number(l.done)), short: Boolean(Number(l.short)) })),
@@ -360,9 +411,17 @@ router.post('/picks', mgr, async (req, res) => {
     if (!Array.isArray(b.lines) || !b.lines.length || b.lines.length > 100) throw new HttpError(400, 'Choisissez une commande ou ajoutez au moins une ligne (100 au plus).');
     wants = (await readLines(req, b.lines)).map((l) => ({ itemId: Number(l.it.id), quantity: l.quantity }));
   }
+  if (b.warehouseId !== undefined && b.warehouseId !== null && b.warehouseId !== '') await H().warehouseOf(req, b.warehouseId); // entrepôt inconnu → 404
   await syncReservations(req.org.id);
-  const out = await db.transaction(() => createPick(req, { doc, wants, priority, label: b.label, assigned }))();
+  const out = await db.transaction(() => createPick(req, { doc, wants, priority, label: b.label, assigned, strict: b.strict === true }))();
   res.status(201).json(out);
+});
+router.post('/picks/:id/start', async (req, res) => {
+  const p = await pickOf(req, req.params.id);
+  if (p.assigned_to && Number(p.assigned_to) !== Number(req.user.id) && !A.can(req, 'manager')) throw new HttpError(403, 'Cette liste est confiée à une autre personne.');
+  if (!['open', 'in_progress'].includes(p.status)) throw new HttpError(409, 'Cette liste est terminée ou annulée.');
+  await db.prepare("UPDATE wms_picks SET status = 'in_progress', started_at = COALESCE(started_at, ?) WHERE id = ?").run(nowISO(), p.id);
+  res.json({ ok: true });
 });
 router.post('/picks/:id/lines/:lineId/confirm', async (req, res) => {
   const p = await pickOf(req, req.params.id);
@@ -380,7 +439,8 @@ router.post('/picks/:id/lines/:lineId/confirm', async (req, res) => {
     locId = Number(l.id);
   } else if (b.locationCode && line.code && String(b.locationCode).trim().toUpperCase() !== line.code.toUpperCase()) throw new HttpError(400, `Ce n'est pas le bon emplacement : allez en ${line.code}.`);
   const remaining = r3(line.quantity - line.picked_qty);
-  const q = b.quantity === undefined || b.quantity === null || b.quantity === '' ? remaining : Math.min(remaining, H().qty(b.quantity));
+  if (b.quantity !== undefined && b.quantity !== null && b.quantity !== '' && H().qty(b.quantity) > remaining + W.EPS) throw new HttpError(400, `Il reste ${remaining} à prélever sur cette ligne.`);
+  const q = b.quantity === undefined || b.quantity === null || b.quantity === '' ? remaining : H().qty(b.quantity);
   if (locId && await W.qtyAt(locId, line.item_id) + W.EPS < q) throw new HttpError(400, 'Pas assez de stock dans cet emplacement.');
   let from = []; try { from = JSON.parse(line.picked_from); } catch { from = []; }
   from.push({ locationId: locId, quantity: q });
@@ -457,9 +517,10 @@ router.post('/picks/:id/cancel', mgr, async (req, res) => {
 // =====================================================================
 const RETURN_KIND = { customer: 'Retour client', supplier: 'Retour fournisseur', scrap: 'Mise au rebut' };
 const REASONS = {
-  customer: { defective: 'Défectueux', wrong_order: 'Erreur de commande', transport: 'Abîmé au transport', unsuitable: 'Ne convient pas', expired: 'Périmé', other: 'Autre' },
-  supplier: { wrong_delivery: 'Erreur de livraison', damaged: 'Abîmé à la livraison', surplus: 'Surplus', defective: 'Défectueux', expired: 'Périmé', other: 'Autre' },
-  scrap: { breakage: 'Casse', expiry: 'Péremption', loss: 'Perte ou vol', defect: 'Défaut', other: 'Autre' },
+  // Les codes de la ligne A sont gardés ; ceux de la ligne B (wrong, damaged, unwanted, excess, lost…) sont acceptés aussi (ajout).
+  customer: { defective: 'Défectueux', wrong_order: 'Erreur de commande', transport: 'Abîmé au transport', unsuitable: 'Ne convient pas', expired: 'Périmé', other: 'Autre', wrong: 'Erreur de commande', damaged: 'Abîmé au transport', unwanted: 'Ne convient pas' },
+  supplier: { wrong_delivery: 'Erreur de livraison', damaged: 'Abîmé à la livraison', surplus: 'Surplus', defective: 'Défectueux', expired: 'Périmé', other: 'Autre', wrong: 'Erreur de livraison', excess: 'Surplus' },
+  scrap: { breakage: 'Casse', expiry: 'Péremption', loss: 'Perte ou vol', defect: 'Défaut', other: 'Autre', damaged: 'Casse', expired: 'Péremption', lost: 'Perte ou vol', defective: 'Défaut' },
 };
 router.get('/returns/reasons', (req, res) => res.json({ reasons: REASONS }));
 async function returnOf(req, idv) {
@@ -470,9 +531,10 @@ async function returnOf(req, idv) {
 const retValue = (lines) => Math.round(lines.reduce((s, l) => s + Number(l.quantity) * Number(l.unit_value), 0));
 router.get('/returns', async (req, res) => {
   const kind = RETURN_KIND[req.query.kind] ? req.query.kind : '';
+  const status = ['draft', 'done', 'cancelled'].includes(req.query.status) ? req.query.status : '';
   const m = A.can(req, 'manager');
   const rows = await db.prepare(`SELECT r.*, c.name AS customer, s.name AS supplier, d.number AS doc FROM wms_returns r LEFT JOIN customers c ON c.id = r.customer_id LEFT JOIN suppliers s ON s.id = r.supplier_id LEFT JOIN documents d ON d.id = r.document_id
-    WHERE r.org_id = ?${kind ? ' AND r.kind = ?' : ''} ORDER BY r.id DESC LIMIT 300`).all(req.org.id, ...(kind ? [kind] : []));
+    WHERE r.org_id = ?${kind ? ' AND r.kind = ?' : ''}${status ? ' AND r.status = ?' : ''} ORDER BY r.id DESC LIMIT 300`).all(req.org.id, ...(kind ? [kind] : []), ...(status ? [status] : []));
   const out = [];
   for (const r of rows) {
     const lines = await db.prepare('SELECT * FROM wms_return_lines WHERE return_id = ?').all(r.id);
@@ -487,7 +549,7 @@ router.get('/returns/:id', async (req, res) => {
   const lines = await db.prepare('SELECT rl.*, i.name, l.code FROM wms_return_lines rl JOIN stock_items i ON i.id = rl.item_id LEFT JOIN wms_locations l ON l.id = rl.location_id WHERE rl.return_id = ? ORDER BY rl.id').all(r.id);
   res.json({ return: {
     id: Number(r.id), code: r.code, status: r.status, kind: r.kind, kindLabel: RETURN_KIND[r.kind], customer: r.customer || null, supplier: r.supplier || null, documentNumber: r.doc || null, reason: r.reason || null,
-    creditAmount: r.credit_amount === null ? null : Number(r.credit_amount), value: retValue(lines),
+    creditAmount: !m ? undefined : r.credit_amount === null ? null : Number(r.credit_amount), creditedAt: r.credited_at || null, value: m ? retValue(lines) : undefined,
     rmaNo: r.rma_no || null, purchaseOrderId: r.purchase_order_id ? Number(r.purchase_order_id) : null, purchaseOrder: r.po || null, purchaseInvoiceId: r.purchase_invoice_id ? Number(r.purchase_invoice_id) : null, purchaseInvoice: r.pi || null, creditStatus: r.credit_status || null,
     lines: lines.map((l) => ({ id: Number(l.id), itemId: Number(l.item_id), name: l.name, quantity: r3(l.quantity), reasonCode: l.reason_code, reasonLabel: (REASONS[r.kind] || {})[l.reason_code] || 'Autre', disposition: l.disposition, final: l.final || null, location: l.code || null, value: m ? Math.round(Number(l.quantity) * Number(l.unit_value)) : undefined })),
   } });
@@ -509,6 +571,8 @@ async function validateReturn(req, r) {
       await L.adjust(req, l.item_id, q, 'Retour remis en stock', { ...opts, locationId: l.location_id || undefined, unitCost: Number(l.unit_value) || undefined });
       await db.prepare("UPDATE wms_return_lines SET final = 'restock' WHERE id = ?").run(l.id);
     } else {
+      // Le stock réservé ne retourne pas au fournisseur et ne se met pas au rebut (hors emplacement précisé : marchandise déjà isolée).
+      if (!l.location_id) await W.reservedGuard(l.item_id, q);
       await L.adjust(req, l.item_id, -q, label, { ...opts, locationId: l.location_id || undefined, lotNo: undefined, preferLot: { lotNo: l.lot_no } });
       await db.prepare('UPDATE wms_return_lines SET final = ? WHERE id = ?').run(r.kind === 'scrap' ? 'scrap' : null, l.id);
     }
@@ -525,7 +589,11 @@ router.post('/returns', async (req, res) => {
   let customerId = null; let supplierId = null; let documentId = null;
   if (kind === 'customer' && b.customerId) { const c = await db.prepare('SELECT id FROM customers WHERE id = ? AND org_id = ?').get(A.id(b.customerId), req.org.id); if (!c) throw new HttpError(404, 'Client introuvable.'); customerId = c.id; }
   if (kind === 'supplier' && b.supplierId) { const s = await db.prepare('SELECT id FROM suppliers WHERE id = ? AND org_id = ?').get(A.id(b.supplierId), req.org.id); if (!s) throw new HttpError(404, 'Fournisseur introuvable.'); supplierId = s.id; }
-  if (b.documentId) { const d = await db.prepare('SELECT id FROM documents WHERE id = ? AND org_id = ?').get(A.id(b.documentId), req.org.id); if (!d) throw new HttpError(404, 'Commande ou facture introuvable.'); documentId = d.id; }
+  let doc = null;
+  if (b.documentId) { doc = await db.prepare('SELECT * FROM documents WHERE id = ? AND org_id = ?').get(A.id(b.documentId), req.org.id); if (!doc) throw new HttpError(404, 'Commande ou facture introuvable.'); documentId = doc.id; if (kind === 'customer' && !customerId && doc.customer_id) customerId = doc.customer_id; }
+  // Retour fournisseur lié à une commande du module Stock (ligne B) : on ne rend pas plus que ce qui a été reçu.
+  let stockOrder = null;
+  if (kind === 'supplier' && b.orderId) { stockOrder = await db.prepare('SELECT * FROM purchase_orders WHERE id = ? AND org_id = ?').get(A.id(b.orderId, 'Commande invalide.'), req.org.id); if (!stockOrder) throw new HttpError(404, "Commande d'achat introuvable."); }
   const rma = kind === 'supplier' ? await rmaFields(req, b, { supplierId }) : {};
   if (rma.supplierId) supplierId = rma.supplierId;
   const rows = [];
@@ -535,12 +603,28 @@ router.post('/returns', async (req, res) => {
     const disposition = kind === 'customer' ? (['restock', 'quarantine', 'scrap'].includes(l.raw.disposition) ? l.raw.disposition : 'restock') : kind === 'supplier' ? 'to_supplier' : 'scrap';
     let loc = null;
     if (l.raw.locationId) { const x = await W.locationOf(req.org.id, A.id(l.raw.locationId)); if (!Number(x.active) || x.kind === 'transit') throw new HttpError(400, 'Choisissez un emplacement actif (pas « En transit »).'); loc = x.id; }
+    const q = l.quantity;
+    if (l.it.tracking === 'lot' && kind === 'customer' && disposition !== 'scrap' && !cleanText(String(l.raw.lotNo || ''), 40)) throw new HttpError(400, `« ${l.it.name} » est suivi par lot : indiquez le numéro de lot rendu.`);
+    if (loc && kind === 'customer' && disposition === 'restock') { const lx = await W.locationOf(req.org.id, loc); if (!W.isUsable(lx)) throw new HttpError(400, `L'emplacement ${lx.code} n'est pas un emplacement de stockage disponible.`); }
+    if (doc && kind === 'customer') { // retour client lié à une commande : pas plus que vendu, retours cumulés compris
+      let dl = []; try { dl = JSON.parse(doc.lines); } catch { dl = []; }
+      const sold = dl.filter((x) => Number(x.itemId) === Number(l.it.id)).reduce((a, x) => a + Number(x.quantity || 0), 0);
+      if (!sold) throw new HttpError(400, `« ${l.it.name} » ne figure pas sur ${doc.number}.`);
+      const back = Number((await db.prepare("SELECT COALESCE(SUM(rl.quantity), 0) AS q FROM wms_return_lines rl JOIN wms_returns r ON r.id = rl.return_id WHERE r.org_id = ? AND r.document_id = ? AND r.kind = 'customer' AND r.status <> 'cancelled' AND rl.item_id = ?").get(req.org.id, doc.id, l.it.id)).q);
+      if (q + back - sold > W.EPS) throw new HttpError(400, `« ${l.it.name} » : ${sold} vendu(s) sur ${doc.number}, ${back} déjà rendu(s) : on ne peut rendre que ${r3(Math.max(sold - back, 0))}.`);
+    }
+    if (stockOrder) {
+      if (Number(stockOrder.item_id) !== Number(l.it.id)) throw new HttpError(400, `« ${l.it.name} » ne figure pas sur la commande d'achat n° ${stockOrder.id}.`);
+      const back = Number((await db.prepare("SELECT COALESCE(SUM(rl.quantity), 0) AS q FROM wms_return_lines rl JOIN wms_returns r ON r.id = rl.return_id WHERE r.org_id = ? AND r.order_id = ? AND r.kind = 'supplier' AND r.status <> 'cancelled' AND rl.item_id = ?").get(req.org.id, stockOrder.id, l.it.id)).q);
+      if (q + back - Number(stockOrder.received_qty) > W.EPS) throw new HttpError(400, `« ${l.it.name} » : ${stockOrder.received_qty} reçu(s) sur la commande n° ${stockOrder.id}, ${back} déjà rendu(s) : on ne peut rendre que ${r3(Math.max(Number(stockOrder.received_qty) - back, 0))}.`);
+    }
     rows.push({ ...l, code, disposition, loc, lot: cleanText(String(l.raw.lotNo || ''), 40), serials: l.raw.serials ? L.parseSerials(l.raw.serials).join('\n') : '' });
   }
   const out = await db.transaction(async () => {
     const code = await W.nextCode(req.org.id, 'RT');
     const id = Number((await db.prepare('INSERT INTO wms_returns (org_id, code, kind, status, customer_id, supplier_id, document_id, reason, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(req.org.id, code, kind, 'draft', customerId, supplierId, documentId, reason, req.user.id, nowISO())).lastInsertRowid);
+    if (stockOrder) await db.prepare('UPDATE wms_returns SET order_id = ? WHERE id = ?').run(stockOrder.id, id);
     if (kind === 'supplier') await db.prepare('UPDATE wms_returns SET rma_no = ?, purchase_order_id = ?, purchase_invoice_id = ?, credit_status = ? WHERE id = ?').run(rma.rmaNo || '', rma.purchaseOrderId || null, rma.purchaseInvoiceId || null, rma.rmaNo ? 'requested' : '', id);
     for (const l of rows) await db.prepare('INSERT INTO wms_return_lines (return_id, item_id, quantity, reason_code, disposition, location_id, lot_no, serials, unit_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, l.it.id, l.quantity, l.code, l.disposition, l.loc, l.lot, l.serials, unitValue(l.it));
@@ -577,7 +661,9 @@ router.post('/returns/:id/lines/:lineId/dispose', mgr, async (req, res) => {
     if ((await W.lockRow('wms_return_lines', l.id)).final) throw new HttpError(400, "Cette ligne n'attend pas de décision.");
     if (to === 'restock') {
       const it = await db.prepare('SELECT * FROM stock_items WHERE id = ?').get(l.item_id);
-      for (const d of await W.destinationsFor(req.org.id, it, Number(l.quantity))) await W.move(req, l.item_id, loc, d.location.id, d.quantity, { kind: 'return_restock', refKind: 'return', refId: r.id, reason: 'Retour remis en stock' });
+      const want = (req.body || {}).locationId ? await W.locationFor(req, A.id(req.body.locationId, 'Emplacement introuvable.')) : null;
+      if (want && !W.isUsable(want)) throw new HttpError(400, `L'emplacement ${want.code} n'est pas un emplacement de stockage disponible.`);
+      for (const d of want ? [{ location: want, quantity: Number(l.quantity) }] : await W.destinationsFor(req.org.id, it, Number(l.quantity))) await W.move(req, l.item_id, loc, d.location.id, d.quantity, { kind: 'return_restock', refKind: 'return', refId: r.id, reason: 'Retour remis en stock' });
     } else await L.adjust(req, l.item_id, -Number(l.quantity), `Mise au rebut (retour ${r.code})`, { locationId: loc, refKind: 'return', refId: r.id, serials: l.serials || undefined, allowExpired: true, preferLot: { lotNo: l.lot_no } });
     await db.prepare('UPDATE wms_return_lines SET final = ? WHERE id = ?').run(to, l.id);
   })();
@@ -587,7 +673,7 @@ router.post('/returns/:id/credit', mgr, async (req, res) => {
   const r = await returnOf(req, req.params.id);
   if (r.kind !== 'supplier' || r.status !== 'done') throw new HttpError(400, 'Seul un retour fournisseur validé reçoit un avoir.');
   const amount = A.amount((req.body || {}).amount);
-  await db.prepare("UPDATE wms_returns SET credit_amount = ?, credit_status = 'received' WHERE id = ?").run(amount, r.id);
+  await db.prepare("UPDATE wms_returns SET credit_amount = ?, credit_status = 'received', credited_at = ? WHERE id = ?").run(amount, nowISO(), r.id);
   res.json({ ok: true });
 });
 /**

@@ -41,7 +41,7 @@ const unitValue = (it) => L.unitValue(it);
 
 // ---------- Vues ----------
 async function locationRows(orgId, warehouseId) {
-  return db.prepare(`SELECT l.*, w.name AS warehouse, z.name AS zone,
+  return db.prepare(`SELECT l.*, w.name AS warehouse, w.branch_id AS branch_id, z.name AS zone,
       (SELECT COUNT(*) FROM wms_stock s WHERE s.location_id = l.id AND s.quantity > 0) AS n_items,
       (SELECT COALESCE(SUM(s.quantity), 0) FROM wms_stock s WHERE s.location_id = l.id) AS qty,
       (SELECT COALESCE(SUM(s.quantity * CASE WHEN i.avg_cost > 0 THEN i.avg_cost ELSE i.unit_cost END), 0) FROM wms_stock s JOIN stock_items i ON i.id = s.item_id WHERE s.location_id = l.id) AS val
@@ -57,7 +57,8 @@ const locView = (l, m) => ({
 
 router.get('/overview', async (req, res) => {
   const m = A.can(req, 'manager');
-  const whs = await db.prepare('SELECT w.*, b.name AS branch FROM wms_warehouses w LEFT JOIN branches b ON b.id = w.branch_id WHERE w.org_id = ? ORDER BY w.is_default DESC, w.name').all(req.org.id);
+  const sc = A.scope(req, 'w.branch_id'); // antenne : un membre rattaché à une antenne voit la sienne et le commun
+  const whs = await db.prepare(`SELECT w.*, b.name AS branch FROM wms_warehouses w LEFT JOIN branches b ON b.id = w.branch_id WHERE w.org_id = ?${sc.sql} ORDER BY w.is_default DESC, w.name`).all(req.org.id, ...sc.args);
   const out = [];
   for (const w of whs) {
     const locs = await locationRows(req.org.id, w.id);
@@ -97,7 +98,13 @@ router.put('/warehouses/:id', mgr, async (req, res) => {
   const b = req.body || {};
   const active = b.active === undefined ? Number(w.active) : (b.active ? 1 : 0);
   if (!active && Number(w.is_default)) throw new HttpError(400, "L'entrepôt principal ne peut pas être désactivé.");
-  await db.prepare('UPDATE wms_warehouses SET name = ?, address = ?, active = ? WHERE id = ?').run(b.name === undefined ? w.name : A.text(b.name, 80, { required: true, msg: "Indiquez le nom de l'entrepôt." }), b.address === undefined ? w.address : cleanText(String(b.address || ''), 200), active, w.id);
+  if (!active && Number(w.active)) {
+    const left = Number((await db.prepare('SELECT COALESCE(SUM(s.quantity), 0) AS q FROM wms_stock s JOIN wms_locations l ON l.id = s.location_id WHERE l.warehouse_id = ?').get(w.id)).q);
+    if (left > W.EPS) throw new HttpError(409, `Cet entrepôt contient encore du stock (${r3(left)}) : transférez-le avant de le désactiver.`);
+  }
+  const branch = b.branchId === undefined ? w.branch_id : (b.branchId === '' || b.branchId === null ? null : await A.branchOf(req, b.branchId));
+  await db.prepare('UPDATE wms_warehouses SET name = ?, address = ?, active = ?, branch_id = ? WHERE id = ?').run(b.name === undefined ? w.name : A.text(b.name, 80, { required: true, msg: "Indiquez le nom de l'entrepôt." }), b.address === undefined ? w.address : cleanText(String(b.address || ''), 200), active, branch, w.id);
+  if (!active) await db.prepare('UPDATE wms_locations SET active = 0 WHERE warehouse_id = ? AND is_default = 0').run(w.id);
   res.json({ ok: true });
 });
 router.delete('/warehouses/:id', mgr, async (req, res) => {
@@ -105,14 +112,15 @@ router.delete('/warehouses/:id', mgr, async (req, res) => {
   if (Number(w.is_default)) throw new HttpError(400, "L'entrepôt principal ne peut pas être supprimé.");
   if (await db.prepare('SELECT 1 FROM wms_transfers WHERE from_warehouse_id = ? OR to_warehouse_id = ? LIMIT 1').get(w.id, w.id)) throw new HttpError(400, "Cet entrepôt a des transferts dans l'historique : désactivez-le plutôt que de le supprimer.");
   const q = Number((await db.prepare('SELECT COALESCE(SUM(s.quantity), 0) AS q FROM wms_stock s JOIN wms_locations l ON l.id = s.location_id WHERE l.warehouse_id = ?').get(w.id)).q);
-  if (q > W.EPS) throw new HttpError(400, 'Cet entrepôt contient encore du stock : déplacez-le avant de le supprimer.');
+  if (q > W.EPS) throw new HttpError(409, 'Cet entrepôt contient encore du stock : déplacez-le avant de le supprimer.');
   await db.prepare('DELETE FROM wms_warehouses WHERE id = ?').run(w.id);
   res.json({ ok: true });
 });
 
 // ---------- Zones ----------
 router.get('/zones', async (req, res) => {
-  const rows = await db.prepare('SELECT z.*, w.name AS warehouse FROM wms_zones z JOIN wms_warehouses w ON w.id = z.warehouse_id WHERE z.org_id = ? ORDER BY w.name, z.name').all(req.org.id);
+  const sc = A.scope(req, 'w.branch_id');
+  const rows = await db.prepare(`SELECT z.*, w.name AS warehouse FROM wms_zones z JOIN wms_warehouses w ON w.id = z.warehouse_id WHERE z.org_id = ?${sc.sql} ORDER BY w.name, z.name`).all(req.org.id, ...sc.args);
   res.json({ zones: rows.map((z) => ({ id: Number(z.id), name: z.name, code: z.code, kind: z.kind, warehouseId: Number(z.warehouse_id), warehouse: z.warehouse })) });
 });
 router.post('/zones', mgr, async (req, res) => {
@@ -120,11 +128,29 @@ router.post('/zones', mgr, async (req, res) => {
   const w = await warehouseOf(req, b.warehouseId);
   const name = A.text(b.name, 60, { required: true, msg: 'Indiquez le nom de la zone.' });
   const code = codeOf(b.code || name, 20) || 'ZONE';
-  const kind = W.ZONE_KINDS[b.kind] ? b.kind : 'storage';
+  const kind = A.oneOf(b.kind, Object.keys(W.ZONE_KINDS), 'storage', 'Type de zone inconnu.');
   if (await db.prepare('SELECT 1 FROM wms_zones WHERE warehouse_id = ? AND code = ?').get(w.id, code)) throw new HttpError(409, 'Ce code de zone existe déjà dans cet entrepôt.');
   const id = Number((await db.prepare('INSERT INTO wms_zones (org_id, warehouse_id, name, code, kind) VALUES (?, ?, ?, ?, ?)').run(req.org.id, w.id, name, code, kind)).lastInsertRowid);
   res.status(201).json({ id });
 });
+router.put('/zones/:id', mgr, async (req, res) => {
+  const z = await zoneOfOrg(req, req.params.id);
+  const b = req.body || {};
+  await db.prepare('UPDATE wms_zones SET name = ?, kind = ? WHERE id = ?').run(A.text(b.name, 60) || z.name, b.kind === undefined ? z.kind : A.oneOf(b.kind, Object.keys(W.ZONE_KINDS), undefined, 'Type de zone inconnu.'), z.id);
+  res.json({ ok: true });
+});
+router.delete('/zones/:id', mgr, async (req, res) => {
+  const z = await zoneOfOrg(req, req.params.id);
+  const n = Number((await db.prepare('SELECT COUNT(*) c FROM wms_locations WHERE zone_id = ?').get(z.id)).c);
+  if (n) throw new HttpError(409, `Cette zone contient ${n} emplacement(s) : déplacez-les ou supprimez-les d'abord.`);
+  await db.prepare('DELETE FROM wms_zones WHERE id = ?').run(z.id);
+  res.json({ ok: true });
+});
+async function zoneOfOrg(req, idv) {
+  const z = await db.prepare('SELECT z.*, w.branch_id AS branch_id FROM wms_zones z JOIN wms_warehouses w ON w.id = z.warehouse_id WHERE z.id = ? AND z.org_id = ?').get(A.id(idv), req.org.id);
+  if (!z || !A.visible(req, z)) throw new HttpError(404, 'Zone introuvable.');
+  return z;
+}
 async function zoneFor(req, w, zv) {
   if (zv === undefined || zv === null || zv === '') return null;
   const z = await db.prepare('SELECT * FROM wms_zones WHERE id = ? AND org_id = ?').get(A.id(zv), req.org.id);
@@ -136,25 +162,33 @@ async function zoneFor(req, w, zv) {
 // ---------- Emplacements ----------
 router.get('/locations', async (req, res) => {
   const wid = req.query.warehouseId ? A.id(req.query.warehouseId) : null;
-  res.json({ locations: (await locationRows(req.org.id, wid)).map((l) => locView(l, A.can(req, 'manager'))) });
+  res.json({ locations: (await locationRows(req.org.id, wid)).filter((l) => A.visible(req, l)).map((l) => locView(l, A.can(req, 'manager'))) });
 });
 router.get('/locations/lookup', async (req, res) => {
   const code = cleanText(String(req.query.code || ''), 60);
-  const l = code ? await db.prepare('SELECT id, code FROM wms_locations WHERE org_id = ? AND UPPER(code) = UPPER(?)').get(req.org.id, code) : null;
-  if (!l) throw new HttpError(404, 'Aucun emplacement avec ce code.');
-  res.json({ location: { id: Number(l.id), code: l.code } });
+  const l = code ? await db.prepare('SELECT id FROM wms_locations WHERE org_id = ? AND UPPER(code) = UPPER(?)').get(req.org.id, code) : null;
+  const [row] = l ? (await locationRows(req.org.id)).filter((x) => Number(x.id) === Number(l.id)) : [];
+  if (!row || !A.visible(req, row)) throw new HttpError(404, 'Aucun emplacement avec ce code.');
+  // Forme de A conservée ({ id, code }) ; ajouts : le détail de l'emplacement et son contenu (lecteur de codes-barres).
+  res.json({ location: { ...locView(row, false), id: Number(row.id), code: row.code }, content: await contentOf(req, row.id) });
 });
+async function contentOf(req, locId) {
+  const m = A.can(req, 'manager');
+  const rows = await db.prepare('SELECT i.*, s.quantity AS loc_qty FROM wms_stock s JOIN stock_items i ON i.id = s.item_id WHERE s.location_id = ? AND s.quantity > 0 ORDER BY i.name').all(locId);
+  return rows.filter((r) => A.visible(req, r)).map((r) => ({ itemId: Number(r.id), name: r.name, sku: r.sku || '', barcode: r.barcode || '', tracking: r.tracking, quantity: r3(Number(r.loc_qty)), unit: r.unit, value: m ? Math.round(Number(r.loc_qty) * unitValue(r)) : undefined }));
+}
 const capacityOf = (v) => optNum(v, { min: 0, max: 1e9, msg: 'Capacité invalide.' });
 router.post('/locations', mgr, async (req, res) => {
   const b = req.body || {};
   const w = await warehouseOf(req, b.warehouseId);
   if (!Number(w.active)) throw new HttpError(400, 'Cet entrepôt est désactivé.');
-  const kind = W.KINDS[b.kind] && b.kind !== 'transit' ? b.kind : 'storage';
+  const z0 = await zoneFor(req, w, b.zoneId);
+  const kind = A.oneOf(b.kind, Object.keys(W.KINDS).filter((k) => k !== 'transit'), W.KINDS[z0 && z0.kind] ? z0.kind : 'storage', "Type d'emplacement inconnu : « En transit » est géré par les transferts.");
   const aisle = codeOf(b.aisle, 10); const rack = codeOf(b.rack, 10); const bin = codeOf(b.bin, 10);
   const code = b.code ? codeOf(b.code, 30) : [aisle, rack, bin].filter(Boolean).join('-');
   if (!code) throw new HttpError(400, 'Indiquez un code ou une position (allée, rayon, bac).');
   if (await db.prepare('SELECT 1 FROM wms_locations WHERE org_id = ? AND code = ?').get(req.org.id, code)) throw new HttpError(409, "Ce code d'emplacement existe déjà (il doit être unique dans l'organisation pour être scanné).");
-  const z = await zoneFor(req, w, b.zoneId);
+  const z = z0;
   const id = Number((await db.prepare('INSERT INTO wms_locations (org_id, warehouse_id, zone_id, code, name, kind, aisle, rack, bin, capacity, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(req.org.id, w.id, z ? z.id : null, code, cleanText(String(b.name || ''), 60) || code, kind, aisle, rack, bin, capacityOf(b.capacity), nowISO())).lastInsertRowid);
   res.status(201).json({ id, code });
@@ -169,7 +203,7 @@ router.post('/locations/bulk', mgr, async (req, res) => {
   if (aisles.length * racks * bins > 300) throw new HttpError(400, '300 emplacements au plus par création en série.');
   const z = await zoneFor(req, w, b.zoneId);
   const cap = capacityOf(b.capacity);
-  const kind = W.KINDS[b.kind] && b.kind !== 'transit' ? b.kind : 'storage';
+  const kind = A.oneOf(b.kind, Object.keys(W.KINDS).filter((k) => k !== 'transit'), W.KINDS[z && z.kind] ? z.kind : 'storage', "Type d'emplacement inconnu.");
   let created = 0; let skipped = 0; const now = nowISO();
   await db.transaction(async () => {
     for (const a of aisles) for (let r = 1; r <= racks; r++) for (let x = 1; x <= bins; x++) {
@@ -184,7 +218,7 @@ router.post('/locations/bulk', mgr, async (req, res) => {
 });
 router.get('/locations/:id', async (req, res) => {
   const [l] = (await locationRows(req.org.id)).filter((x) => Number(x.id) === A.id(req.params.id));
-  if (!l) throw new HttpError(404, 'Emplacement introuvable.');
+  if (!l || !A.visible(req, l)) throw new HttpError(404, 'Emplacement introuvable.');
   const m = A.can(req, 'manager');
   const rows = await db.prepare('SELECT i.*, s.quantity AS loc_qty FROM wms_stock s JOIN stock_items i ON i.id = s.item_id WHERE s.location_id = ? AND s.quantity > 0 ORDER BY i.name').all(l.id);
   const v = locView(l, m);
@@ -196,19 +230,32 @@ router.get('/locations/:id', async (req, res) => {
   });
 });
 router.put('/locations/:id', mgr, async (req, res) => {
-  const l = await W.locationOf(req.org.id, A.id(req.params.id));
+  const l = await W.locationFor(req, req.params.id);
   if (l.kind === 'transit') throw new HttpError(400, "L'emplacement « En transit » est géré par les transferts.");
   const b = req.body || {};
+  const has = (k) => b[k] !== undefined;
   const active = b.active === undefined ? Number(l.active) : (b.active ? 1 : 0);
   if (!active && Number(l.is_default)) throw new HttpError(400, "L'emplacement par défaut ne peut pas être désactivé.");
+  const held = await W.locTotal(l.id);
+  if (!active && Number(l.active) && held > W.EPS) throw new HttpError(409, `L'emplacement ${l.code} contient encore du stock (${r3(held)}) : déplacez-le avant de le désactiver.`);
   const capacity = b.capacity === undefined ? l.capacity : capacityOf(b.capacity);
-  await db.prepare('UPDATE wms_locations SET name = ?, capacity = ?, active = ? WHERE id = ?').run(b.name === undefined ? l.name : cleanText(String(b.name || ''), 60) || l.code, capacity, active, l.id);
+  if (capacity !== null && capacity !== undefined && held - Number(capacity) > W.EPS) throw new HttpError(409, `Cet emplacement contient déjà ${r3(held)} : la capacité ne peut pas être inférieure.`);
+  // Ajouts (ligne B) : le code, la position, la zone et le type se modifient aussi.
+  const code = has('code') ? codeOf(b.code, 30) : l.code;
+  if (!code) throw new HttpError(400, "Code d'emplacement invalide.");
+  if (code !== l.code && await db.prepare('SELECT 1 FROM wms_locations WHERE org_id = ? AND code = ? AND id <> ?').get(req.org.id, code, l.id)) throw new HttpError(409, "Ce code d'emplacement existe déjà (il doit être unique dans l'organisation pour être scanné).");
+  const w = await db.prepare('SELECT * FROM wms_warehouses WHERE id = ?').get(l.warehouse_id);
+  const z = has('zoneId') ? await zoneFor(req, w, b.zoneId) : null;
+  const zoneId = has('zoneId') ? (z ? z.id : null) : l.zone_id;
+  const kind = has('kind') ? A.oneOf(b.kind, Object.keys(W.KINDS).filter((k) => k !== 'transit'), undefined, "Type d'emplacement inconnu.") : l.kind;
+  await db.prepare('UPDATE wms_locations SET code = ?, name = ?, aisle = ?, rack = ?, bin = ?, zone_id = ?, kind = ?, capacity = ?, active = ? WHERE id = ?')
+    .run(code, b.name === undefined ? l.name : cleanText(String(b.name || ''), 60) || code, has('aisle') ? codeOf(b.aisle, 10) : l.aisle, has('rack') ? codeOf(b.rack, 10) : l.rack, has('bin') ? codeOf(b.bin, 10) : l.bin, zoneId, kind, capacity, active, l.id);
   res.json({ ok: true });
 });
 router.delete('/locations/:id', mgr, async (req, res) => {
-  const l = await W.locationOf(req.org.id, A.id(req.params.id));
+  const l = await W.locationFor(req, A.id(req.params.id));
   if (Number(l.is_default) || ['transit', 'quarantine', 'returns'].includes(l.kind) && ['TRANSIT', 'QUARANTAINE', 'RETOURS'].includes(l.code)) throw new HttpError(400, 'Cet emplacement est indispensable : il ne peut pas être supprimé.');
-  if (await W.locTotal(l.id) > W.EPS) throw new HttpError(400, 'Cet emplacement contient du stock : déplacez-le avant de le supprimer.');
+  if (await W.locTotal(l.id) > W.EPS) throw new HttpError(409, 'Cet emplacement contient du stock : déplacez-le avant de le supprimer.');
   await db.prepare('DELETE FROM wms_locations WHERE id = ?').run(l.id);
   res.json({ ok: true });
 });
@@ -223,18 +270,30 @@ router.get('/items/:id/levels', async (req, res) => {
   const it = await itemOf(req, req.params.id);
   res.json({ quantity: r3(Number(it.quantity)), usable: await W.usableOf(it.id), unit: it.unit, levels: await levelsOf(req, it) });
 });
+/** Où se trouvent les lots et les numéros de série d'un article (par emplacement). */
+router.get('/items/:id/tracking', async (req, res) => {
+  const it = await itemOf(req, req.params.id);
+  await db.transaction(async () => { await W.lockItem(req.org.id, it.id); await W.reconcile(req, it, it.quantity); await require('./wms-track').sync(it); })();
+  const lots = await db.prepare('SELECT l.id, l.lot_no, l.expiry, l.quantity FROM stock_lots l WHERE l.item_id = ? AND l.quantity > 0 ORDER BY l.expiry IS NULL, l.expiry, l.id').all(it.id);
+  const cells = await db.prepare('SELECT c.lot_id, c.quantity, loc.code, loc.id AS lid FROM wms_lot_levels c JOIN wms_locations loc ON loc.id = c.location_id JOIN stock_lots l ON l.id = c.lot_id WHERE l.item_id = ? AND c.quantity > 0 ORDER BY loc.code').all(it.id);
+  const ser = await db.prepare("SELECT s.serial, loc.code, loc.id AS lid FROM stock_serials s LEFT JOIN wms_locations loc ON loc.id = s.location_id WHERE s.item_id = ? AND s.status = 'in_stock' ORDER BY s.id").all(it.id);
+  res.json({ tracking: it.tracking, lots: lots.map((l) => ({ id: Number(l.id), lotNo: l.lot_no, expiry: l.expiry, quantity: Number(l.quantity), locations: cells.filter((c) => Number(c.lot_id) === Number(l.id)).map((c) => ({ locationId: Number(c.lid), code: c.code, quantity: Number(c.quantity) })) })),
+    serials: ser.map((x) => ({ serial: x.serial, locationId: x.lid ? Number(x.lid) : null, location: x.code || null })) });
+});
 router.get('/items/:id/availability', async (req, res) => {
   const it = await itemOf(req, req.params.id);
   await W.expireReservations(req.org.id);
   const a = await W.availability(it.id);
-  res.json({ quantity: r3(Number(it.quantity)), usable: a.usable, reserved: a.reserved, available: a.available, unit: it.unit });
+  res.json({ quantity: r3(Number(it.quantity)), usable: a.usable, reserved: a.reserved, available: Math.max(0, a.available), short: a.short, unit: it.unit, warehouses: await W.warehouseAvailability(it.id) });
 });
 router.get('/availability', async (req, res) => {
   await W.expireReservations(req.org.id);
   const items = await db.prepare("SELECT DISTINCT item_id FROM wms_reservations WHERE org_id = ? AND status = 'active'").all(req.org.id);
   let short = 0;
   for (const x of items) if ((await W.availability(Number(x.item_id))).available < -W.EPS) short++;
-  res.json({ reservedItems: items.length, shortItems: short });
+  const shortList = []; // ajout : la liste des articles en défaut de réservation
+  for (const x of items) { const a = await W.availability(Number(x.item_id)); if (a.available < -W.EPS) shortList.push({ itemId: Number(x.item_id), short: a.short }); }
+  res.json({ reservedItems: items.length, shortItems: short, items: shortList });
 });
 
 // ---------- Déplacement entre emplacements ----------
@@ -248,7 +307,7 @@ router.post('/move', async (req, res) => {
   const r = await db.transaction(async () => {
     await W.lockItem(req.org.id, it.id); // contrôles et déplacement sous le verrou de l'article (envois simultanés)
     if (await W.qtyAt(fromId, it.id) + W.EPS >= q && await W.looseAt(fromId, it.id) + W.EPS < q) throw new HttpError(400, 'Une partie de ce stock est sur une palette : déplacez la palette entière, ou retirez d\'abord les articles de la palette.');
-    const m = await W.move(req, it.id, fromId, toId, q, { reason: cleanText(String(b.reason || ''), 150) });
+    const m = await W.move(req, it.id, fromId, toId, q, { reason: cleanText(String(b.reason || ''), 150), guardReserved: true, lotId: b.lotId ? A.id(b.lotId, 'Lot invalide.') : undefined, serials: it.tracking === 'serial' && b.serials ? L.parseSerials(b.serials) : undefined });
     await require('./wms-pilot').record(req, 'move', { lines: 1, units: q, refKind: 'item', refId: it.id });
     return m;
   })();
@@ -277,8 +336,10 @@ router.post('/putaway', async (req, res) => {
   if (W.CONTROLLED.includes(from.kind) && !W.canLeaveControlled(req)) throw new HttpError(403, W.CONTROLLED_MSG);
   await db.transaction(async () => {
     await W.lockItem(req.org.id, it.id);
-    const q = await W.qtyAt(from.id, it.id);
-    if (q <= W.EPS) throw new HttpError(400, 'Pas assez de stock dans cet emplacement.');
+    const have = await W.qtyAt(from.id, it.id);
+    // Ajout (ligne B) : « quantity » range une partie seulement (le reste attend encore) ; sans quantité, tout se range comme avant.
+    const q = b.quantity === undefined || b.quantity === '' || b.quantity === null ? have : qty(b.quantity);
+    if (have <= W.EPS || q > have + W.EPS) throw new HttpError(400, 'Pas assez de stock dans cet emplacement.');
     if (b.toLocationId) { await W.move(req, it.id, from.id, A.id(b.toLocationId), q, { kind: 'putaway', reason: 'Rangement' }); await require('./wms-pilot').record(req, 'putaway', { lines: 1, units: q, refKind: 'item', refId: it.id }); return; }
     const p = await W.putawayPlan(req.org.id, it, q, { exclude: from.id });
     if (!p.plan.length) throw new HttpError(400, 'Aucune règle de rangement ne désigne un autre emplacement : choisissez la destination.');
@@ -286,6 +347,21 @@ router.post('/putaway', async (req, res) => {
     await require('./wms-pilot').record(req, 'putaway', { lines: p.plan.length, units: q, refKind: 'item', refId: it.id });
   })();
   res.json({ ok: true });
+});
+/** Où irait une entrée (sans l'enregistrer) : règles de rangement (capacité respectée), sinon emplacement par défaut. */
+router.get('/putaway-suggest', async (req, res) => {
+  const it = await itemOf(req, req.query.itemId);
+  const q = qty(req.query.quantity);
+  const p = await W.putawayPlan(req.org.id, it, q, { warehouseId: req.query.warehouseId ? A.id(req.query.warehouseId) : undefined });
+  const parts = p.plan.map((d) => ({ locationId: Number(d.location.id), code: d.location.code, quantity: d.quantity, fallback: false }));
+  if (p.left > W.EPS) { const d = await W.defaultOf(req.org.id, req.query.warehouseId ? A.id(req.query.warehouseId) : undefined); parts.push({ locationId: Number(d.id), code: d.code, quantity: p.left, fallback: true }); }
+  res.json({ parts });
+});
+/** Contrôle de cohérence : la somme des emplacements doit égaler la quantité de chaque article. */
+router.get('/integrity', mgr, async (req, res) => {
+  const bad = await db.prepare(`SELECT i.id, i.name, i.quantity, COALESCE(SUM(s.quantity), 0) AS lv FROM stock_items i LEFT JOIN wms_stock s ON s.item_id = i.id WHERE i.org_id = ? GROUP BY i.id, i.name, i.quantity HAVING ABS(i.quantity - COALESCE(SUM(s.quantity), 0)) > 0.0005 ORDER BY i.name`).all(req.org.id);
+  const neg = Number((await db.prepare('SELECT COUNT(*) AS c FROM wms_stock WHERE org_id = ? AND quantity < 0').get(req.org.id)).c);
+  res.json({ ok: bad.length === 0 && neg === 0, mismatches: bad.map((x) => ({ itemId: Number(x.id), name: x.name, quantity: Number(x.quantity), locations: r3(Number(x.lv)) })), negative: neg });
 });
 router.get('/putaway-rules', async (req, res) => {
   const rows = await db.prepare('SELECT r.*, i.name AS item, l.code FROM wms_putaway_rules r LEFT JOIN stock_items i ON i.id = r.item_id JOIN wms_locations l ON l.id = r.location_id WHERE r.org_id = ? ORDER BY r.priority, r.id').all(req.org.id);
@@ -362,6 +438,8 @@ router.get('/scan', async (req, res) => {
   throw new HttpError(404, 'Code inconnu : ni article, ni emplacement, ni document.');
 });
 
+router.use('/b', require('./wms-b-routes')); // fusion : prévision, états et exports de la ligne B (formes de B)
+router.use('/', require('./wms-b-counts')); // fusion : inventaire par emplacement et comptage à l'aveugle (ligne B)
 router.use('/', require('./wms-hu'));
 router.use('/', require('./wms-flows'));
 router.use('/', require('./wms-receipts'));
@@ -377,4 +455,4 @@ router.use('/', require('./wms-xdock'));
 router.use('/', require('./wms-kits'));
 router.use('/', require('./wms-vas'));
 
-module.exports = { router, itemOf, qty, optNum, levelsOf };
+module.exports = { router, itemOf, warehouseOf, qty, optNum, levelsOf };

@@ -1,5 +1,7 @@
 'use strict';
 // Stock WMS (entrepôt) : emplacements, transferts, réservations, retours, coût d'arrivée, ABC, préparation, prévision, états.
+// FUSION A+B : test de B adapté à la couche d'entrepôt de A (voir docs/fusion/matrice/entrepot.md pour la liste des adaptations).
+// Prévision, réapprovisionnement, états et résolution des codes de B sont sous /stock/wms/b/… (formes de B ; les chemins de A sont inchangés).
 // Lancez-le avec : node scripts/test-stock-wms.js
 const fs = require('fs');
 const path = require('path');
@@ -16,12 +18,12 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
 
   // Cohérence : la somme des emplacements doit toujours égaler la quantité des articles (et rien de négatif).
   const coherent = async (label) => {
-    const bad = await dbx.prepare(`SELECT i.id, i.name, i.quantity, COALESCE(SUM(v.quantity), 0) AS lv FROM stock_items i LEFT JOIN wms_levels v ON v.item_id = i.id GROUP BY i.id HAVING ABS(i.quantity - COALESCE(SUM(v.quantity), 0)) > 0.0005`).all();
-    const neg = await dbx.prepare('SELECT COUNT(*) c FROM wms_levels WHERE quantity < 0').get();
+    const bad = await dbx.prepare(`SELECT i.id, i.name, i.quantity, COALESCE(SUM(v.quantity), 0) AS lv FROM stock_items i LEFT JOIN wms_stock v ON v.item_id = i.id GROUP BY i.id HAVING ABS(i.quantity - COALESCE(SUM(v.quantity), 0)) > 0.0005`).all();
+    const neg = await dbx.prepare('SELECT COUNT(*) c FROM wms_stock WHERE quantity < 0').get();
     const negItems = await dbx.prepare('SELECT COUNT(*) c FROM stock_items WHERE quantity < 0').get();
     check(`cohérence (${label}) : somme des emplacements = quantité de chaque article, rien de négatif`, bad.length === 0 && neg.c === 0 && negItems.c === 0, bad);
   };
-  const valueOf = async (orgId) => Number((await dbx.prepare("SELECT COALESCE(SUM(v.quantity * CASE WHEN i.avg_cost > 0 THEN i.avg_cost ELSE i.unit_cost END), 0) v FROM wms_levels v JOIN stock_items i ON i.id = v.item_id WHERE v.org_id = ?").get(orgId)).v);
+  const valueOf = async (orgId) => Number((await dbx.prepare("SELECT COALESCE(SUM(v.quantity * CASE WHEN i.avg_cost > 0 THEN i.avg_cost ELSE i.unit_cost END), 0) v FROM wms_stock v JOIN stock_items i ON i.id = v.item_id WHERE v.org_id = ?").get(orgId)).v);
   const itemsValue = async (orgId) => Number((await dbx.prepare('SELECT COALESCE(SUM(quantity * CASE WHEN avg_cost > 0 THEN avg_cost ELSE unit_cost END), 0) v FROM stock_items WHERE org_id = ?').get(orgId)).v);
   const newItem = async (name, extra = {}) => (await mgr('POST', `${S}/items`, { name, unit: 'pièce', ...extra })).json.id;
   const qtyOf = async (id) => (await dbx.prepare('SELECT quantity FROM stock_items WHERE id = ?').get(id)).quantity;
@@ -32,16 +34,14 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   // LOT 1 · EMPLACEMENTS
   // =====================================================================================================
   // --- Migration sans perte : on rejoue les instructions de données de la migration sur un état « ancien » (stock global sans emplacements).
-  await dbx.exec('DELETE FROM wms_putaway_rules; DELETE FROM wms_moves; DELETE FROM wms_levels; DELETE FROM wms_locations; DELETE FROM wms_zones; DELETE FROM wms_warehouses;');
+  await dbx.exec('DELETE FROM wms_putaway_rules; DELETE FROM wms_moves; DELETE FROM wms_stock; DELETE FROM wms_locations; DELETE FROM wms_zones; DELETE FROM wms_warehouses;');
   const now = new Date().toISOString();
   const ins = async (o, n, q, c) => Number((await dbx.prepare('INSERT INTO stock_items (org_id, name, unit, quantity, min_quantity, unit_cost, created_at, avg_cost) VALUES (?, ?, ?, ?, 0, ?, ?, ?)').run(o, n, 'pièce', q, c, now, c)).lastInsertRowid);
   const leg1 = await ins(org, 'Ancien riz', 12, 300); const leg2 = await ins(org, 'Ancienne huile', 7.5, 1000); const leg3 = await ins(org, 'Ancien vide', 0, 50); const leg4 = await ins(org2, 'Article autre org', 3, 200);
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'db.js'), 'utf8');
-  const mig = src.slice(src.indexOf('/* STOCK WMS · lot 1'));
-  const sqls = [...mig.matchAll(/(INSERT INTO wms_(?:warehouses|locations|levels)[\s\S]*?;)/g)].map((m) => m[1]).filter((q) => /SELECT/.test(q));
-  check('migration : 3 instructions de reprise des données trouvées', sqls.length === 3, sqls.length);
-  for (const q of sqls) await dbx.exec(q);
-  const legacy = await dbx.prepare('SELECT COUNT(*) c, COALESCE(SUM(quantity), 0) q FROM wms_levels').get();
+  // Adaptation A : la reprise sans perte est faite par wms-core.ensure() au premier usage (réglages absents = organisation à initialiser).
+  await dbx.exec('DELETE FROM wms_settings');
+  check('reprise : première lecture de l\'entrepôt (organisation 1 puis 2)', (await mgr('GET', `${W}/overview`)).status === 200 && (await other('GET', `${W2}/overview`)).status === 200);
+  const legacy = await dbx.prepare('SELECT COUNT(*) c, COALESCE(SUM(quantity), 0) q FROM wms_stock').get();
   check('migration : quantités reprises sans perte (12 + 7,5 + 3), article à 0 sans ligne', legacy.c === 3 && near(legacy.q, 22.5), legacy);
   const defs = await dbx.prepare('SELECT org_id, COUNT(*) c FROM wms_locations WHERE is_default = 1 GROUP BY org_id').all();
   check('migration : un emplacement « Principal » par organisation', defs.length >= 2 && defs.every((d) => d.c === 1), defs);
@@ -91,7 +91,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await mgr('POST', `${W}/locations`, { warehouseId: whDla, code: '***' });
   check('code invalide → 400', r.status === 400, r.status);
   r = await mgr('POST', `${W}/locations`, { warehouseId: whDla, zoneId: 99999, code: 'ZZ-1' });
-  check('zone inconnue → 400', r.status === 400, r.status);
+  check('zone inconnue → 404 (adaptation : A répond 404 « Zone introuvable »)', r.status === 404, r.status);
   const A0101 = await locId('A-01-01'); const A0102 = await locId('A-01-02'); const B0101 = await locId('B-01-01'); const PRINC = await locId('PRINCIPAL');
   check('codes générés « allée-rayon-bac » retrouvés par scan', A0101 > 0 && A0102 > 0 && B0101 > 0, [A0101, A0102, B0101]);
 
@@ -241,7 +241,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   await dbx.prepare("UPDATE org_members SET branch_id = ? WHERE org_id = ? AND role = 'member'").run(brY, org);
   r = await mem('GET', `${W}/overview`);
   const names = r.json.warehouses.map((w) => w.code).sort();
-  check('antenne : le membre voit son entrepôt et l\'entrepôt commun, pas celui d\'une autre antenne', JSON.stringify(names) === JSON.stringify(['DLA', 'PRINC', 'YDE']), names);
+  check('antenne : le membre voit son entrepôt et l\'entrepôt commun, pas celui d\'une autre antenne', JSON.stringify(names) === JSON.stringify(['DLA', 'PRINCIPAL', 'YDE']), names);
   r = await mem('GET', `${W}/locations/lookup?code=A-01-01`);
   check('antenne : l\'entrepôt Douala (commun) reste visible', r.status === 200, r.status);
   const bfmLoc = (await mgr('POST', `${W}/locations`, { warehouseId: (await dbx.prepare("SELECT id FROM wms_warehouses WHERE code = 'BFM' AND org_id = ?").get(org)).id, code: 'B-1' })).json.id;
@@ -258,9 +258,9 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   // =====================================================================================================
   const T = `${W}/transfers`;
   const wh = async (code) => (await dbx.prepare('SELECT id FROM wms_warehouses WHERE org_id = ? AND code = ?').get(org, code)).id;
-  const whPrinc = await wh('PRINC'); const whDlaId = await wh('DLA');
+  const whPrinc = await wh('PRINCIPAL'); const whDlaId = await wh('DLA');
   r = await mgr('GET', `${W}/locations?warehouseId=${whDlaId}`);
-  check('un nouvel entrepôt reçoit un emplacement « Réception » par défaut', r.json.locations.some((l) => l.kind === 'reception'), r.json.locations.map((l) => l.code));
+  check('un nouvel entrepôt reçoit un emplacement d\'arrivée par défaut (adaptation : A crée « Principal » du dépôt, B créait une « Réception »)', r.json.locations.some((l) => l.isDefault && l.code === 'DLA-PRINC'), r.json.locations.map((l) => l.code));
   const sac = await newItem('Sac de ciment', { unit: 'sac', unitCost: 5000 });
   await mgr('POST', `${S}/items/${sac}/move`, { kind: 'in', quantity: 40, unitCost: 5000 });
   const huile = await newItem('Huile', { unit: 'litre', unitCost: 1000, tracking: 'lot' });
@@ -283,14 +283,14 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   const tr1 = r.json.id;
   check('demande de transfert créée par un simple membre', r.status === 201 && tr1 > 0, r.json);
   r = await mem('GET', `${T}/${tr1}`);
-  check('numéro TR-AAAA-001, statut « demandé », journal', /^TR-\d{4}-001$/.test(r.json.transfer.code) && r.json.transfer.status === 'requested' && r.json.transfer.journal.length === 1, r.json.transfer);
+  check('numéro TR-AAAA-001, statut « demandé », journal', /^TR-0001$/.test(r.json.transfer.code) && r.json.transfer.status === 'requested' && r.json.transfer.journal.length === 1, r.json.transfer);
   const code1 = r.json.transfer.code;
   r = await mem('POST', `${T}/${tr1}/ship`, {});
   check('droits : un membre n\'expédie pas', r.status === 403, r.status);
   r = await other('GET', `${W2}/transfers/${tr1}`);
   check('isolation : transfert d\'une autre organisation → 404', r.status === 404, r.status);
   r = await mgr('POST', `${T}/${tr1}/receive`, {});
-  check('réception d\'un transfert non expédié → 409', r.status === 409, r.status);
+  check('réception d\'un transfert non expédié → 400 (adaptation : A répond 400)', r.status === 400, r.status);
 
   r = await mgr('POST', `${T}/${tr1}/ship`, { lines: [{ lineId: (await mgr('GET', `${T}/${tr1}`)).json.transfer.lines[0].id, quantity: 99 }] });
   check('expédier plus que demandé → 400', r.status === 400, r.json);
@@ -307,7 +307,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   check('les 15 disponibles se prélèvent', r.status === 200, r.json);
   await mgr('POST', `${S}/items/${sac}/move`, { kind: 'in', quantity: 15, unitCost: 5000 });
   r = await mgr('POST', `${T}/${tr1}/ship`, {});
-  check('double expédition → 409', r.status === 409, r.status);
+  check('double expédition → 400 (adaptation : A répond 400)', r.status === 400, r.status);
   r = await mgr('POST', `${T}/${tr1}/receive`, {});
   check('droits : celui qui a expédié ne reçoit pas (même responsable)', r.status === 403, r.json);
   r = await mem('POST', `${T}/${tr1}/receive`, {});
@@ -319,7 +319,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   const trLines = (await owner('GET', `${T}/${tr1}`)).json.transfer.lines;
   r = await owner('POST', `${T}/${tr1}/receive`, { lines: trLines.map((l) => ({ lineId: l.id, receivedQty: l.itemId === sac ? 30 : l.shippedQty })) });
   check('reçu plus qu\'expédié → 400', r.status === 400, r.json);
-  const dlaRec = (await mgr('GET', `${W}/locations?warehouseId=${whDlaId}`)).json.locations.find((l) => l.kind === 'reception').id;
+  const dlaRec = (await mgr('GET', `${W}/locations?warehouseId=${whDlaId}`)).json.locations.find((l) => l.isDefault).id; // adaptation : emplacement par défaut du dépôt (A)
   const valBeforeRecv = await itemsValue(org);
   r = await owner('POST', `${T}/${tr1}/receive`, { lines: trLines.map((l) => (l.itemId === sac ? { lineId: l.id, receivedQty: 23, reason: 'Sacs éventrés au transport', toLocationId: A0101 } : { lineId: l.id, receivedQty: l.shippedQty })) });
   check('réception avec écart motivé (2 sacs cassés)', r.status === 200 && r.json.gapQty === 2 && r.json.gapValue === 10000, r.json);
@@ -327,19 +327,19 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   lv = await levels(sac);
   check('stock arrivé : 23 sacs à A-01-01, plus rien en transit', lv.levels.find((l) => l.code === 'A-01-01').quantity >= 23 && !lv.levels.some((l) => l.code === 'TRANSIT'), lv);
   lv = await levels(huile);
-  check('huile (par lot) : 10 reçus à l\'emplacement d\'arrivée par défaut (réception DLA)', lv.levels.some((l) => l.code === 'DLA-RECEPTION' && l.quantity === 10), lv);
+  check('huile (par lot) : 10 reçus à l\'emplacement d\'arrivée par défaut (réception DLA)', lv.levels.some((l) => l.code === 'DLA-PRINC' && l.quantity === 10), lv);
   await coherent('réception avec écart');
   check('valorisation : la perte de 10 000 FCFA (2 × 5 000) est la seule baisse', Math.abs(valBeforeRecv - (await itemsValue(org)) - 10000) < 0.01, [valBeforeRecv, await itemsValue(org)]);
   r = await owner('GET', `${T}/${tr1}`);
   check('transfert : statut reçu, écart et motif conservés, journal complet (3 étapes)', r.json.transfer.status === 'received' && r.json.transfer.gapQty === 2 && r.json.transfer.gapValue === 10000 && r.json.transfer.lines.find((l) => l.itemId === sac).gapReason === 'Sacs éventrés au transport' && r.json.transfer.journal.map((e) => e.action).join() === 'requested,shipped,received', r.json.transfer);
   r = await mgr('POST', `${T}/${tr1}/receive`, {});
-  check('double réception → 409', r.status === 409, r.status);
+  check('double réception → 400 (adaptation : A répond 400)', r.status === 400, r.status);
   r = await mem('GET', `${T}/${tr1}`);
   check('un membre ne voit pas la valeur de l\'écart', r.json.transfer.gapValue === undefined, r.json.transfer.gapValue);
   r = await owner('GET', `${O}/accounting/stock-valuation?date=${shift(0)}&nature=goods`);
   check('comptabilité : valeur du stock = somme des emplacements après transfert', Math.abs(r.json.totalValue - (await valueOf(org))) <= r.json.items.length, [r.json.totalValue, await valueOf(org)]);
   r = await mem('GET', `${S}/items/${sac}/moves`);
-  check('journal des mouvements : la perte de transfert y figure', r.json.moves.some((m) => /Écart de transfert/.test(m.reason) && m.delta === -2), r.json.moves.slice(0, 4));
+  check('journal des mouvements : la perte de transfert y figure', r.json.moves.some((m) => /écart/i.test(m.reason) && m.delta === -2), r.json.moves.slice(0, 4));
 
   // Annulation d'une demande, d'un transfert en transit
   r = await mem('POST', T, { fromWarehouseId: whPrinc, toWarehouseId: whDlaId, lines: [{ itemId: sac, quantity: 5 }] });
@@ -347,7 +347,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await mem('POST', `${T}/${tr2}/cancel`, { reason: 'Plus besoin' });
   check('l\'auteur annule sa demande', r.status === 200, r.json);
   r = await mgr('POST', `${T}/${tr2}/ship`, {});
-  check('transfert annulé : plus expédiable → 409', r.status === 409, r.status);
+  check('transfert annulé : plus expédiable → 400 (adaptation : A répond 400)', r.status === 400, r.status);
   r = await mem('POST', T, { fromWarehouseId: whPrinc, toWarehouseId: whDlaId, lines: [{ itemId: sac, quantity: 6 }] });
   const tr3 = r.json.id;
   r = await owner('POST', `${T}/${tr3}/ship`, {});
@@ -384,7 +384,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await mem('GET', `${T}?status=received`);
   check('liste filtrée par statut', r.status === 200 && r.json.transfers.every((x) => x.status === 'received') && r.json.transfers.length >= 2, r.json.transfers.length);
   r = await mgr('DELETE', `${W}/warehouses/${whDlaId}`);
-  check('entrepôt qui a des transferts : suppression refusée', r.status === 409, r.status);
+  check('entrepôt qui a des transferts : suppression refusée (adaptation : A répond 400)', r.status === 400, r.status);
 
   // =====================================================================================================
   // LOT 3 · RÉSERVATIONS
@@ -403,14 +403,14 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await mem('POST', RS, { itemId: clou, quantity: 1, label: 'x', kind: 'manual' });
   check('droits : réservation libre réservée aux responsables', r.status === 403, r.status);
   r = await mem('POST', RS, { itemId: clou, quantity: 16, label: 'Trop' });
-  check('réserver plus que le disponible à promettre (15) → 409', r.status === 409, r.json);
+  check('réserver plus que le disponible à promettre (15) → 400 (adaptation : A répond 400)', r.status === 400, r.json);
   a = await avail(clou);
   check('disponible à promettre = 20 − 5 = 15 ; la quantité en stock ne change pas', a.reserved === 5 && a.available === 15 && a.quantity === 20, a);
   r = await mem('GET', S);
   const cv = r.json.items.find((i) => i.id === clou);
   check('liste du stock : réservé et disponible visibles', cv.reserved === 5 && cv.available === 15 && cv.quantity === 20, cv);
   r = await mem('POST', `${S}/items/${clou}/move`, { kind: 'out', quantity: 16 });
-  check('sortie libre qui mord sur le réservé (16 > 15) → 409', r.status === 409 && /réserv/.test(r.json.error) && (await qtyOf(clou)) === 20, r.json);
+  check('sortie libre qui mord sur le réservé (16 > 15) → 400 (adaptation : A répond 400, test-wms.js le prouve)', r.status === 400 && /réserv/.test(r.json.error) && (await qtyOf(clou)) === 20, r.json);
   r = await mem('POST', `${S}/items/${clou}/move`, { kind: 'out', quantity: 15, reason: 'Vente comptoir' });
   check('sortie libre des 15 disponibles acceptée', r.status === 200 && (await qtyOf(clou)) === 5, r.json);
   await mgr('POST', `${S}/items/${clou}/move`, { kind: 'in', quantity: 15, unitCost: 100 });
@@ -420,7 +420,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await mem('POST', `${RS}/${rsv1}/release`, {});
   check('l\'auteur libère sa demande interne', r.status === 200, r.json);
   r = await mem('POST', `${RS}/${rsv1}/release`, {});
-  check('libérer deux fois → 409', r.status === 409, r.status);
+  check('libérer deux fois → 400 (adaptation : A répond 400)', r.status === 400, r.status);
   a = await avail(clou);
   check('libération : tout redevient disponible', a.reserved === 0 && a.available === 20, a);
 
@@ -439,15 +439,15 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   const ord1 = await mkOrder([{ itemId: planche, label: 'Planche', quantity: 6, price: 2000 }, { itemId: colle, label: 'Colle', quantity: 4, price: 1500 }, { label: 'Livraison', quantity: 1, price: 500 }], 'C-T-0001');
   r = await mem('POST', `${RS}/from-document`, { documentId: ord1 });
   check('droits : réserver pour une commande = responsable', r.status === 403, r.status);
-  r = await mgr('POST', `${RS}/from-document`, { documentId: ord1 });
+  r = await mgr('POST', `${RS}/from-document`, { documentId: ord1, partial: false });
   check('commande avec stock insuffisant (colle : 3 pour 4) → 409, rien de réservé', r.status === 409 && /Colle/.test(r.json.error) && (await avail(planche)).reserved === 0, r.json);
   r = await mgr('POST', `${RS}/from-document`, { documentId: ord1, partial: true });
-  check('réservation partielle : planches 6, colle 3 ; manque signalé ; ligne sans article ignorée', r.status === 201 && r.json.reserved.length === 2 && r.json.short.length === 1 && r.json.short[0].name === 'Colle' && r.json.ignoredLines === 1, r.json);
+  check('réservation partielle : planches 6, colle 3 ; manque signalé ; ligne sans article ignorée', r.status === 200 && r.json.reserved.length === 2 && r.json.short.length === 1 && r.json.short[0].name === 'Colle' && r.json.ignoredLines === 1, r.json);
   a = await avail(planche);
   check('planches : 6 réservées, 4 à promettre', a.reserved === 6 && a.available === 4, a);
   r = await mgr('POST', `${RS}/from-document`, { documentId: ord1, partial: true });
   a = await avail(planche);
-  check('rejouer la réservation ne double rien (6 réservées)', r.status === 201 && a.reserved === 6, a);
+  check('rejouer la réservation ne double rien (6 réservées)', r.status === 200 && a.reserved === 6, a);
   r = await mgr('GET', `${W}/documents/${ord1}/reservations`);
   check('réservations de la commande listées avec son numéro', r.json.reservations.length === 2 && r.json.reservations[0].documentNumber === 'C-T-0001', r.json);
   r = await other('POST', `${W2}/reservations/from-document`, { documentId: ord1 });
@@ -491,7 +491,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await owner('POST', `${O}/crm/documents`, { kind: 'quote', customerId: cust, lines: [{ itemId: colle, label: 'Colle', quantity: 2, price: 1500 }] });
   const qt = r.json.id;
   r = await mgr('POST', `${RS}/from-document`, { documentId: qt });
-  check('un devis réserve du stock', r.status === 201 && (await avail(colle)).reserved === 2, r.json);
+  check('un devis réserve du stock', r.status === 200 && (await avail(colle)).reserved === 2, r.json);
   r = await owner('PUT', `${O}/crm/documents/${qt}`, { status: 'refused' });
   check('devis refusé : réservation libérée', (await avail(colle)).reserved === 0, await avail(colle));
   r = await owner('POST', `${O}/crm/documents`, { kind: 'quote', customerId: cust, lines: [{ itemId: colle, label: 'Colle', quantity: 1, price: 1500 }] });
@@ -566,7 +566,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   check('un membre enregistre un brouillon de retour client', r.status === 201, r.json);
   check('brouillon : le stock n\'a pas bougé', (await qtyOf(cable)) === 12, await qtyOf(cable));
   r = await mem('GET', `${RT}/${ret1}`);
-  check('numéro RET-AAAA-001, lié à la commande, valeurs cachées à un membre', /^RET-\d{4}-001$/.test(r.json.return.code) && r.json.return.documentNumber === 'C-T-0100' && r.json.return.value === undefined, r.json.return);
+  check('numéro RET-AAAA-001, lié à la commande, valeurs cachées à un membre', /^RT-0\d{3}$/.test(r.json.return.code) && r.json.return.documentNumber === 'C-T-0100' && r.json.return.value === undefined, r.json.return);
   r = await mem('POST', `${RT}/${ret1}/validate`, {});
   check('droits : un membre ne valide pas (route de validation)', r.status === 403, r.status);
   r = await mgr('POST', `${RT}/${ret1}/validate`, {});
@@ -577,16 +577,16 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   const mv1 = await moveRows('return', ret1);
   check('le mouvement de stock porte le retour (ref_kind = return) et l\'emplacement', mv1.length === 1 && mv1[0].delta === 3 && mv1[0].location_id === A0102, mv1);
   r = await mgr('POST', `${RT}/${ret1}/validate`, {});
-  check('valider deux fois → 409', r.status === 409, r.status);
+  check('valider deux fois → 400 (adaptation : A répond 400)', r.status === 400, r.status);
   r = await mgr('POST', `${RT}/${ret1}/cancel`, {});
-  check('un retour validé ne s\'annule pas → 409', r.status === 409, r.status);
+  check('un retour validé ne s\'annule pas → 400 (adaptation : A répond 400)', r.status === 400, r.status);
   r = await mem('POST', RT, { kind: 'customer', documentId: ordR, lines: [{ itemId: cable, quantity: 6, disposition: 'restock' }] });
   check('retours cumulés plus grands que la vente (3 + 6 > 8) → 400', r.status === 400, r.json);
   // quarantaine puis décision
   r = await mgr('POST', RT, { kind: 'customer', documentId: ordR, validate: true, lines: [{ itemId: cable, quantity: 5, disposition: 'quarantine', reasonCode: 'defective' }] });
   const ret2 = r.json.id;
   lv = await levels(cable);
-  check('marchandise à contrôler : entrée à l\'emplacement de quarantaine, comptée mais non disponible', r.status === 201 && lv.levels.find((l) => l.code === 'QUA-1').quantity === 5 && lv.quantity === 20 && lv.usable === 15, lv);
+  check('marchandise à contrôler : entrée à l\'emplacement de quarantaine, comptée mais non disponible', r.status === 201 && lv.levels.find((l) => l.code === 'RETOURS').quantity === 5 && lv.quantity === 20 && lv.usable === 15, lv);
   r = await mgr('GET', `${RT}?status=done`);
   check('liste : une décision en attente', r.json.toDecide === 1, r.json.toDecide);
   const l2 = (await mgr('GET', `${RT}/${ret2}`)).json.return.lines[0];
@@ -596,9 +596,9 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   check('remise en stock vers un emplacement non disponible → 400', r.status === 400, r.json);
   r = await mgr('POST', `${RT}/${ret2}/lines/${l2.id}/dispose`, { disposition: 'restock', locationId: A0101 });
   lv = await levels(cable);
-  check('contrôle OK : 5 câbles quittent la quarantaine vers A-01-01, quantité totale inchangée (20)', r.status === 200 && !lv.levels.some((l) => l.code === 'QUA-1') && lv.quantity === 20 && lv.usable === 20, lv);
+  check('contrôle OK : 5 câbles quittent la quarantaine vers A-01-01, quantité totale inchangée (20)', r.status === 200 && !lv.levels.some((l) => l.code === 'RETOURS') && lv.quantity === 20 && lv.usable === 20, lv);
   r = await mgr('POST', `${RT}/${ret2}/lines/${l2.id}/dispose`, { disposition: 'scrap' });
-  check('une ligne déjà décidée → 409', r.status === 409, r.status);
+  check('une ligne déjà décidée → 400 (adaptation : A répond 400)', r.status === 400, r.status);
   await coherent('retours client');
   // quarantaine puis rebut
   r = await mgr('POST', RT, { kind: 'customer', customerId: cust, validate: true, lines: [{ itemId: cable, quantity: 2, disposition: 'quarantine', reasonCode: 'damaged' }] });
@@ -635,10 +635,11 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   // retour fournisseur
   const fourn = Number((await dbx.prepare("INSERT INTO suppliers (org_id, name, created_at) VALUES (?, 'Fournisseur Eto', ?)").run(org, new Date().toISOString())).lastInsertRowid);
   r = await mem('POST', RT, { kind: 'supplier', lines: [{ itemId: cable, quantity: 2 }] });
-  check('retour fournisseur sans fournisseur → 400', r.status === 400, r.status);
+  check('retour fournisseur sans fournisseur → accepté (adaptation : A le permet, test-wms.js le prouve)', r.status === 201, r.status);
+  const nSup0 = (await dbx.prepare("SELECT COUNT(*) c FROM wms_returns WHERE kind = 'supplier'").get()).c;
   r = await mgr('POST', RT, { kind: 'supplier', supplierId: fourn, reason: 'Gaine fendue', validate: true, lines: [{ itemId: cable, quantity: 4, reasonCode: 'defective' }, { itemId: planche, quantity: 99 }] });
   check('retour fournisseur : une ligne impossible (stock insuffisant) annule tout', r.status === 400 && (await qtyOf(cable)) === 20, r.json);
-  check('aucun document ni mouvement laissé par l\'échec', (await dbx.prepare("SELECT COUNT(*) c FROM wms_returns WHERE kind = 'supplier'").get()).c === 0, true);
+  check('aucun document ni mouvement laissé par l\'échec', (await dbx.prepare("SELECT COUNT(*) c FROM wms_returns WHERE kind = 'supplier'").get()).c === nSup0, true);
   r = await mgr('POST', RT, { kind: 'supplier', supplierId: fourn, reason: 'Gaine fendue', validate: true, lines: [{ itemId: cable, quantity: 4, reasonCode: 'defective' }] });
   const ret4 = r.json.id;
   check('retour fournisseur validé : 4 câbles sortis (16)', r.status === 201 && (await qtyOf(cable)) === 16, r.json);
@@ -669,7 +670,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await mem('POST', `${RT}/${ret5}/cancel`, {});
   check('l\'auteur annule son brouillon', r.status === 200 && (await qtyOf(cable)) === 13, r.json);
   r = await mgr('POST', `${RT}/${ret5}/validate`, {});
-  check('un brouillon annulé ne se valide pas → 409', r.status === 409, r.status);
+  check('un brouillon annulé ne se valide pas → 400 (adaptation : A répond 400)', r.status === 400, r.status);
   r = await other('GET', `${W2}/returns/${ret1}`);
   check('isolation : retour d\'une autre organisation → 404', r.status === 404, r.status);
   r = await other('GET', `${W2}/returns`);
@@ -704,7 +705,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await mgr('POST', RC, { reference: 'BL-778', note: 'Conteneur Douala', locationId: A0101, lines: [{ itemId: pP, quantity: 10, unitCost: 100, weight: 2 }, { itemId: pQ, quantity: 5, unitCost: 400, weight: 4 }],
     costs: [{ kind: 'transport', label: 'Camion Douala-Yaoundé', amount: 300, basis: 'value' }, { kind: 'customs', amount: 450, basis: 'quantity' }, { kind: 'handling', amount: 100, basis: 'weight' }] });
   const rec1 = r.json.id;
-  check('réception multi-lignes avec 3 coûts d\'arrivée', r.status === 201 && /^REC-\d{4}-001$/.test(r.json.code) && r.json.costs.length === 3, r.json);
+  check('réception multi-lignes avec 3 coûts d\'arrivée', r.status === 201 && /^RC-\d{4}$/.test(r.json.code) && r.json.costs.length === 3, r.json);
   check('stock : 20 pneus, 5 chambres, à l\'emplacement choisi', (await qtyOf(pP)) === 20 && (await qtyOf(pQ)) === 5 && (await levels(pQ)).levels[0].code === 'A-01-01', await levels(pQ));
   check('coût moyen pneu : (10 × 100 + 10 × 100 + 450) / 20 = 122,5 ; chambre : (5 × 400 + 400) / 5 = 480', (await avg(pP)) === 122.5 && (await avg(pQ)) === 480, [await avg(pP), await avg(pQ)]);
   check('valeur du stock : +3 000 de marchandises +850 de coûts incorporés', Math.abs((await itemsValue(org)) - valBeforeRec - 3850) < 0.01, [valBeforeRec, await itemsValue(org)]);
@@ -761,7 +762,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await mgr('GET', `${RC}/purchase-candidates`);
   check('une réception d\'achat déjà rattachée n\'est plus proposée', !r.json.receipts.some((x) => x.id === prId), r.json);
   r = await mgr('POST', `${RC}/from-purchase`, { purchaseReceiptId: prId, costs: [] });
-  check('même réception d\'achat rattachée deux fois → 409', r.status === 409, r.status);
+  check('même réception d\'achat rattachée deux fois → 400 (adaptation : A répond 400)', r.status === 400, r.status);
   r = await mgr('POST', `${RC}/from-purchase`, { purchaseReceiptId: 99999 });
   check('réception d\'achat inconnue → 404', r.status === 404, r.status);
   r = await other('GET', `${W2}/receipts/${rec1}`);
@@ -858,8 +859,8 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   check('droits : un membre ne crée pas de liste de préparation', r.status === 403, r.status);
   r = await mgr('POST', PK, { documentId: ordP, lines: [] , warehouseId: 99999 });
   check('entrepôt inconnu → 404', r.status === 404, r.status);
-  r = await mgr('POST', PK, { lines: [{ itemId: savon, quantity: 100 }] });
-  check('préparer plus que le stock → 409, rien créé', r.status === 409 && (await dbx.prepare('SELECT COUNT(*) c FROM wms_picks').get()).c === 0, r.json);
+  r = await mgr('POST', PK, { lines: [{ itemId: savon, quantity: 100 }], strict: true });
+  check('préparer plus que le stock (strict) → 409, rien créé', r.status === 409 && (await dbx.prepare('SELECT COUNT(*) c FROM wms_picks').get()).c === 0, r.json);
   r = await mgr('POST', PK, { documentId: ordP, assignedTo: 999999 });
   check('personne assignée inconnue → 400', r.status === 400, r.status);
   const memberId = (await dbx.prepare("SELECT user_id FROM org_members WHERE org_id = ? AND role = 'member'").get(org)).user_id;
@@ -868,13 +869,13 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   check('liste créée depuis la commande, confiée à un membre, urgente', r.status === 201 && pk1 > 0, r.json);
   r = await mem('GET', `${PK}/${pk1}`);
   const P1 = r.json.pick;
-  check('numéro PREP-AAAA-001, client et commande rappelés', /^PREP-\d{4}-001$/.test(P1.code) && P1.documentNumber === 'C-T-0200' && P1.customer === 'Client Ndi' && P1.priorityLabel === 'Urgente', P1);
+  check('numéro PREP-AAAA-001, client et commande rappelés', /^PR-\d{4}$/.test(P1.code) && P1.documentNumber === 'C-T-0200' && P1.customer === 'Client Ndi' && P1.priorityLabel === 'Urgente', P1);
   check('4 lignes : savon 6 en préparation + 2 ailleurs, lessive 3 (la ligne sans article est ignorée)', P1.lines.length === 3 && P1.lines.filter((l) => l.itemId === savon).reduce((a, l) => a + l.quantity, 0) === 8 && P1.lines.find((l) => l.location === 'PICK-01').quantity === 6, P1.lines.map((l) => [l.location, l.name, l.quantity]));
   const codes = P1.lines.map((l) => l.location);
-  check('parcours : emplacements dans l\'ordre naturel allée → rayon → bac', JSON.stringify(codes) === JSON.stringify([...codes].sort((x, y) => x.localeCompare(y, 'fr', { numeric: true }))), codes);
+  check('parcours : emplacements dans l\'ordre allée → rayon → bac (adaptation : A met d\'abord les emplacements sans position, comme PICK-01)', JSON.stringify(codes) === JSON.stringify(['PICK-01', 'A-01-01', 'A-01-02']), codes);
   a = await avail(savon);
   check('créer la liste met le stock de côté : savon 8 réservé, 28 à promettre', a.reserved === 8 && a.available === 28 && a.quantity === 36, a);
-  r = await mgr('POST', PK, { lines: [{ itemId: savon, quantity: 30 }] });
+  r = await mgr('POST', PK, { lines: [{ itemId: savon, quantity: 30 }], strict: true });
   check('une autre liste ne peut pas prendre le stock réservé (30 > 28 libres) → 409', r.status === 409, r.json);
   r = await mem('GET', `${PK}?mine=1`);
   check('le préparateur voit ses listes', r.json.picks.length === 1 && r.json.waiting === 1, r.json);
@@ -883,9 +884,9 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   const ln = Object.fromEntries(P1.lines.map((l) => [`${l.itemId}:${l.location}`, l]));
   const lPick = P1.lines.find((l) => l.location === 'PICK-01'); const lLess = P1.lines.find((l) => l.itemId === lessive); const lOther = P1.lines.find((l) => l.itemId === savon && l.location !== 'PICK-01');
   r = await mem('POST', `${PK}/${pk1}/lines/${lPick.id}/confirm`, { quantity: 6, itemCode: 'FAUX-CODE' });
-  check('scan d\'un mauvais article → 400', r.status === 400 && /Mauvais article/.test(r.json.error), r.json);
+  check('scan d\'un mauvais article → 400', r.status === 400 && /bon article/.test(r.json.error), r.json);
   r = await mem('POST', `${PK}/${pk1}/lines/${lPick.id}/confirm`, { quantity: 6, itemCode: 'SAV-0001', locationCode: 'A-01-01' });
-  check('scan d\'un mauvais emplacement → 400', r.status === 400 && /Mauvais emplacement/.test(r.json.error), r.json);
+  check('scan d\'un mauvais emplacement → 400', r.status === 400 && /bon emplacement/.test(r.json.error), r.json);
   r = await mem('POST', `${PK}/${pk1}/lines/${lPick.id}/confirm`, { quantity: 7 });
   check('prélever plus que prévu → 400', r.status === 400, r.json);
   r = await mem('POST', `${PK}/${pk1}/lines/${lPick.id}/confirm`, { quantity: 6, itemCode: 'SAV-0001', locationCode: 'pick-01' });
@@ -897,7 +898,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await mem('POST', `${PK}/${pk1}/complete`, { allowShort: true });
   check('liste terminée avec un manque accepté (1 savon sur 2 prélevé)', r.status === 200, r.json);
   r = await mem('GET', `${PK}/${pk1}`);
-  check('liste « préparée », manque signalé', r.json.pick.status === 'picked' && r.json.pick.short === true, r.json.pick);
+  check('liste « préparée », manque signalé (adaptation : A signale le manque sur les lignes)', r.json.pick.status === 'picked' && r.json.pick.lines.some((l) => l.short), r.json.pick);
   check('rien n\'est sorti du stock avant l\'expédition', (await qtyOf(savon)) === 36 && (await qtyOf(lessive)) === 5, [await qtyOf(savon), await qtyOf(lessive)]);
   r = await mem('POST', `${PK}/${pk1}/issue`, {});
   check('droits : un membre n\'expédie pas', r.status === 403, r.status);
@@ -909,22 +910,22 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   check('sorties prises dans les emplacements de la liste (PICK-01 vidé)', !lv.levels.some((l) => l.code === 'PICK-01'), lv.levels.map((l) => [l.code, l.quantity]));
   check('valorisation : −7 × 300 − 3 × 900 = −4 800', Math.abs(valBeforeIssue - (await itemsValue(org)) - 4800) < 0.01, [valBeforeIssue, await itemsValue(org)]);
   a = await avail(savon);
-  check('la réservation de la commande est consommée pour les 7 expédiés (reste 1 réservé)', a.reserved === 1 && a.quantity === 29, a);
+  check('la réservation de la commande est consommée à l\'expédition (adaptation : A solde toute la réservation, B gardait 1 réservé pour le manque)', a.reserved === 0 && a.quantity === 29, a);
   const mvPk = await moveRows('pick', pk1);
   check('mouvements liés à la liste (ref_kind = pick), un par emplacement', mvPk.length === 3 && mvPk.every((m) => m.delta < 0 && m.location_id), mvPk);
   r = await mgr('POST', `${PK}/${pk1}/issue`, {});
-  check('double expédition → 409', r.status === 409, r.status);
+  check('double expédition → 400 (adaptation : A répond 400)', r.status === 400, r.status);
   r = await mgr('POST', `${PK}/${pk1}/cancel`, {});
-  check('une liste expédiée ne s\'annule pas → 409', r.status === 409, r.status);
+  check('une liste expédiée ne s\'annule pas → 400 (adaptation : A répond 400)', r.status === 400, r.status);
   await coherent('expédition de liste');
   // Liste libre : réserve pour elle-même, annulation libère
   r = await mgr('POST', PK, { label: 'Atelier', lines: [{ itemId: savon, quantity: 5 }] });
   const pk2 = r.json.id;
   a = await avail(savon);
-  check('liste libre : 5 mis de côté (6 réservés au total)', r.status === 201 && a.reserved === 6, a);
+  check('liste libre : 5 mis de côté (adaptation : A, 5 réservés au total)', r.status === 201 && a.reserved === 5, a);
   r = await mgr('POST', `${PK}/${pk2}/cancel`, {});
   a = await avail(savon);
-  check('annulation : réservation libérée (retour à 1)', r.status === 200 && a.reserved === 1, a);
+  check('annulation : réservation libérée (adaptation : retour à 0)', r.status === 200 && a.reserved === 0, a);
   r = await mgr('POST', `${PK}/${pk2}/start`, {});
   check('démarrer une liste annulée → 409', r.status === 409, r.status);
   // Liste libre expédiée : la réservation de la liste est consommée
@@ -935,10 +936,10 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   await mgr('POST', `${PK}/${pk3}/complete`, {});
   r = await mgr('POST', `${PK}/${pk3}/issue`, {});
   a = await avail(savon);
-  check('liste libre expédiée : 4 sortis, plus de réservation de la liste', r.status === 200 && a.quantity === 25 && a.reserved === 1, a);
+  check('liste libre expédiée : 4 sortis, plus de réservation de la liste', r.status === 200 && a.quantity === 25 && a.reserved === 0, a);
   // Concurrence : deux listes simultanées sur les 3 derniers articles libres
   const rare = await mkItem('Pièce rare', 3);
-  const cp = await Promise.all([1, 2, 3].map((n) => mgr('POST', PK, { label: `Course ${n}`, lines: [{ itemId: rare, quantity: 2 }] })));
+  const cp = await Promise.all([1, 2, 3].map((n) => mgr('POST', PK, { label: `Course ${n}`, lines: [{ itemId: rare, quantity: 2 }], strict: true })));
   check('concurrence : trois listes de 2 sur 3 en stock → une seule passe', cp.filter((x) => x.status === 201).length === 1, cp.map((x) => x.status));
   a = await avail(rare);
   check('concurrence : jamais plus de réservé que de stock', a.reserved === 2 && a.available === 1, a);
@@ -946,21 +947,21 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await mgr('POST', PK, { label: 'Substitution', lines: [{ itemId: lessive, quantity: 1 }] });
   const pk4 = r.json.id; const lines4 = (await mgr('GET', `${PK}/${pk4}`)).json.pick.lines[0];
   r = await mgr('POST', `${PK}/${pk4}/lines/${lines4.id}/confirm`, { quantity: 1, fromLocationId: B0101 });
-  check('prendre dans un emplacement sans cet article → 409', r.status === 409, r.json);
+  check('prendre dans un emplacement sans cet article → 400 (adaptation : A répond 400)', r.status === 400, r.json);
   r = await mgr('POST', `${PK}/${pk4}/cancel`, {});
 
   // Rangement
-  const recLoc = (await mgr('GET', `${W}/locations?warehouseId=${whDlaId}`)).json.locations.find((l) => l.kind === 'reception').id;
+  const recLoc = (await mgr('POST', `${W}/locations`, { warehouseId: whDlaId, code: 'REC-DLA', kind: 'reception' })).json.id; // adaptation : A attend la marchandise dans un emplacement de type « Réception »
   const ranger = await newItem('À ranger', { unitCost: 10 }); const ranger2 = await newItem('À ranger aussi', { unitCost: 10 });
   await mgr('POST', `${S}/items/${ranger}/move`, { kind: 'in', quantity: 12, locationId: recLoc });
   await mgr('POST', `${S}/items/${ranger2}/move`, { kind: 'in', quantity: 4, locationId: recLoc });
   await mgr('POST', `${W}/putaway-rules`, { itemId: ranger, locationId: B0101 });
   r = await mem('GET', `${PK.replace('/picks', '')}/putaway/pending`);
   const tk = r.json.tasks.find((x) => x.itemId === ranger); const tk2 = r.json.tasks.find((x) => x.itemId === ranger2);
-  check('rangement : 2 articles attendent en réception ; la règle propose B-01-01 pour le premier, l\'emplacement par défaut pour le second', tk && tk.suggestion[0].code === 'B-01-01' && !tk.suggestion[0].fallback && tk2 && tk2.suggestion[0].code === 'PRINCIPAL' && tk2.suggestion[0].fallback === true, r.json.tasks);
+  check('rangement : 2 articles attendent en réception ; la règle propose B-01-01 pour le premier, l\'emplacement par défaut pour le second', tk && tk.suggestion[0].code === 'B-01-01' && !tk.suggestion[0].fallback && tk2 && tk2.suggestion.length === 0, r.json.tasks);
   r = await mem('POST', `${W}/putaway`, { itemId: ranger2, fromLocationId: recLoc });
   lv = await levels(ranger2);
-  check('sans règle : rangé à l\'emplacement par défaut', r.status === 200 && lv.levels.length === 1 && lv.levels[0].code === 'PRINCIPAL', lv);
+  check('sans règle : A refuse et demande de choisir la destination (adaptation : A répond 400, B rangeait à l\'emplacement par défaut)', r.status === 400 && /destination/.test(r.json.error), r.json);
   r = await mem('POST', `${W}/putaway`, { itemId: ranger, fromLocationId: recLoc, quantity: 5 });
   lv = await levels(ranger);
   check('rangement partiel suivant la règle : 5 vers B-01-01, 7 attendent encore', r.status === 200 && lv.levels.find((l) => l.code === 'B-01-01').quantity === 5 && lv.levels.find((l) => l.locationId === recLoc).quantity === 7 && lv.quantity === 12, lv);
@@ -974,7 +975,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   // =====================================================================================================
   // LOT 8 · PRÉVISION ET RÉAPPROVISIONNEMENT
   // =====================================================================================================
-  const FC = `${W}/forecast`; const RO = `${W}/reorder`;
+  const FC = `${W}/b/forecast`; const RO = `${W}/b/reorder`;
   const ago = (days) => new Date(Date.now() - days * 86400000).toISOString();
   const mkF = async (name, qty, weekly /* semaine récente d'abord */) => {
     const id = await newItem(name, { unitCost: 100 });
@@ -1005,21 +1006,21 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   check('article créé aujourd\'hui : moyenné sur 1 semaine (14), pas sur 8', r.json.weeks === 1 && r.json.avgWeekly === 14, r.json);
 
   // Réapprovisionnement : point de commande = demande pendant le délai + stock de sécurité
-  r = await mgr('PUT', `${W}/items/${f1}/params`, { leadDays: 10 });
+  r = await mgr('PUT', `${W}/b/items/${f1}/params`, { leadDays: 10 });
   check('délai fournisseur fixé sur l\'article', r.status === 200 && r.json.params.leadDays === 10, r.json);
   r = await mgr('GET', RO);
   let sg = r.json.suggestions.find((x) => x.itemId === f1);
   const sdw = Math.sqrt((8 * 25) / 7); const safety = 1.6449 * sdw * Math.sqrt(10 / 7); const rop = (15 / 7) * 10 + safety;
   check('suggestion : stock de sécurité calculé 10,5 ; point de commande 31,9 ; délai de l\'article', sg && sg.safetyStock === Math.round(safety * 10) / 10 && sg.reorderPoint === Math.round(rop * 10) / 10 && sg.leadDays === 10 && sg.leadSource === 'article' && sg.safetySource === 'calculé', sg);
   check('suggestion : commander jusqu\'à ROP + 14 jours de demande = ⌈61,9 − 25⌉ = 37, urgence « bientôt »', sg.toOrder === Math.ceil(rop + (15 / 7) * 14 - 25) && sg.toOrder === 37 && sg.urgency === 'soon', sg);
-  r = await mgr('PUT', `${W}/items/${f1}/params`, { orderMultiple: 12 });
+  r = await mgr('PUT', `${W}/b/items/${f1}/params`, { orderMultiple: 12 });
   r = await mgr('GET', RO);
   sg = r.json.suggestions.find((x) => x.itemId === f1);
   check('multiple de commande 12 : 37 → 48', sg.toOrder === 48, sg.toOrder);
-  r = await mgr('PUT', `${W}/items/${f1}/params`, { orderMultiple: null, safetyStock: 0 });
+  r = await mgr('PUT', `${W}/b/items/${f1}/params`, { orderMultiple: null, safetyStock: 0 });
   r = await mgr('GET', RO);
   check('stock de sécurité fixé à 0 : point de commande 21,4 < position 25 → plus de suggestion', !r.json.suggestions.some((x) => x.itemId === f1), r.json.suggestions.map((x) => x.name));
-  r = await mgr('PUT', `${W}/items/${f1}/params`, { safetyStock: null });
+  r = await mgr('PUT', `${W}/b/items/${f1}/params`, { safetyStock: null });
   // stock réservé : disponible à promettre diminue la position
   const rsF = (await mgr('POST', RS, { itemId: f1, quantity: 10, label: 'Boulangerie', kind: 'manual' })).json.id;
   r = await mgr('GET', RO);
@@ -1060,21 +1061,21 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await owner('PUT', `${W}/settings`, { forecastWeeks: 8 });
   // validation
   for (const [lab, body] of [['délai non entier', { leadDays: 2.5 }], ['délai négatif', { leadDays: -1 }], ['multiple nul', { orderMultiple: 0 }], ['stock de sécurité négatif', { safetyStock: -3 }]]) {
-    r = await mgr('PUT', `${W}/items/${f1}/params`, body);
+    r = await mgr('PUT', `${W}/b/items/${f1}/params`, body);
     check(`paramètre refusé : ${lab}`, r.status === 400, [r.status, r.json]);
   }
-  r = await mem('PUT', `${W}/items/${f1}/params`, { leadDays: 1 });
+  r = await mem('PUT', `${W}/b/items/${f1}/params`, { leadDays: 1 });
   check('droits : les paramètres d\'article sont réservés aux responsables', r.status === 403, r.status);
-  r = await other('GET', `${W2}/forecast/${f1}`);
+  r = await other('GET', `${W2}/b/forecast/${f1}`);
   check('isolation : prévision d\'un article d\'une autre organisation → 404', r.status === 404, r.status);
-  r = await other('GET', `${W2}/reorder`);
+  r = await other('GET', `${W2}/b/reorder`);
   check('isolation : suggestions de l\'autre organisation sans nos articles', r.status === 200 && !r.json.suggestions.some((x) => x.itemId === f1), r.status);
   await coherent('fin du lot 8');
 
   // =====================================================================================================
   // LOT 10 · ÉTATS, EXPORTS CSV, CODES SCANNÉS
   // =====================================================================================================
-  const RP = `${W}/reports`;
+  const RP = `${W}/b/reports`;
   r = await mem('GET', `${RP}/valuation`);
   check('droits : la valorisation est réservée aux responsables', r.status === 403, r.status);
   r = await mgr('GET', `${RP}/valuation`);
@@ -1091,7 +1092,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   await mgr('POST', `${S}/items/${evil}/move`, { kind: 'in', quantity: 1, unitCost: 5 });
   r = await mgr('GET', `${RP}/valuation?format=csv`);
   check('export CSV : une cellule qui commence par « = » est neutralisée (pas de formule)', r.text.includes(`;"'=HYPERLINK(`) && !/;"?=HYPERLINK/.test(r.text), r.text.split('\n').find((l) => /HYPERLINK/.test(l)));
-  r = await other('GET', `${W2}/reports/valuation`);
+  r = await other('GET', `${W2}/b/reports/valuation`);
   check('isolation : l\'autre organisation ne voit pas nos lignes', r.status === 200 && !r.json.lines.some((l) => l.item === 'Riz parfumé'), r.status);
 
   // Rotation
@@ -1134,7 +1135,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   // Journal des mouvements
   r = await mem('GET', `${RP}/moves?itemId=${sac}`);
   check('journal : un membre le lit, sans valeurs', r.status === 200 && r.json.moves.length > 3 && r.json.moves.every((m) => m.value === undefined), r.json.moves.length);
-  check('journal : entrées, sorties et déplacements internes réunis (transfert, perte)', r.json.moves.some((m) => m.type === 'internal' && /Transfert/.test(m.label)) && r.json.moves.some((m) => m.type === 'out' && /Écart de transfert/.test(m.reason)) && r.json.moves.some((m) => m.type === 'in'), r.json.moves.map((m) => m.label));
+  check('journal : entrées, sorties et déplacements internes réunis (transfert, perte)', r.json.moves.some((m) => m.type === 'internal' && /Transfert/.test(m.label)) && r.json.moves.some((m) => m.type === 'out' && /écart/i.test(m.reason)) && r.json.moves.some((m) => m.type === 'in'), r.json.moves.map((m) => m.label));
   const dates = r.json.moves.map((m) => m.at); check('journal : du plus récent au plus ancien', JSON.stringify(dates) === JSON.stringify([...dates].sort().reverse()), dates.slice(0, 3));
   r = await mgr('GET', `${RP}/moves?itemId=${sac}&kind=internal`);
   check('journal filtré : seulement les déplacements internes, valeurs visibles pour un responsable', r.json.moves.length >= 3 && r.json.moves.every((m) => m.type === 'internal' && m.value !== undefined), r.json.moves.map((m) => m.type));
@@ -1148,21 +1149,21 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   check('journal : date invalide → 400', r.status === 400, r.status);
   r = await mgr('GET', `${RP}/moves?format=csv&itemId=${sac}`);
   check('journal en CSV', r.status === 200 && /Date;Type;Article/.test(r.text) && r.text.split('\r\n').length > 4, r.text.slice(0, 80));
-  r = await other('GET', `${W2}/reports/moves?itemId=${sac}`);
+  r = await other('GET', `${W2}/b/reports/moves?itemId=${sac}`);
   check('isolation : le journal de l\'autre organisation ne montre pas nos mouvements', r.status === 200 && r.json.moves.length === 0, r.json.count);
 
   // Résolution d'un code scanné
-  r = await mem('GET', `${W}/scan?code=SAV-0001`);
+  r = await mem('GET', `${W}/b/scan?code=SAV-0001`);
   check('scan : code-barres d\'un article', r.status === 200 && r.json.type === 'item' && r.json.id === savon, r.json);
-  r = await mem('GET', `${W}/scan?code=a-01-01`);
+  r = await mem('GET', `${W}/b/scan?code=a-01-01`);
   check('scan : code d\'emplacement', r.json.type === 'location' && r.json.id === A0101, r.json);
-  r = await mem('GET', `${W}/scan?code=${(await mgr('GET', `${PK}/${pk1}`)).json.pick.code}`);
+  r = await mem('GET', `${W}/b/scan?code=${(await mgr('GET', `${PK}/${pk1}`)).json.pick.code}`);
   check('scan : liste de préparation', r.json.type === 'pick' && r.json.id === pk1, r.json);
-  r = await mem('GET', `${W}/scan?code=${code1}`);
+  r = await mem('GET', `${W}/b/scan?code=${code1}`);
   check('scan : transfert', r.json.type === 'transfer' && r.json.id === tr1, r.json);
-  r = await mem('GET', `${W}/scan?code=INCONNU-1`);
+  r = await mem('GET', `${W}/b/scan?code=INCONNU-1`);
   check('scan : code inconnu → 404', r.status === 404, r.status);
-  r = await other('GET', `${W2}/scan?code=SAV-0001`);
+  r = await other('GET', `${W2}/b/scan?code=SAV-0001`);
   check('isolation : un code d\'une autre organisation n\'est pas résolu', r.status === 404, r.status);
   // Retour fournisseur lié à une commande d'achat : pas plus que reçu
   {
@@ -1199,8 +1200,8 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   // =====================================================================================================
   const trackCoh = async (label) => {
     const lotBad = await dbx.prepare(`SELECT l.id FROM stock_lots l WHERE ABS(l.quantity - COALESCE((SELECT SUM(c.quantity) FROM wms_lot_levels c WHERE c.lot_id = l.id), 0)) > 0.0005`).all();
-    const locBad = await dbx.prepare(`SELECT v.item_id, v.location_id FROM wms_levels v JOIN stock_items i ON i.id = v.item_id WHERE i.tracking = 'lot' AND ABS(v.quantity - COALESCE((SELECT SUM(c.quantity) FROM wms_lot_levels c JOIN stock_lots l ON l.id = c.lot_id WHERE l.item_id = v.item_id AND c.location_id = v.location_id), 0)) > 0.0005`).all();
-    const serBad = await dbx.prepare(`SELECT v.item_id, v.location_id FROM wms_levels v JOIN stock_items i ON i.id = v.item_id WHERE i.tracking = 'serial' AND v.quantity <> (SELECT COUNT(*) FROM stock_serials s WHERE s.item_id = v.item_id AND s.status = 'in_stock' AND s.location_id = v.location_id)`).all();
+    const locBad = await dbx.prepare(`SELECT v.item_id, v.location_id FROM wms_stock v JOIN stock_items i ON i.id = v.item_id WHERE i.tracking = 'lot' AND ABS(v.quantity - COALESCE((SELECT SUM(c.quantity) FROM wms_lot_levels c JOIN stock_lots l ON l.id = c.lot_id WHERE l.item_id = v.item_id AND c.location_id = v.location_id), 0)) > 0.0005`).all();
+    const serBad = await dbx.prepare(`SELECT v.item_id, v.location_id FROM wms_stock v JOIN stock_items i ON i.id = v.item_id WHERE i.tracking = 'serial' AND v.quantity <> (SELECT COUNT(*) FROM stock_serials s WHERE s.item_id = v.item_id AND s.status = 'in_stock' AND s.location_id = v.location_id)`).all();
     check(`lots et séries (${label}) : chaque lot et chaque emplacement concordent`, lotBad.length === 0 && locBad.length === 0 && serBad.length === 0, [lotBad, locBad, serBad]);
   };
   const yog = await newItem('Yaourt entrepôt', { tracking: 'lot', unitCost: 200, pickRule: 'fefo' });
@@ -1287,7 +1288,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   r = await mem('POST', `${S}/items/${pile}/move`, { kind: 'out', quantity: 2, locationId: A0101 });
   check('sortie de Douala de 2 → ok', r.status === 200, r.json);
   r = await mem('POST', `${S}/items/${pile}/move`, { kind: 'out', quantity: 6, locationId: PRINC });
-  check('sortie du principal de 6 (5 libres) → 409', r.status === 409, r.json);
+  check('sortie du principal de 6 (5 libres) → 400 (adaptation : la garde « stock réservé » de A, 400, passe avant celle de l\'entrepôt)', r.status === 400, r.json);
   r = await mem('POST', T, { fromWarehouseId: whDlaId, toWarehouseId: whPrinc, lines: [{ itemId: pile, quantity: 1 }] });
   const trW = r.json.id;
   r = await owner('POST', `${T}/${trW}/ship`, {});
@@ -1357,131 +1358,136 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
   await coherent('inventaire de lot');
 
   // =====================================================================================================
-  // VAGUES, PALETTES, COLISAGE
+  // VAGUES, PALETTES, COLISAGE — NON PORTÉ (fusion) : A fournit ses propres vagues (wms-waves : brouillon → lancée → terminée, parcours en serpentin,
+  // dépose, tri), unités de manutention (wms-hu) et colis (wms-ship), prouvés par test-wms4c.js / test-hu.js. Les contrôles de B ci-dessous visent l'API de B
+  // (POST /waves {documentIds} créant des listes d'un coup, /units, /picks/:id/packages) : ils sont conservés tels quels et ne s'exécutent qu'avec WMS_B_VAGUES=1.
+  // Voir docs/fusion/matrice/entrepot.md (« non porté »).
   // =====================================================================================================
+  if (process.env.WMS_B_VAGUES === '1') {
   const WV = `${W}/waves`; const UN = `${W}/units`; const B0102 = await locId('B-01-02');
-  const vgA = await newItem('Vague A', { unitCost: 100, barcode: 'VAG-A-001' }); const vgB = await newItem('Vague B', { unitCost: 200 });
-  await mgr('POST', `${S}/items/${vgA}/move`, { kind: 'in', quantity: 12, unitCost: 100, locationId: A0101 });
-  await mgr('POST', `${S}/items/${vgB}/move`, { kind: 'in', quantity: 6, unitCost: 200, locationId: B0101 });
-  const ordV1 = await mkOrder([{ itemId: vgA, label: 'A', quantity: 3, price: 1 }, { itemId: vgB, label: 'B', quantity: 2, price: 1 }], 'C-V-0001');
-  const ordV2 = await mkOrder([{ itemId: vgA, label: 'A', quantity: 4, price: 1 }, { itemId: vgB, label: 'B', quantity: 1, price: 1 }], 'C-V-0002');
-  const ordV3 = await mkOrder([{ itemId: vgA, label: 'A', quantity: 50, price: 1 }], 'C-V-0003');
-  r = await mem('POST', WV, { documentIds: [ordV1, ordV2] });
-  check('droits : un membre ne crée pas de vague', r.status === 403, r.status);
-  r = await mgr('POST', WV, { documentIds: [ordV1] });
-  check('une vague regroupe au moins 2 commandes → 400', r.status === 400, r.status);
-  const picksBefore = (await dbx.prepare('SELECT COUNT(*) c FROM wms_picks').get()).c;
-  r = await mgr('POST', WV, { documentIds: [ordV1, ordV3] });
-  check('une commande impossible (50 > stock) annule toute la vague : aucune liste créée', r.status === 409 && (await dbx.prepare('SELECT COUNT(*) c FROM wms_picks').get()).c === picksBefore && (await dbx.prepare('SELECT COUNT(*) c FROM wms_waves').get()).c === 0, r.json);
-  a = await avail(vgA);
-  check('rien de réservé après l\'échec', a.reserved === 0, a);
-  r = await mgr('POST', WV, { documentIds: [ordV1, ordV2], label: 'Tournée du matin' });
-  const waveV1 = r.json.id;
-  check('vague de 2 commandes créée', r.status === 201, r.json);
-  r = await mem('GET', `${WV}/${waveV1}`);
-  const WVw = r.json.wave;
-  check('vague VAG-AAAA-001 : 2 listes, lignes regroupées par emplacement (A : 7 en A-01-01, B : 3 en B-01-01) dans l\'ordre du parcours', /^VAG-\d{4}-001$/.test(WVw.code) && WVw.orders.length === 2 && WVw.lines.length === 2 && WVw.lines[0].location === 'A-01-01' && WVw.lines[0].quantity === 7 && WVw.lines[1].quantity === 3 && WVw.lines[0].orders.length === 2, WVw);
-  a = await avail(vgA);
-  check('le stock de la vague est mis de côté (A : 7 réservés)', a.reserved === 7, a);
-  r = await mem('POST', `${WV}/${waveV1}/confirm`, { itemId: vgA, locationId: A0101, quantity: 7, itemCode: 'FAUX' });
-  check('scan d\'un mauvais article → 400, rien prélevé', r.status === 400 && (await dbx.prepare('SELECT COALESCE(SUM(picked_qty), 0) q FROM wms_pick_lines WHERE item_id = ?').get(vgA)).q === 0, r.json);
-  r = await mem('POST', `${WV}/${waveV1}/confirm`, { itemId: vgA, locationId: A0101, quantity: 7, itemCode: 'VAG-A-001', locationCode: 'a-01-01' });
-  check('prélèvement regroupé de 7 : réparti 3 + 4 entre les deux commandes', r.status === 200, r.json);
-  const pl = await dbx.prepare('SELECT picked_qty FROM wms_pick_lines WHERE item_id = ? ORDER BY id').all(vgA);
-  check('réparti 3 et 4', pl.map((x) => x.picked_qty).join() === '3,4', pl);
-  r = await mem('POST', `${WV}/${waveV1}/confirm`, { itemId: vgB, locationId: B0101, quantity: 2 });
-  r = await mem('POST', `${WV}/${waveV1}/complete`, {});
-  check('terminer la vague avec un manque (1 B non prélevé) → 409', r.status === 409, r.json);
-  r = await mem('POST', `${WV}/${waveV1}/confirm`, { itemId: vgB, locationId: B0101, quantity: 5 });
-  check('prélever plus que le reste → 400', r.status === 400, r.json);
-  r = await mem('POST', `${WV}/${waveV1}/confirm`, { itemId: vgB, locationId: B0101 });
-  r = await mem('POST', `${WV}/${waveV1}/complete`, {});
-  check('vague préparée', r.status === 200, r.json);
-  r = await mem('POST', `${WV}/${waveV1}/issue`, {});
-  check('droits : un membre n\'expédie pas la vague', r.status === 403, r.status);
-  r = await other('GET', `${W2}/waves/${waveV1}`);
-  check('isolation : vague d\'une autre organisation → 404', r.status === 404, r.status);
-  // colisage sur la première liste de la vague
-  const pickV1 = (await mgr('GET', `${WV}/${waveV1}`)).json.wave.orders[0].id;
-  r = await mem('GET', `${W}/picks/${pickV1}/packages`);
-  check('colisage : tout est encore à emballer (3 A + 2 B)', r.status === 200 && r.json.unpacked.reduce((a2, x) => a2 + x.q, 0) === 5, r.json);
-  r = await mem('POST', `${W}/picks/${pickV1}/packages`, { weight: 2.5, lines: [{ itemId: vgA, quantity: 4 }] });
-  check('emballer plus que prélevé (4 > 3) → 400', r.status === 400, r.json);
-  r = await mem('POST', `${W}/picks/${pickV1}/packages`, { weight: 2.5, lines: [{ itemId: vgA, quantity: 3 }] });
-  const pkgV1 = r.json.id;
-  check('premier colis (3 A, 2,5 kg)', r.status === 201, r.json);
-  r = await mgr('POST', `${W}/picks/${pickV1}/issue`, {});
-  check('expédier avec un colisage incomplet (2 B pas emballés) → 409', r.status === 409 && /Colisage incomplet/.test(r.json.error), r.json);
-  r = await mem('POST', `${W}/picks/${pickV1}/packages`, { weight: 1, all: true });
-  r = await mem('GET', `${W}/picks/${pickV1}/packages`);
-  check('2e colis avec le reste ; plus rien à emballer, poids total 3,5 kg', r.json.packages.length === 2 && r.json.unpacked.length === 0 && r.json.weight === 3.5 && /^COL-\d{4}-00[12]$/.test(r.json.packages[0].code), r.json);
-  // expédition de la vague : la 2e liste n'a pas de colis (pas obligatoire), la 1re est complète
-  const valBeforeWave = await itemsValue(org);
-  r = await mgr('POST', `${WV}/${waveV1}/issue`, {});
-  check('expédition de la vague : 2 commandes sorties', r.status === 200 && r.json.orders === 2 && (await qtyOf(vgA)) === 5 && (await qtyOf(vgB)) === 3, r.json);
-  check('valorisation : −7 × 100 − 3 × 200 = −1 300', Math.abs(valBeforeWave - (await itemsValue(org)) - 1300) < 0.01, [valBeforeWave, await itemsValue(org)]);
-  r = await mgr('GET', `${WV}/${waveV1}`);
-  check('vague terminée', r.json.wave.status === 'done', r.json.wave.status);
-  r = await mem('DELETE', `${W}/packages/${pkgV1}`);
-  check('un colis d\'une liste expédiée ne se défait plus → 409', r.status === 409, r.status);
-  await coherent('vagues');
-  // annulation d'une vague
-  const ordV4 = await mkOrder([{ itemId: vgA, label: 'A', quantity: 1, price: 1 }, { itemId: vgB, label: 'B', quantity: 1, price: 1 }], 'C-V-0004'); const ordV5 = await mkOrder([{ itemId: vgA, label: 'A', quantity: 1, price: 1 }], 'C-V-0005');
-  r = await mgr('POST', WV, { documentIds: [ordV4, ordV5] });
-  const waveV2 = r.json.id;
-  check('nouvelle vague : 2 A réservés', (await avail(vgA)).reserved === 2, await avail(vgA));
-  a = await avail(vgA);
-  r = await mgr('POST', `${WV}/${waveV2}/cancel`, {});
-  check('annulation d\'une vague : listes annulées, vague annulée ; les commandes gardent leur réservation (elles existent toujours)', r.status === 200 && (await mgr('GET', `${WV}/${waveV2}`)).json.wave.status === 'cancelled' && (await avail(vgA)).reserved === 2, await avail(vgA));
-  await mgr('PUT', `${O}/sales/orders/${ordV4}/status`, { status: 'cancelled' }).catch(() => {});
-  await dbx.prepare("UPDATE documents SET status = 'cancelled' WHERE id IN (?, ?)").run(ordV4, ordV5);
-  check('commandes annulées : réservations libérées', (await avail(vgA)).reserved === 0, await avail(vgA));
-
-  // Palettes
-  r = await mem('POST', UN, { kind: 'bateau', locationId: A0101 });
-  check('type d\'unité inconnu → 400', r.status === 400, r.status);
-  r = await mem('POST', UN, { kind: 'pallet', locationId: A0101, note: 'Palette de test' });
-  const palV = r.json.id;
-  check('un membre crée une palette (code PAL-AAAA-001)', r.status === 201, r.json);
-  r = await mem('GET', `${UN}/${palV}`);
-  check('code de palette et emplacement', /^PAL-\d{4}-001$/.test(r.json.unit.code) && r.json.unit.location === 'A-01-01', r.json.unit);
-  const palCode = r.json.unit.code;
-  r = await mem('POST', `${UN}/${palV}/items`, { itemId: vgA, quantity: 9 });
-  check('ajouter 9 A alors que 5 sont libres → 409', r.status === 409, r.json);
-  r = await mem('POST', `${UN}/${palV}/items`, { itemId: vgA, quantity: 4 });
-  check('ajouter 4 A à la palette', r.status === 200, r.json);
-  r = await mem('POST', `${UN}/${palV}/items`, { itemId: vgA, quantity: 2 });
-  check('2 de plus alors qu\'1 seul est libre → 409', r.status === 409, r.json);
-  r = await mem('POST', `${UN}/${palV}/items`, { itemId: vgA, quantity: 1 });
-  r = await mem('GET', `${UN}/${palV}`);
-  check('cumul : 5 A dans la palette (valeur cachée à un membre)', r.json.unit.items[0].quantity === 5 && r.json.unit.quantity === 5 && r.json.unit.value === undefined, r.json.unit);
-  check('plus rien de libre : 1 de plus → 409', (await mem('POST', `${UN}/${palV}/items`, { itemId: vgA, quantity: 1 })).status === 409, true);
-  r = await mem('POST', UN, { kind: 'carton', locationId: A0101, parentId: palV });
-  const carV = r.json.id;
-  await mem('POST', `${UN}/${carV}/items`, { itemId: vgB, quantity: 0.5 }).catch(() => {});
-  r = await mem('POST', UN, { kind: 'carton', locationId: B0101, parentId: palV });
-  check('un carton sur une palette d\'un autre emplacement → 400', r.status === 400, r.status);
-  r = await mem('POST', `${UN}/${palV}/nest`, { parentId: carV });
-  check('une palette ne se pose pas sur son propre carton → 400', r.status === 400, r.status);
-  r = await mem('POST', `${UN}/${palV}/move`, { toLocationId: B0102 });
-  check('déplacer la palette (5 A) vers B-01-02', r.status === 200, r.json);
-  lv = await levels(vgA);
-  check('le contenu a suivi : 5 A en B-01-02', lv.levels.find((l) => l.code === 'B-01-02').quantity === 5 && lv.quantity === 5 && (await mem('GET', `${UN}/${palV}`)).json.unit.location === 'B-01-02', lv);
-  check('le carton posé sur la palette l\'a suivie', (await mem('GET', `${UN}/${carV}`)).json.unit.location === 'B-01-02', true);
-  await coherent('palette déplacée');
-  // du stock sort autrement : la palette ne peut pas contenir plus que ce qui est là
-  r = await mem('POST', `${S}/items/${vgA}/move`, { kind: 'out', quantity: 3, locationId: B0102 });
-  r = await mem('GET', `${UN}/${palV}`);
-  check('3 A sortis par ailleurs : la palette n\'en contient plus que 2', r.json.unit.items[0].quantity === 2, r.json.unit);
-  r = await mem('GET', `${W}/scan?code=${palCode}`);
-  check('scan d\'une palette', r.json.type === 'unit' && r.json.id === palV, r.json);
-  r = await other('GET', `${W2}/units/${palV}`);
-  check('isolation : palette d\'une autre organisation → 404', r.status === 404, r.status);
-  r = await mem('DELETE', `${UN}/${palV}`);
-  check('dépalettiser : l\'unité disparaît, le stock reste (2 A), le carton est libéré', r.status === 200 && (await qtyOf(vgA)) === 2 && (await mem('GET', `${UN}/${carV}`)).json.unit.parentId === null, r.json);
-  r = await mem('GET', `${UN}?locationId=${B0102}`);
-  check('liste des unités d\'un emplacement', r.status === 200 && r.json.units.some((u) => u.id === carV), r.json.units);
-  await coherent('fin des vagues et palettes');
+    const vgA = await newItem('Vague A', { unitCost: 100, barcode: 'VAG-A-001' }); const vgB = await newItem('Vague B', { unitCost: 200 });
+    await mgr('POST', `${S}/items/${vgA}/move`, { kind: 'in', quantity: 12, unitCost: 100, locationId: A0101 });
+    await mgr('POST', `${S}/items/${vgB}/move`, { kind: 'in', quantity: 6, unitCost: 200, locationId: B0101 });
+    const ordV1 = await mkOrder([{ itemId: vgA, label: 'A', quantity: 3, price: 1 }, { itemId: vgB, label: 'B', quantity: 2, price: 1 }], 'C-V-0001');
+    const ordV2 = await mkOrder([{ itemId: vgA, label: 'A', quantity: 4, price: 1 }, { itemId: vgB, label: 'B', quantity: 1, price: 1 }], 'C-V-0002');
+    const ordV3 = await mkOrder([{ itemId: vgA, label: 'A', quantity: 50, price: 1 }], 'C-V-0003');
+    r = await mem('POST', WV, { documentIds: [ordV1, ordV2] });
+    check('droits : un membre ne crée pas de vague', r.status === 403, r.status);
+    r = await mgr('POST', WV, { documentIds: [ordV1] });
+    check('une vague regroupe au moins 2 commandes → 400', r.status === 400, r.status);
+    const picksBefore = (await dbx.prepare('SELECT COUNT(*) c FROM wms_picks').get()).c;
+    r = await mgr('POST', WV, { documentIds: [ordV1, ordV3] });
+    check('une commande impossible (50 > stock) annule toute la vague : aucune liste créée', r.status === 409 && (await dbx.prepare('SELECT COUNT(*) c FROM wms_picks').get()).c === picksBefore && (await dbx.prepare('SELECT COUNT(*) c FROM wms_waves').get()).c === 0, r.json);
+    a = await avail(vgA);
+    check('rien de réservé après l\'échec', a.reserved === 0, a);
+    r = await mgr('POST', WV, { documentIds: [ordV1, ordV2], label: 'Tournée du matin' });
+    const waveV1 = r.json.id;
+    check('vague de 2 commandes créée', r.status === 201, r.json);
+    r = await mem('GET', `${WV}/${waveV1}`);
+    const WVw = r.json.wave;
+    check('vague VAG-AAAA-001 : 2 listes, lignes regroupées par emplacement (A : 7 en A-01-01, B : 3 en B-01-01) dans l\'ordre du parcours', /^VAG-\d{4}-001$/.test(WVw.code) && WVw.orders.length === 2 && WVw.lines.length === 2 && WVw.lines[0].location === 'A-01-01' && WVw.lines[0].quantity === 7 && WVw.lines[1].quantity === 3 && WVw.lines[0].orders.length === 2, WVw);
+    a = await avail(vgA);
+    check('le stock de la vague est mis de côté (A : 7 réservés)', a.reserved === 7, a);
+    r = await mem('POST', `${WV}/${waveV1}/confirm`, { itemId: vgA, locationId: A0101, quantity: 7, itemCode: 'FAUX' });
+    check('scan d\'un mauvais article → 400, rien prélevé', r.status === 400 && (await dbx.prepare('SELECT COALESCE(SUM(picked_qty), 0) q FROM wms_pick_lines WHERE item_id = ?').get(vgA)).q === 0, r.json);
+    r = await mem('POST', `${WV}/${waveV1}/confirm`, { itemId: vgA, locationId: A0101, quantity: 7, itemCode: 'VAG-A-001', locationCode: 'a-01-01' });
+    check('prélèvement regroupé de 7 : réparti 3 + 4 entre les deux commandes', r.status === 200, r.json);
+    const pl = await dbx.prepare('SELECT picked_qty FROM wms_pick_lines WHERE item_id = ? ORDER BY id').all(vgA);
+    check('réparti 3 et 4', pl.map((x) => x.picked_qty).join() === '3,4', pl);
+    r = await mem('POST', `${WV}/${waveV1}/confirm`, { itemId: vgB, locationId: B0101, quantity: 2 });
+    r = await mem('POST', `${WV}/${waveV1}/complete`, {});
+    check('terminer la vague avec un manque (1 B non prélevé) → 409', r.status === 409, r.json);
+    r = await mem('POST', `${WV}/${waveV1}/confirm`, { itemId: vgB, locationId: B0101, quantity: 5 });
+    check('prélever plus que le reste → 400', r.status === 400, r.json);
+    r = await mem('POST', `${WV}/${waveV1}/confirm`, { itemId: vgB, locationId: B0101 });
+    r = await mem('POST', `${WV}/${waveV1}/complete`, {});
+    check('vague préparée', r.status === 200, r.json);
+    r = await mem('POST', `${WV}/${waveV1}/issue`, {});
+    check('droits : un membre n\'expédie pas la vague', r.status === 403, r.status);
+    r = await other('GET', `${W2}/waves/${waveV1}`);
+    check('isolation : vague d\'une autre organisation → 404', r.status === 404, r.status);
+    // colisage sur la première liste de la vague
+    const pickV1 = (await mgr('GET', `${WV}/${waveV1}`)).json.wave.orders[0].id;
+    r = await mem('GET', `${W}/picks/${pickV1}/packages`);
+    check('colisage : tout est encore à emballer (3 A + 2 B)', r.status === 200 && r.json.unpacked.reduce((a2, x) => a2 + x.q, 0) === 5, r.json);
+    r = await mem('POST', `${W}/picks/${pickV1}/packages`, { weight: 2.5, lines: [{ itemId: vgA, quantity: 4 }] });
+    check('emballer plus que prélevé (4 > 3) → 400', r.status === 400, r.json);
+    r = await mem('POST', `${W}/picks/${pickV1}/packages`, { weight: 2.5, lines: [{ itemId: vgA, quantity: 3 }] });
+    const pkgV1 = r.json.id;
+    check('premier colis (3 A, 2,5 kg)', r.status === 201, r.json);
+    r = await mgr('POST', `${W}/picks/${pickV1}/issue`, {});
+    check('expédier avec un colisage incomplet (2 B pas emballés) → 409', r.status === 409 && /Colisage incomplet/.test(r.json.error), r.json);
+    r = await mem('POST', `${W}/picks/${pickV1}/packages`, { weight: 1, all: true });
+    r = await mem('GET', `${W}/picks/${pickV1}/packages`);
+    check('2e colis avec le reste ; plus rien à emballer, poids total 3,5 kg', r.json.packages.length === 2 && r.json.unpacked.length === 0 && r.json.weight === 3.5 && /^COL-\d{4}-00[12]$/.test(r.json.packages[0].code), r.json);
+    // expédition de la vague : la 2e liste n'a pas de colis (pas obligatoire), la 1re est complète
+    const valBeforeWave = await itemsValue(org);
+    r = await mgr('POST', `${WV}/${waveV1}/issue`, {});
+    check('expédition de la vague : 2 commandes sorties', r.status === 200 && r.json.orders === 2 && (await qtyOf(vgA)) === 5 && (await qtyOf(vgB)) === 3, r.json);
+    check('valorisation : −7 × 100 − 3 × 200 = −1 300', Math.abs(valBeforeWave - (await itemsValue(org)) - 1300) < 0.01, [valBeforeWave, await itemsValue(org)]);
+    r = await mgr('GET', `${WV}/${waveV1}`);
+    check('vague terminée', r.json.wave.status === 'done', r.json.wave.status);
+    r = await mem('DELETE', `${W}/packages/${pkgV1}`);
+    check('un colis d\'une liste expédiée ne se défait plus → 409', r.status === 409, r.status);
+    await coherent('vagues');
+    // annulation d'une vague
+    const ordV4 = await mkOrder([{ itemId: vgA, label: 'A', quantity: 1, price: 1 }, { itemId: vgB, label: 'B', quantity: 1, price: 1 }], 'C-V-0004'); const ordV5 = await mkOrder([{ itemId: vgA, label: 'A', quantity: 1, price: 1 }], 'C-V-0005');
+    r = await mgr('POST', WV, { documentIds: [ordV4, ordV5] });
+    const waveV2 = r.json.id;
+    check('nouvelle vague : 2 A réservés', (await avail(vgA)).reserved === 2, await avail(vgA));
+    a = await avail(vgA);
+    r = await mgr('POST', `${WV}/${waveV2}/cancel`, {});
+    check('annulation d\'une vague : listes annulées, vague annulée ; les commandes gardent leur réservation (elles existent toujours)', r.status === 200 && (await mgr('GET', `${WV}/${waveV2}`)).json.wave.status === 'cancelled' && (await avail(vgA)).reserved === 2, await avail(vgA));
+    await mgr('PUT', `${O}/sales/orders/${ordV4}/status`, { status: 'cancelled' }).catch(() => {});
+    await dbx.prepare("UPDATE documents SET status = 'cancelled' WHERE id IN (?, ?)").run(ordV4, ordV5);
+    check('commandes annulées : réservations libérées', (await avail(vgA)).reserved === 0, await avail(vgA));
+  
+    // Palettes
+    r = await mem('POST', UN, { kind: 'bateau', locationId: A0101 });
+    check('type d\'unité inconnu → 400', r.status === 400, r.status);
+    r = await mem('POST', UN, { kind: 'pallet', locationId: A0101, note: 'Palette de test' });
+    const palV = r.json.id;
+    check('un membre crée une palette (code PAL-AAAA-001)', r.status === 201, r.json);
+    r = await mem('GET', `${UN}/${palV}`);
+    check('code de palette et emplacement', /^PAL-\d{4}-001$/.test(r.json.unit.code) && r.json.unit.location === 'A-01-01', r.json.unit);
+    const palCode = r.json.unit.code;
+    r = await mem('POST', `${UN}/${palV}/items`, { itemId: vgA, quantity: 9 });
+    check('ajouter 9 A alors que 5 sont libres → 409', r.status === 409, r.json);
+    r = await mem('POST', `${UN}/${palV}/items`, { itemId: vgA, quantity: 4 });
+    check('ajouter 4 A à la palette', r.status === 200, r.json);
+    r = await mem('POST', `${UN}/${palV}/items`, { itemId: vgA, quantity: 2 });
+    check('2 de plus alors qu\'1 seul est libre → 409', r.status === 409, r.json);
+    r = await mem('POST', `${UN}/${palV}/items`, { itemId: vgA, quantity: 1 });
+    r = await mem('GET', `${UN}/${palV}`);
+    check('cumul : 5 A dans la palette (valeur cachée à un membre)', r.json.unit.items[0].quantity === 5 && r.json.unit.quantity === 5 && r.json.unit.value === undefined, r.json.unit);
+    check('plus rien de libre : 1 de plus → 409', (await mem('POST', `${UN}/${palV}/items`, { itemId: vgA, quantity: 1 })).status === 409, true);
+    r = await mem('POST', UN, { kind: 'carton', locationId: A0101, parentId: palV });
+    const carV = r.json.id;
+    await mem('POST', `${UN}/${carV}/items`, { itemId: vgB, quantity: 0.5 }).catch(() => {});
+    r = await mem('POST', UN, { kind: 'carton', locationId: B0101, parentId: palV });
+    check('un carton sur une palette d\'un autre emplacement → 400', r.status === 400, r.status);
+    r = await mem('POST', `${UN}/${palV}/nest`, { parentId: carV });
+    check('une palette ne se pose pas sur son propre carton → 400', r.status === 400, r.status);
+    r = await mem('POST', `${UN}/${palV}/move`, { toLocationId: B0102 });
+    check('déplacer la palette (5 A) vers B-01-02', r.status === 200, r.json);
+    lv = await levels(vgA);
+    check('le contenu a suivi : 5 A en B-01-02', lv.levels.find((l) => l.code === 'B-01-02').quantity === 5 && lv.quantity === 5 && (await mem('GET', `${UN}/${palV}`)).json.unit.location === 'B-01-02', lv);
+    check('le carton posé sur la palette l\'a suivie', (await mem('GET', `${UN}/${carV}`)).json.unit.location === 'B-01-02', true);
+    await coherent('palette déplacée');
+    // du stock sort autrement : la palette ne peut pas contenir plus que ce qui est là
+    r = await mem('POST', `${S}/items/${vgA}/move`, { kind: 'out', quantity: 3, locationId: B0102 });
+    r = await mem('GET', `${UN}/${palV}`);
+    check('3 A sortis par ailleurs : la palette n\'en contient plus que 2', r.json.unit.items[0].quantity === 2, r.json.unit);
+    r = await mem('GET', `${W}/scan?code=${palCode}`);
+    check('scan d\'une palette', r.json.type === 'unit' && r.json.id === palV, r.json);
+    r = await other('GET', `${W2}/units/${palV}`);
+    check('isolation : palette d\'une autre organisation → 404', r.status === 404, r.status);
+    r = await mem('DELETE', `${UN}/${palV}`);
+    check('dépalettiser : l\'unité disparaît, le stock reste (2 A), le carton est libéré', r.status === 200 && (await qtyOf(vgA)) === 2 && (await mem('GET', `${UN}/${carV}`)).json.unit.parentId === null, r.json);
+    r = await mem('GET', `${UN}?locationId=${B0102}`);
+    check('liste des unités d\'un emplacement', r.status === 200 && r.json.units.some((u) => u.id === carV), r.json.units);
+    await coherent('fin des vagues et palettes');
+  }
 
   // =====================================================================================================
   // SUPPRESSION D'UNE ORGANISATION : tout le stock d'entrepôt part avec elle (aucune ligne orpheline, aucune erreur)
@@ -1502,7 +1508,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
     await owner('POST', `${WX}/picks`, { label: 'p', lines: [{ itemId: ix, quantity: 1 }] });
     r = await owner('DELETE', ws(orgX), { confirm: 'Société à supprimer' });
     check('suppression d\'une organisation qui a des emplacements, transferts, réservations, retours, réceptions et listes → 200', r.status === 200, r.json);
-    const left = await dbx.prepare('SELECT (SELECT COUNT(*) FROM wms_levels WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_locations WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_warehouses WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_transfers WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_returns WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_receipts WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_picks WHERE org_id = ?) AS n').get(orgX, orgX, orgX, orgX, orgX, orgX, orgX);
+    const left = await dbx.prepare('SELECT (SELECT COUNT(*) FROM wms_stock WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_locations WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_warehouses WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_transfers WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_returns WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_receipts WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_picks WHERE org_id = ?) AS n').get(orgX, orgX, orgX, orgX, orgX, orgX, orgX);
     check('rien d\'orphelin après la suppression', left.n === 0, left);
   }
 });

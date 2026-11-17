@@ -6,7 +6,7 @@ const express = require('express');
 const { db, nowISO } = require('../db');
 const A = require('./access');
 const L = require('./stock-lib');
-const W = require('./wms-lib');
+const W = require('./wms-b-lib'); // fusion : socle de B servi par la couche de A
 const { HttpError } = require('../util');
 
 const router = express.Router({ mergeParams: true });
@@ -35,7 +35,7 @@ router.get('/reports/valuation', A.need('manager'), async (req, res) => {
   await W.ensureDefault(req.org.id);
   const sc = A.scope(req, 'w.branch_id');
   const rows = await db.prepare(`SELECT w.id AS wid, w.name AS warehouse, l.id AS lid, l.code, l.kind, i.id AS iid, i.name, i.unit, v.quantity, i.avg_cost, i.unit_cost
-    FROM wms_levels v JOIN wms_locations l ON l.id = v.location_id JOIN wms_warehouses w ON w.id = l.warehouse_id JOIN stock_items i ON i.id = v.item_id
+    FROM wms_stock v JOIN wms_locations l ON l.id = v.location_id JOIN wms_warehouses w ON w.id = l.warehouse_id JOIN stock_items i ON i.id = v.item_id
     WHERE v.org_id = ? AND v.quantity > 0${sc.sql} ORDER BY w.name, l.code, i.name COLLATE NOCASE`).all(req.org.id, ...sc.args);
   const lines = rows.map((r) => ({ warehouseId: r.wid, warehouse: r.warehouse, locationId: r.lid, location: r.code, kind: r.kind, kindLabel: W.LOCATION_KINDS[r.kind], itemId: r.iid, item: r.name, unit: r.unit, quantity: r.quantity, unitValue: L.unitValue(r), value: Math.round(r.quantity * L.unitValue(r)) }));
   const total = lines.reduce((a, l) => a + l.value, 0);
@@ -155,7 +155,7 @@ router.get('/scan', async (req, res) => {
   if (it && A.visible(req, it)) return res.json({ type: 'item', id: it.id, label: it.name, code });
   const loc = await db.prepare('SELECT l.*, w.branch_id AS branch_id FROM wms_locations l JOIN wms_warehouses w ON w.id = l.warehouse_id WHERE l.org_id = ? AND l.code = ?').get(req.org.id, up);
   if (loc && A.visible(req, loc)) return res.json({ type: 'location', id: loc.id, label: loc.name || loc.code, code: loc.code });
-  const docs = [['PREP-', 'pick', 'wms_picks'], ['TR-', 'transfer', 'wms_transfers'], ['RET-', 'return', 'wms_returns'], ['REC-', 'receipt', 'wms_receipts'], ['VAG-', 'wave', 'wms_waves'], ['COL-', 'package', 'wms_packages']];
+  const docs = [['PR-', 'pick', 'wms_picks'], ['PREP-', 'pick', 'wms_picks'], ['TR-', 'transfer', 'wms_transfers'], ['RT-', 'return', 'wms_returns'], ['RET-', 'return', 'wms_returns'], ['RC-', 'receipt', 'wms_receipts'], ['REC-', 'receipt', 'wms_receipts'], ['VAG-', 'wave', 'wms_waves'], ['WV-', 'wave', 'wms_waves'], ['COL-', 'package', 'wms_packages']]; // codes de A (PR-, RT-, RC-…) et de B (PREP-, RET-, REC-…)
   for (const [prefix, type, table] of docs) {
     if (!up.startsWith(prefix)) continue;
     const d = await db.prepare(`SELECT id, code FROM ${table} WHERE org_id = ? AND code = ?`).get(req.org.id, up);
@@ -163,7 +163,7 @@ router.get('/scan', async (req, res) => {
   }
   for (const pre of ['PAL-', 'CAR-', 'CAI-']) {
     if (!up.startsWith(pre)) continue;
-    const u = await db.prepare('SELECT id, code FROM wms_units WHERE org_id = ? AND code = ?').get(req.org.id, up);
+    const u = await db.prepare('SELECT id, code FROM wms_hus WHERE org_id = ? AND code = ?').get(req.org.id, up);
     if (u) return res.json({ type: 'unit', id: u.id, label: u.code, code: u.code });
   }
   throw new HttpError(404, 'Code inconnu : ni article, ni emplacement, ni document.');
