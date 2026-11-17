@@ -330,7 +330,7 @@ router.post('/inspections', mgr, async (req, res) => {
           // Libérée du contrôle qualité, la marchandise attendue par une commande client peut partir en transbordement.
           crossDock.push(...await require('./wms-xdock').onReceipt(req, { itemId: rl.item_id, quantity: acc, locationId: dests.length === 1 ? dests[0].location.id : undefined, sourceKind: 'inspection', sourceId: rl.receipt_id, sourceCode: rl.receipt, purchaseOrderId: rl.order_id }));
         }
-        if (rej) await L.adjust(req, rl.item_id, -rej, `Contrôle qualité ${rl.receipt} : refusé (${reason})`, { locationId: q.id, refKind: 'pur_receipt', refId: rl.receipt_id, allowExpired: true });
+        if (rej) await L.adjust(req, rl.item_id, -rej, `Contrôle qualité ${rl.receipt} : refusé (${reason})`, { locationId: q.id, refKind: 'pur_receipt', refId: rl.receipt_id, allowExpired: true, preferLot: { lotNo: rl.lot_no, expiry: rl.expiry } });
       }
       await db.prepare('UPDATE pur_receipt_lines SET insp_pending = ?, insp_accepted = insp_accepted + ?, insp_rejected = insp_rejected + ?, insp_reason = ?, insp_at = ? WHERE id = ?')
         .run(P.round3(Number(rl.insp_pending) - acc - rej), acc, rej, reason || rl.insp_reason, nowISO(), rl.id);

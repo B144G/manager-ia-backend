@@ -112,7 +112,7 @@ router.get('/customers/:id', A.need('manager'), async (req, res) => {
 
 // ---------- Devis et factures (responsables et plus) ----------
 router.get('/documents', A.need('manager'), async (req, res) => {
-  const kind = req.query.kind === undefined ? null : A.oneOf(req.query.kind, ['quote', 'invoice', 'credit']);
+  const kind = req.query.kind === undefined ? null : A.oneOf(req.query.kind, ['quote', 'order', 'invoice', 'credit']);
   const sc = A.scope(req, 'd.branch_id');
   const rows = await db.prepare(`SELECT d.*, c.name AS customer FROM documents d JOIN customers c ON c.id = d.customer_id WHERE d.org_id = ?${kind ? ' AND d.kind = ?' : ''}${sc.sql} ORDER BY d.id DESC LIMIT 100`).all(req.org.id, ...(kind ? [kind] : []), ...sc.args);
   const all = (await db.prepare("SELECT * FROM documents WHERE org_id = ? AND kind = 'invoice'").all(req.org.id)).filter((d) => A.visible(req, d));
@@ -143,14 +143,14 @@ async function createDoc(req, b, kind, extra = {}) {
   const c = await customerOf(req, b.customerId);
   const lines = cleanLines(b.lines);
   const rate = b.vatRate !== undefined ? vatRate(b.vatRate, Number(req.org.vat_rate)) : extra.vatRate !== undefined ? extra.vatRate : Number(req.org.vat_rate);
-  const incl = kind === 'order' ? true : bool(b.pricesIncl, extra.pricesIncl !== undefined ? extra.pricesIncl : true);
+  const incl = kind === 'order' && extra.pricesIncl === undefined ? true : bool(b.pricesIncl, extra.pricesIncl !== undefined ? extra.pricesIncl : true);
   const t = D.totals(lines, rate, incl);
   if (['quote', 'invoice'].includes(kind) && !extra.skipFloor) await require('./pricing').guardLines(req, c, lines, b.priceOverride, kind === 'quote' ? 'devis' : 'facture');
   const now = nowISO();
   return await db.transaction(async () => {
     const id = (await db.prepare('INSERT INTO documents (org_id, branch_id, customer_id, kind, number, status, lines, total, issued, due, note, created_by, created_at, updated_at, vat_rate, prices_incl, subtotal_ht, vat_amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
       req.org.id, c.branch_id, c.id, kind, await nextNumber(req.org.id, kind), extra.status || 'draft', JSON.stringify(lines), t.total, A.date(b.issued) || today(), A.date(b.due), A.text(b.note, 500), req.user.id, now, now, rate, incl ? 1 : 0, t.ht, t.vat)).lastInsertRowid;
-    await A.logActivity(req.org.id, req.user.id, 'crm', `${kind === 'quote' ? 'Devis' : kind === 'credit' ? 'Avoir' : 'Facture'} créé(e) pour ${c.name}`);
+    await A.logActivity(req.org.id, req.user.id, 'crm', `${kind === 'quote' ? 'Devis' : kind === 'credit' ? 'Avoir' : kind === 'order' ? 'Commande' : 'Facture'} créé(e) pour ${c.name}`);
     if (kind === 'invoice') require('../services/webhooks').emit(req.org.id, 'invoice.created', { id: Number(id), customer: c.name, total: t.total });
     return Number(id);
   })();
@@ -193,6 +193,7 @@ router.delete('/documents/:id', A.need('manager'), async (req, res) => {
   if (d.status !== 'draft' && !A.can(req, 'admin')) throw new HttpError(403, 'Seul un administrateur peut supprimer un document déjà envoyé.');
   if (d.paid > 0) throw new HttpError(400, 'Ce document a reçu des paiements : annulez-le plutôt que de le supprimer.');
   if (d.credited > 0 || d.kind === 'credit') throw new HttpError(400, 'Un avoir ou une facture avec avoir ne se supprime pas (pièce comptable).');
+  if (d.kind === 'order' && d.status === 'invoiced') throw new HttpError(400, 'Une commande facturée ne se supprime pas : annulez ou créditez sa facture.');
   await db.transaction(async () => {
     // Facture : on ne supprime qu'un brouillon portant le DERNIER numéro de la séquence (sinon trou dans la numérotation) ; la séquence recule alors d'un cran.
     if (d.kind === 'invoice') {
@@ -213,8 +214,27 @@ router.delete('/documents/:id', A.need('manager'), async (req, res) => {
 router.post('/documents/:id/convert', A.need('manager'), async (req, res) => {
   const d = await docOf(req, req.params.id);
   if (d.kind !== 'quote' || d.status !== 'accepted') throw new HttpError(400, 'Seul un devis accepté peut devenir une facture.');
-  const id = await createDoc(req, { customerId: d.customer_id, lines: JSON.parse(d.lines).map((l) => ({ label: l.label, quantity: l.quantity, price: l.price })), note: `Suite au devis ${d.number}`, due: req.body && req.body.due }, 'invoice',
+  const ord = await orderFromQuote(req, d);
+  if (ord) throw new HttpError(409, `Ce devis est déjà devenu la commande ${ord.number} : facturez-la depuis l'onglet Commandes.`);
+  const id = await createDoc(req, { customerId: d.customer_id, lines: JSON.parse(d.lines).map((l) => ({ ...(l.itemId ? { itemId: l.itemId } : {}), label: l.label, quantity: l.quantity, price: l.price })), note: `Suite au devis ${d.number}`, due: req.body && req.body.due }, 'invoice',
     { vatRate: d.vat_rate === null ? undefined : Number(d.vat_rate), pricesIncl: Number(d.prices_incl) === 1, skipFloor: true });
+  res.status(201).json({ id });
+});
+
+/** Commande déjà créée à partir de ce devis (hors commandes annulées). */
+const orderFromQuote = (req, q) => db.prepare("SELECT id, number FROM documents WHERE org_id = ? AND kind = 'order' AND status != 'cancelled' AND note = ?").get(req.org.id, `Suite au devis ${q.number}`);
+
+// Devis envoyé ou accepté → commande client confirmée (mêmes lignes, même TVA, mêmes articles du stock) : à livrer, puis à facturer.
+// Le devis passe « accepté ». Une seule commande par devis.
+router.post('/documents/:id/order', A.need('manager'), async (req, res) => {
+  const d = await docOf(req, req.params.id);
+  if (d.kind !== 'quote' || !['sent', 'accepted'].includes(d.status)) throw new HttpError(400, 'Seul un devis envoyé ou accepté peut devenir une commande.');
+  const ord = await orderFromQuote(req, d);
+  if (ord) throw new HttpError(409, `Ce devis est déjà devenu la commande ${ord.number}.`);
+  const b = req.body || {};
+  const id = await createDoc(req, { customerId: d.customer_id, lines: JSON.parse(d.lines).map((l) => ({ ...(l.itemId ? { itemId: l.itemId } : {}), label: l.label, quantity: l.quantity, price: l.price })), note: `Suite au devis ${d.number}`, due: b.due },
+    'order', { status: 'confirmed', vatRate: d.vat_rate === null ? undefined : Number(d.vat_rate), pricesIncl: Number(d.prices_incl) === 1, skipFloor: true });
+  if (d.status !== 'accepted') await db.prepare("UPDATE documents SET status = 'accepted', updated_at = ? WHERE id = ?").run(nowISO(), d.id);
   res.status(201).json({ id });
 });
 
@@ -249,11 +269,12 @@ router.get('/documents/:id/payments', A.need('manager'), async (req, res) => {
 /** Enregistre un paiement confirmé : solde, statut, budget, webhook. */
 async function applyPayment(req, d, amount, row) {
   const paid = d.paid + amount;
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(row.date || '')) ? row.date : today(); // l'entrée d'argent est datée du jour du paiement, pas du jour de la saisie
   let status;
   await db.transaction(async () => {
     status = await settle(d, paid, d.credited);
     // Ligne « miroir » (source = facture) : quand la facture est en comptabilité, le budget lit la compta et ignore cette ligne (une seule source de vérité).
-    await db.prepare("INSERT INTO budget_entries (org_id, branch_id, kind, category, label, amount, date, created_by, created_at, source, source_id) VALUES (?, ?, 'income', 'Ventes', ?, ?, ?, ?, ?, 'invoice', ?)").run(req.org.id, d.branch_id, `Paiement ${d.number}`, amount, today(), req.user.id, nowISO(), d.id);
+    await db.prepare("INSERT INTO budget_entries (org_id, branch_id, kind, category, label, amount, date, created_by, created_at, source, source_id) VALUES (?, ?, 'income', 'Ventes', ?, ?, ?, ?, ?, 'invoice', ?)").run(req.org.id, d.branch_id, `Paiement ${d.number}`, amount, date, req.user.id, nowISO(), d.id);
   })();
   require('../services/webhooks').emit(req.org.id, 'payment.received', { invoice_id: d.id, number: d.number, amount, paid, total: d.total, status, method: row.method, reference: row.reference });
   if (status === 'paid') require('../services/webhooks').emit(req.org.id, 'invoice.paid', { invoice_id: d.id, number: d.number, total: d.total });
@@ -272,9 +293,9 @@ router.post('/documents/:id/payments', A.need('manager'), async (req, res) => {
   const p = cleanPayment(b);
   if (d.paid + amount > d.total - d.credited) throw new HttpError(400, `Ce paiement dépasse le solde (${balanceOf(d)}).`);
   if (p.reference && await db.prepare("SELECT 1 FROM doc_payments WHERE org_id = ? AND method = ? AND reference = ? AND status <> 'failed'").get(req.org.id, p.method, p.reference)) throw new HttpError(409, 'Cette référence de transaction est déjà enregistrée sur un paiement.');
-  const row = { method: p.method, reference: p.reference };
+  const row = { method: p.method, reference: p.reference, date: A.date(b.date) || today() };
   const pid = (await db.prepare('INSERT INTO doc_payments (org_id, doc_id, amount, date, created_by, created_at, method, reference, operator, payer_phone, status, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(req.org.id, d.id, amount, A.date(b.date) || today(), req.user.id, nowISO(), p.method, p.reference, p.operator, p.phone, p.status, p.note)).lastInsertRowid;
+    .run(req.org.id, d.id, amount, row.date, req.user.id, nowISO(), p.method, p.reference, p.operator, p.phone, p.status, p.note)).lastInsertRowid;
   if (p.status === 'pending') { await A.logActivity(req.org.id, req.user.id, 'crm', `Paiement à vérifier sur ${d.number}`); return res.status(201).json({ id: Number(pid), pending: true, paid: d.paid, status: d.status }); }
   const r = b.toBudget === false ? await db.transaction(async () => ({ paid: d.paid + amount, status: await settle(d, d.paid + amount, d.credited) }))() : await applyPayment(req, d, amount, row);
   if (b.toBudget === false) require('../services/webhooks').emit(req.org.id, 'payment.received', { invoice_id: d.id, number: d.number, amount, paid: r.paid, total: d.total, status: r.status, method: p.method, reference: p.reference });

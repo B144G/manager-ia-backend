@@ -147,4 +147,54 @@ run('Facture conforme et encaissements', async ({ check, owner, mgr, mem, other,
   check('client avec factures émises : suppression refusée (pièces à conserver)', r.status === 409, r.json);
   r = await owner('POST', `${O}/ai/chat`, { module: 'crm', message: 'Point ?' });
   check('IA : le contexte « crm » est construit (route ajoutée aux contextes)', r.status === 200 || r.status === 503, r.status);
+
+  // Paiement saisi après coup : l'entrée d'argent du budget porte la date du paiement, pas celle de la saisie
+  r = await mgr('POST', `${C}/documents`, { kind: 'invoice', customerId: cust, issued: '2026-01-05', lines: [{ label: 'Livraison janvier', quantity: 1, price: 50000 }] });
+  const invD = r.json.id;
+  await mgr('PUT', `${C}/documents/${invD}`, { status: 'sent' });
+  r = await mgr('POST', `${C}/documents/${invD}/payments`, { amount: 1000, method: 'cheque', reference: 'CHQ-2026-77', date: '2026-01-15' });
+  const be = await dbx.prepare("SELECT date FROM budget_entries WHERE org_id = ? AND source = 'invoice' ORDER BY id DESC LIMIT 1").get(org);
+  check('paiement daté : entrée du budget à la date du paiement', r.status === 200 && be && be.date === '2026-01-15', be);
+  r = await mgr('POST', `${C}/documents/${invD}/payments`, { amount: 1000, method: 'transfer', reference: 'VIR-2026-78', status: 'pending', date: '2026-01-20' });
+  r = await mgr('POST', `${C}/documents/${invD}/payments/${r.json.id}/confirm`);
+  const be2 = await dbx.prepare("SELECT date FROM budget_entries WHERE org_id = ? AND source = 'invoice' ORDER BY id DESC LIMIT 1").get(org);
+  check('paiement « à vérifier » confirmé : entrée du budget à la date du paiement', r.status === 200 && be2 && be2.date === '2026-01-20', be2);
+
+  // Devis accepté -> facture : les lignes gardent leur lien avec l'article du stock (réservation, préparation, livraison)
+  const sid = Number((await dbx.prepare("INSERT INTO stock_items (org_id, name, unit, quantity, created_at) VALUES (?, 'Riz 50 kg', 'sac', 20, ?) RETURNING id").get(org, now)).id);
+  r = await mgr('POST', `${C}/documents`, { kind: 'quote', customerId: cust, lines: [{ itemId: sid, label: 'Riz 50 kg', quantity: 3, price: 25000 }, { label: 'Transport', quantity: 1, price: 5000 }] });
+  const qd = r.json.id;
+  await mgr('PUT', `${C}/documents/${qd}`, { status: 'accepted' });
+  r = await mgr('POST', `${C}/documents/${qd}/convert`, {});
+  const conv = await dbx.prepare('SELECT lines FROM documents WHERE id = ?').get(r.json.id);
+  const cl = JSON.parse(conv.lines);
+  check('devis -> facture : lien avec l\'article du stock conservé (ligne libre sans lien)', r.status === 201 && cl[0].itemId === sid && cl[1].itemId === undefined, cl);
+
+  // Devis -> commande client -> facture : HT conservé, lien avec le stock, une seule commande par devis, livrable par la logistique
+  r = await mgr('POST', `${C}/documents`, { kind: 'quote', customerId: cust, pricesIncl: false, vatRate: 19.25, lines: [{ itemId: sid, label: 'Riz 50 kg', quantity: 4, price: 20000 }] });
+  const q2 = r.json.id;
+  r = await mgr('POST', `${C}/documents/${q2}/order`, {});
+  check('devis brouillon : pas de commande', r.status === 400, r.json);
+  await mgr('PUT', `${C}/documents/${q2}`, { status: 'sent' });
+  r = await mem('POST', `${C}/documents/${q2}/order`, {});
+  check('commande : réservée aux responsables', r.status === 403, r.status);
+  r = await mgr('POST', `${C}/documents/${q2}/order`, {});
+  const oid = r.json.id;
+  const od = await dbx.prepare('SELECT * FROM documents WHERE id = ?').get(oid);
+  const qd2 = await dbx.prepare('SELECT status FROM documents WHERE id = ?').get(q2);
+  check('devis envoyé -> commande confirmée (C-…), mêmes lignes, prix HT et TVA conservés, devis accepté', r.status === 201 && od.kind === 'order' && od.status === 'confirmed' && /^C-\d{4}-\d{4}$/.test(od.number) && JSON.parse(od.lines)[0].itemId === sid && Number(od.prices_incl) === 0 && Number(od.total) === 95400 && qd2.status === 'accepted', [od, qd2]);
+  r = await mgr('POST', `${C}/documents/${q2}/order`, {});
+  check('une seule commande par devis', r.status === 409 && r.json.error.includes(od.number), r.json);
+  r = await mgr('POST', `${C}/documents/${q2}/convert`, {});
+  check('devis déjà en commande : la facture se fait depuis la commande', r.status === 409, r.json);
+  r = await mgr('GET', `${C}/documents?kind=order`);
+  check('onglet Commandes : la commande est listée', r.status === 200 && r.json.documents.some((d) => d.id === oid), r.json);
+  r = await mgr("GET", `${O}/logistics/documents`);
+  check('logistique : la commande peut être liée à une livraison', r.status === 200 && r.json.documents.some((d) => d.id === oid && d.kind === 'order'), r.json);
+  r = await mgr('POST', `${O}/sales/orders/${oid}/invoice`, {});
+  const fi = await dbx.prepare('SELECT * FROM documents WHERE id = ?').get(r.json.id);
+  const od2 = await dbx.prepare('SELECT status FROM documents WHERE id = ?').get(oid);
+  check('commande -> facture : même total HT/TVA, lien stock, commande « facturée »', r.status === 201 && fi.kind === 'invoice' && Number(fi.total) === 95400 && Number(fi.prices_incl) === 0 && JSON.parse(fi.lines)[0].itemId === sid && od2.status === 'invoiced', [fi, od2]);
+  r = await owner('DELETE', `${C}/documents/${oid}`);
+  check('commande facturée : suppression refusée', r.status === 400, r.json);
 });

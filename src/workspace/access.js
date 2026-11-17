@@ -38,7 +38,7 @@ function qty(v, { allowZero = false } = {}) {
   if (!Number.isFinite(n) || n < 0 || n > 1e9 || (!allowZero && n === 0)) throw new HttpError(400, allowZero ? 'Quantité invalide : indiquez un nombre positif ou zéro.' : 'Quantité invalide : indiquez un nombre positif.');
   return Math.round(n * 1000) / 1000;
 }
-const money0 = (v) => (v === undefined || v === null || v === '' ? 0 : amount(v));
+const money0 = (v) => (v === undefined || v === null || v === '' || Number(v) === 0 ? 0 : amount(v)); // 0 est un montant valable (article sans coût connu)
 function id(v, msg = 'Identifiant invalide.') {
   const n = Number(v);
   if (!Number.isInteger(n) || n < 1) throw new HttpError(400, msg);

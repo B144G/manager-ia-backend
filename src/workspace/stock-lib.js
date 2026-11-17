@@ -21,10 +21,18 @@ function parseSerials(v) {
   return out;
 }
 
-/** Sort `qty` des lots (FEFO ou FIFO). Les lots périmés sont ignorés sauf allowExpired. Renvoie les lots utilisés. */
-async function consumeLots(it, qty, { allowExpired = false } = {}) {
+/**
+ * Sort `qty` des lots (FEFO ou FIFO). Les lots périmés sont ignorés sauf allowExpired. Renvoie les lots utilisés.
+ * preferLot ({ lotNo, expiry }) : la sortie concerne un lot précis (refus au contrôle qualité, rebut d'un retour) : ce lot part d'abord.
+ */
+async function consumeLots(it, qty, { allowExpired = false, preferLot = null } = {}) {
   const order = it.pick_rule === 'fifo' ? 'received_at, id' : 'expiry IS NULL, expiry, received_at, id';
   const all = await db.prepare(`SELECT * FROM stock_lots WHERE item_id = ? AND quantity > 0 ORDER BY ${order}`).all(it.id);
+  const want = preferLot && String(preferLot.lotNo || '').trim();
+  if (want) {
+    const hit = (l) => l.lot_no === want && (!preferLot.expiry || l.expiry === preferLot.expiry);
+    all.sort((a, b) => Number(hit(b)) - Number(hit(a))); // tri stable : l'ordre FEFO / FIFO est gardé à l'intérieur de chaque groupe
+  }
   const usable = allowExpired ? all : all.filter((l) => !l.expiry || l.expiry >= today());
   const have = round3(usable.reduce((a, l) => a + l.quantity, 0));
   if (have + 1e-9 < qty) {
@@ -49,7 +57,9 @@ async function addToLot(orgId, it, { lotNo, expiry, quantity, unitCost, lotId })
     if (l) { await db.prepare('UPDATE stock_lots SET quantity = ? WHERE id = ?').run(round3(l.quantity + quantity), l.id); return l.id; }
   }
   const no = String(lotNo || 'SANS-LOT').slice(0, 40);
-  const ex = expiry || null;
+  // Sans date de péremption (retour client, remise en stock), un numéro de lot déjà connu garde sa péremption : c'est le même lot.
+  const known = expiry ? null : await db.prepare('SELECT expiry FROM stock_lots WHERE item_id = ? AND lot_no = ? AND expiry IS NOT NULL ORDER BY id DESC LIMIT 1').get(it.id, no);
+  const ex = expiry || (known ? known.expiry : null);
   const same = await db.prepare('SELECT * FROM stock_lots WHERE item_id = ? AND lot_no = ? AND COALESCE(expiry, \'\') = ?').get(it.id, no, ex || '');
   if (same) { await db.prepare('UPDATE stock_lots SET quantity = ? WHERE id = ?').run(round3(same.quantity + quantity), same.id); return same.id; }
   const now = nowISO();
@@ -60,7 +70,7 @@ async function addToLot(orgId, it, { lotNo, expiry, quantity, unitCost, lotId })
  * Mouvement de stock d'un article (entrée si delta > 0, sortie si delta < 0). Dans une transaction.
  *  opts : unitCost (valorise l'entrée : met à jour le CUMP), lotNo / expiry (article suivi par lot), serials (article suivi par série),
  *         allocations (retour : remet les quantités dans les lots d'origine), strict (réclame lot / séries : saisie manuelle),
- *         refKind / refId (origine : livraison, inventaire…), allowExpired.
+ *         refKind / refId (origine : livraison, inventaire…), allowExpired, preferLot ({ lotNo, expiry } : sortie d'un lot précis).
  * Renvoie { quantity, allocations, serials }.
  */
 async function adjust(req, itemOrId, delta, reason, opts = {}) {
@@ -84,7 +94,7 @@ async function adjust(req, itemOrId, delta, reason, opts = {}) {
           const lotId = await addToLot(req.org.id, it, { lotNo: String(opts.lotNo || '').trim() || 'SANS-LOT', expiry: opts.expiry, quantity: delta, unitCost: opts.unitCost });
           allocations = [{ lotId, lotNo: String(opts.lotNo || '').trim() || 'SANS-LOT', expiry: opts.expiry || null, quantity: delta }];
         }
-      } else allocations = await consumeLots(it, -delta, { allowExpired: opts.allowExpired });
+      } else allocations = await consumeLots(it, -delta, { allowExpired: opts.allowExpired, preferLot: opts.preferLot });
     } else if (it.tracking === 'serial') {
       if (!Number.isInteger(delta)) throw new HttpError(400, `« ${it.name} » est suivi par numéro de série : la quantité est un nombre entier.`);
       const list = parseSerials(opts.serials);

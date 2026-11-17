@@ -525,6 +525,13 @@ async function main() {
     check('« Alertes » : rappels juridiques présents, attribués à la personne', al.length >= 2 && al.some((a) => a.text.includes('Contrat à rappeler') && a.text.includes('attribué à')) && al.some((a) => a.text.includes('Dossier à suivre')), r.status + ' ' + JSON.stringify(al));
     check('pas de doublon : un seul rappel pour le contrat (fin et préavis fusionnés)', al.filter((a) => a.title.includes('à renouveler') && a.text.includes('Contrat à rappeler')).length === 1, al);
     check('rappel à moins de 7 jours : urgent', al.find((a) => a.title.includes('à renouveler') && a.text.includes('Contrat à rappeler')).level === 'high');
+    // Fin dans 25 jours (à surveiller) mais préavis déjà dépassé (urgent) : le rappel unique doit être celui du préavis.
+    r = await mgr('POST', `${J}/contracts`, { title: 'Contrat au préavis dépassé', endDate: day(25), noticeDays: 30, tacit: true });
+    const kn = r.json.id;
+    r = await mgr('GET', `${ws(org)}/dashboard/alerts`);
+    const an = (r.json.alerts || []).find((a) => a.module === 'legal' && a.text.includes('Contrat au préavis dépassé'));
+    check('rappel unique : le préavis dépassé (urgent) passe avant la fin dans 25 jours', an && an.level === 'high' && an.text.includes('préavis dépassée'), an);
+    r = await mgr('DELETE', `${J}/contracts/${kn}`);
     r = await mgr('GET', `${ws(org)}/dashboard/alerts`);
     check('relire les alertes ne crée pas de doublon', r.json.alerts.filter((a) => a.module === 'legal' && a.title.includes('à renouveler') && a.text.includes('Contrat à rappeler')).length === 1);
     r = await mem('GET', `${ws(org)}/dashboard/alerts`);

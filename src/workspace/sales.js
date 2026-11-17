@@ -302,7 +302,8 @@ router.put('/orders/:id/status', async (req, res) => {
 router.post('/orders/:id/invoice', async (req, res) => {
   const d = await orderOf(req);
   if (d.status !== 'confirmed') throw new HttpError(400, "Confirmez d'abord la commande.");
-  const id = await crm.createDoc(req, { customerId: d.customer_id, lines: JSON.parse(d.lines), note: `Suite à la commande ${d.number}`, due: (req.body || {}).due }, 'invoice', { skipFloor: true });
+  const id = await crm.createDoc(req, { customerId: d.customer_id, lines: JSON.parse(d.lines), note: `Suite à la commande ${d.number}`, due: (req.body || {}).due }, 'invoice',
+    { skipFloor: true, vatRate: d.vat_rate === null ? undefined : Number(d.vat_rate), pricesIncl: d.prices_incl === null ? undefined : Number(d.prices_incl) === 1 });
   await db.prepare("UPDATE documents SET status = 'invoiced', updated_at = ? WHERE id = ?").run(nowISO(), d.id);
   res.status(201).json({ id });
 });

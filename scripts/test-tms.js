@@ -127,6 +127,9 @@ run('Transport (TMS) : planification, exécution chauffeur, suivi client, coûts
   check('validation : permis périmé refusé', r.status === 400 && /permis/.test(r.json.error), r.json);
   r = await mgr('POST', `${TM}/plan/commit`, { date: T0, trips: [{ vehicleId: V3, driverId: D2, deliveryIds: [c80] }] });
   check('validation : assurance du véhicule périmée refusée', r.status === 400 && /assurance/i.test(r.json.error), r.json);
+  // Même règle pour une tournée simple de la Logistique (sinon on la démarrerait sans passer par la répartition).
+  r = await mgr('POST', `${L}/rounds`, { name: 'Tournée manuelle LT-OLD', date: T0, vehicleId: V3 });
+  check('tournée simple : véhicule à l\'assurance périmée refusé', r.status === 400 && /assurance du véhicule LT-OLD est périmée/.test(r.json.error), r.json);
   r = await mgr('POST', `${TM}/plan/commit`, { date: T0, trips: [{ vehicleId: V1, driverId: D1, deliveryIds: [c300] }, { vehicleId: V2, driverId: D2, deliveryIds: [c300] }] });
   check('validation : une livraison dans deux tournées refusée', r.status === 400, r.json);
 
@@ -245,7 +248,23 @@ run('Transport (TMS) : planification, exécution chauffeur, suivi client, coûts
   check('reportée : sortie de la tournée, à replanifier demain', r.json.delivery.roundId === null && r.json.delivery.status === 'shipped' && r.json.delivery.plannedDate === day(1) && r.json.delivery.attempts === 1 && r.json.delivery.failureReason === 'absent', r.json.delivery);
   r = await mem('POST', `${TM}/trips/${trip}/finish`, { odometer: 1042 });
   check('fin de tournée refusée : il reste un arrêt', r.status === 409 && /Grossiste/.test(r.json.error), r.json);
-  r = await mem('POST', `${TM}/stops/${wmsDel}/complete`, { outcome: 'delivered', recipient: 'Magasinier' });
+  // Saisie après coup de l'heure réelle (bon papier) : responsable seulement, avec justificatif, jamais dans le futur ni avant le jour de la tournée
+  const loc0 = day(0); // fuseau réglé plus haut : UTC+0
+  r = await mem('POST', `${TM}/stops/${wmsDel}/complete`, { outcome: 'delivered', recipient: 'Magasinier', deliveredAt: `${loc0}T00:00`, note: 'BL papier 0412' });
+  check('heure saisie après coup : refusée à un membre', r.status === 403, r.json);
+  r = await mgr('POST', `${TM}/stops/${wmsDel}/complete`, { outcome: 'delivered', recipient: 'Magasinier', deliveredAt: `${loc0}T00:00` });
+  check('heure saisie après coup : justificatif obligatoire', r.status === 400 && /justifie/.test(r.json.error), r.json);
+  r = await mgr('POST', `${TM}/stops/${wmsDel}/complete`, { outcome: 'delivered', recipient: 'Magasinier', deliveredAt: `${day(2)}T10:00`, note: 'BL papier 0412' });
+  check('heure saisie après coup : pas dans le futur', r.status === 400, r.json);
+  r = await mgr('POST', `${TM}/stops/${wmsDel}/complete`, { outcome: 'delivered', recipient: 'Magasinier', deliveredAt: `${day(-3)}T10:00`, note: 'BL papier 0412' });
+  check('heure saisie après coup : pas avant le jour de la tournée', r.status === 400, r.json);
+  r = await mgr('POST', `${TM}/stops/${wmsDel}/complete`, { outcome: 'delivered', recipient: 'Magasinier', deliveredAt: '2026-13-01T10:00', note: 'BL papier 0412' });
+  check('heure saisie après coup : format vérifié', r.status === 400, r.json);
+  r = await mgr('POST', `${TM}/stops/${wmsDel}/complete`, { outcome: 'delivered', recipient: 'Magasinier', deliveredAt: `${loc0}T00:00`, note: 'BL papier 0412' });
+  const wd = await dbx.prepare('SELECT delivered_at, time_declared FROM logistics_deliveries WHERE id = ?').get(wmsDel);
+  check('heure saisie après coup : enregistrée à l\'heure locale (00:00, fuseau du transport) et marquée « déclarée »', r.status === 200 && Number(wd.time_declared) === 1 && wd.delivered_at === `${loc0}T00:00:00.000Z`, wd);
+  r = await mgr('GET', `${L}/deliveries/${wmsDel}`);
+  check('historique : « heure réelle saisie après coup » visible', JSON.stringify(r.json).includes('saisie après coup'), r.json.delivery && r.json.delivery.events);
   check('expédition livrée (aucun article à sortir)', r.status === 200, r.json);
   check('stock inchangé par la livraison de l\'expédition', await qty(riz) === 15 && await qty(huile) === 8, [await qty(riz), await qty(huile)]);
   r = await mem('POST', `${TM}/trips/${trip}/finish`, { odometer: 1042, codRemitted: 10000 });
@@ -406,6 +425,7 @@ run('Transport (TMS) : planification, exécution chauffeur, suivi client, coûts
   const delivered = rows.filter((d) => d.status === 'delivered');
   const fin = rows.filter((d) => ['delivered', 'failed', 'returned'].includes(d.status) && Number(d.attempts) > 0);
   const first = delivered.filter((d) => Number(d.attempts) === 1).length;
+  check('indicateurs : heures saisies après coup comptées à part', k.summary.declaredTimes === 1 && 'onTimeLivePct' in k.summary, k.summary);
   check('indicateurs : livrées et réussite au premier passage (recalcul)', k.summary.delivered === delivered.length && k.summary.firstAttemptPct === Math.round((1000 * first) / fin.length) / 10, [k.summary, delivered.length, first, fin.length]);
   check('indicateurs : à l\'heure 100 % (toutes livrées le jour prévu, sans créneau dépassé)', k.summary.onTimePct === 100, k.summary);
   check('indicateurs : échecs par motif (absent, refus)', k.failures.some((f) => f.reason === 'absent' && f.count === 1) && k.failures.some((f) => f.reason === 'refused' && f.count === 1), k.failures);

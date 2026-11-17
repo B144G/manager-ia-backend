@@ -296,7 +296,7 @@ router.get('/rounds', async (req, res) => {
     status: r.status || 'planned', startTime: r.start_time || '08:00', plannedKm: Number(r.planned_km || 0), actualKm: r.actual_km === null || r.actual_km === undefined ? null : Number(r.actual_km),
     deliveries: ds.filter((d) => d.round_id === r.id).map((d) => view(d, names(d), req)) })) });
 });
-/** Affectation d'un véhicule et d'un chauffeur à une tournée : actifs, et pas déjà pris par une autre tournée le même jour. */
+/** Affectation d'un véhicule et d'un chauffeur à une tournée : actifs, pas déjà pris par une autre tournée le même jour, papiers du véhicule et permis à jour. */
 async function assignment(req, b, cur, date) {
   const vid = b.vehicleId === undefined ? (cur ? cur.vehicle_id : null) : (b.vehicleId === null || b.vehicleId === '' ? null : A.id(b.vehicleId));
   const did = b.driverId === undefined ? (cur ? cur.driver_id : null) : (b.driverId === null || b.driverId === '' ? null : A.id(b.driverId));
@@ -305,6 +305,11 @@ async function assignment(req, b, cur, date) {
     const v = await fleet.vehicleOf(req, vid);
     if (v.status !== 'active') throw new HttpError(400, `Le véhicule ${v.plate} n'est pas disponible (${v.status === 'maintenance' ? 'en maintenance' : 'retiré du parc'}).`);
     const o = await other('vehicle_id', vid); if (o) throw new HttpError(409, `Le véhicule ${v.plate} est déjà affecté à la tournée « ${o.name} » ce jour-là.`);
+    // Assurance et visite technique : la dernière échéance saisie doit couvrir le jour de la tournée (même règle pour une tournée simple et pour le Transport).
+    for (const k of ['insurance', 'inspection']) {
+      const row = await db.prepare('SELECT MAX(expires_at) AS m FROM logistics_compliance WHERE vehicle_id = ? AND kind = ?').get(vid, k);
+      if (row && row.m && row.m < date) throw new HttpError(400, `${k === 'insurance' ? "L'assurance" : 'La visite technique'} du véhicule ${v.plate} est périmée à la date de la tournée.`);
+    }
   }
   if (did) {
     const d = await fleet.driverOf(req, did);

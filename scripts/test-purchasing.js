@@ -189,6 +189,8 @@ run('Achats : de la demande au paiement', async ({ check, owner, mgr, mem, other
   check('commande close', r.status === 200, r.json);
 
   // ---------- Facture sans commande ----------
+  r = await owner('POST', `${PU}/invoices`, { supplierId: s2, supplierRef: 'DG-8', invoiceDate: today, expenseAccount: '6299', lines: [{ description: 'Frais', quantity: 1, unitPrice: 1000 }] });
+  check('facture : compte de charge absent du plan refusé dès la saisie', r.status === 400 && /inconnu du plan comptable/.test(r.json.error), r.json);
   r = await owner('POST', `${PU}/invoices`, { supplierId: s2, supplierRef: 'DG-9', invoiceDate: today, vatRate: 0, expenseAccount: '622', lines: [{ description: 'Honoraires', quantity: 1, unitPrice: 50000 }] });
   check('facture sans commande : bloquée « sans bon de commande »', r.status === 201 && r.json.status === 'blocked', r.json);
   r = await owner('GET', `${PU}/invoices/${r.json.id}`);
@@ -225,6 +227,13 @@ run('Achats : de la demande au paiement', async ({ check, owner, mgr, mem, other
   check('contrôle : lot et péremption repris dans le stock', lot && lot.lot_no === 'L-42' && lot.expiry === '2030-01-31', lot);
   r = await owner('GET', `${PU}/orders/${po2}`);
   check('commande : 5 refusées, 5 restent attendues (partiel)', r.json.order.lines[0].rejectedQty === 5 && r.json.order.lines[0].remainingQty === 5 && r.json.order.status === 'partial', r.json.order);
+  // Refus au contrôle : la quantité refusée sort du lot reçu, pas d'un autre lot (même périmé, premier en FEFO).
+  await owner('POST', `${O}/stock/items/${vaccin}/move`, { kind: 'in', quantity: 3, lotNo: 'L-OLD', expiry: '2020-01-31' });
+  r = await owner('POST', `${PU}/orders/${po2}/receipts`, { lines: [{ orderLineId: ol2.id, receivedQty: 5, lotNo: 'L-43', expiry: '2031-01-31', inspection: true }] });
+  const rl2 = (await owner('GET', `${PU}/inspections`)).json.inspections.find((x) => x.lotNo === 'L-43').receiptLineId;
+  r = await owner('POST', `${PU}/inspections`, { lines: [{ receiptLineId: rl2, acceptedQty: 3, rejectedQty: 2, reason: 'Flacons fêlés' }] });
+  const lots2 = Object.fromEntries((await dbx.prepare('SELECT lot_no, quantity FROM stock_lots WHERE item_id = ?').all(vaccin)).map((l) => [l.lot_no, Number(l.quantity)]));
+  check('contrôle : le refus sort du lot reçu (L-43 : 3), pas du lot périmé (L-OLD : 3)', r.status === 200 && lots2['L-43'] === 3 && lots2['L-OLD'] === 3 && lots2['L-42'] === 45, lots2);
 
   // ---------- Appel d'offres ----------
   r = await owner('POST', `${PU}/rfqs`, { title: 'Ciment 2e trimestre', supplierIds: [], lines: [{ itemId: ciment, quantity: 10, refPrice: 5000 }] });

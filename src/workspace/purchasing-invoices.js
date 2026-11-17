@@ -11,6 +11,7 @@ const router = express.Router({ mergeParams: true });
 const mgr = A.need('manager');
 const admin = A.need('admin');
 const acc = () => require('./accounting');
+const { PLAN } = require('./syscohada');
 
 /** Clé d'origine unique de l'écriture (la comptabilité refuse deux écritures de même origine) : « pur_invoice », puis « pur_invoice#2 »… après une annulation. */
 async function sourceKey(orgId, base, id) {
@@ -106,6 +107,8 @@ async function readInvoice(req, b, cur) {
   const declared = b.declaredTotal === undefined || b.declaredTotal === null || b.declaredTotal === '' ? null : P.money(b.declaredTotal, 'Total annoncé invalide.');
   const account = String(b.expenseAccount || '601').trim();
   if (!/^[2-6]\d{1,5}$/.test(account)) throw new HttpError(400, 'Compte de charge invalide (ex. 601, 605, 622).');
+  // Le compte doit exister (plan de l'organisation ou plan SYSCOHADA de base) : sinon la validation échouerait plus tard, au moment de passer l'écriture.
+  if (!PLAN.some(([c]) => c === account) && !await db.prepare('SELECT 1 FROM acc_accounts WHERE org_id = ? AND code = ?').get(req.org.id, account)) throw new HttpError(400, `Compte de charge inconnu du plan comptable : ${account}. Choisissez un compte existant (ex. 601, 605, 611) ou créez-le d'abord dans la Comptabilité.`);
   const raw = Array.isArray(b.lines) ? b.lines : [];
   if (!raw.length) throw new HttpError(400, 'Ajoutez au moins une ligne.');
   if (raw.length > 200) throw new HttpError(400, 'Trop de lignes (200 au plus).');

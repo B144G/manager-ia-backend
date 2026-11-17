@@ -305,7 +305,7 @@ module.exports.alertItems = async (req) => {
   const when = (days) => (days === 0 ? "aujourd'hui" : days === 1 ? 'demain' : `dans ${days} jours`);
   for (const c of s.expired) items.push({ level: 'high', title: 'Juridique · contrat expiré', text: `« ${oneLine(c.title, 70)} » est expiré depuis le ${c.endDate}${who(c.assignee, c.assigneeId)}`, at: c.endDate + 'T00:00:00.000Z', rank: -9999 });
   for (const c of s.toRenew) {
-    const a = c.alerts[0];
+    const a = c.alerts.find((x) => x.level === 'high') || c.alerts[0]; // la plus urgente (ex. préavis dépassé plutôt que « se termine dans 25 jours »)
     const days = c.endDate ? daysTo(c.endDate) : 0;
     items.push({ level: a.level === 'high' ? 'high' : 'medium', title: 'Juridique · contrat à renouveler', text: `« ${oneLine(c.title, 70)} » : ${a.text.charAt(0).toLowerCase()}${a.text.slice(1)}${who(c.assignee, c.assigneeId)}`, at: null, rank: Math.min(days, 0) - (a.level === 'high' ? 100 : 0) + days });
   }

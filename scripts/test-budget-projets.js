@@ -38,6 +38,15 @@ run('Budget et Projets : pilotage avancé', async ({ check, owner, mgr, mem, oth
     const es = C.earnedSchedule(e, win, T);
     // PVt(9) = 90 000 + 3 × 20 000 = 150 000 = EV -> ES = 9 jours ; AT = 11 ; SPI(t) = 0,82 ; durée 31 × 11 / 9 = 37,9 -> 38 jours.
     check('planning acquis : ES 9 j, AT 11 j, SPI(t) 0,82, fin prévue début + 37 j', es.es === 9 && es.at === 11 && es.spiT === 0.82 && es.forecastDuration === 38 && es.end === d(27), es);
+    // Palier de PV égal à l'EV (projet dans les temps avec un creux, ou pas encore commencé) : SPI(t) = 1, fin prévue = fin du plan.
+    const winP = { start: d(-10), end: d(19) };
+    const eP = C.evm({ tasks: [{ id: 1, status: 'done', estimate: 10, start: d(-10), end: d(-1), doneAt: d(-1), hours: [] }, { id: 2, status: 'todo', estimate: 10, start: d(10), end: d(19), hours: [] }], rate: 0, budget: 100000, window: winP, today: T });
+    const esP = C.earnedSchedule(eP, winP, T);
+    check('planning acquis : dans les temps malgré un creux du plan -> SPI(t) 1, fin prévue à la fin du plan', esP.es === 11 && esP.spiT === 1 && esP.end === d(19), esP);
+    const winF = { start: T, end: d(30) };
+    const eF = C.evm({ tasks: [{ id: 1, status: 'todo', estimate: 10, start: d(25), end: d(30), hours: [] }], rate: 0, budget: 100000, window: winF, today: T });
+    const esF = C.earnedSchedule(eF, winF, T);
+    check('planning acquis : projet qui ne commence que dans 25 jours -> SPI(t) 1 (et non 25), fin prévue à la fin du plan', esF.spiT === 1 && esF.end === d(30), esF);
     const cv = C.curve(e, win, T);
     const last = cv.find((x) => x.date === T);
     check('courbe en S : le point du jour reprend PV/EV/AC', last && last.pv === 200000 && last.ev === 150000 && last.ac === 100000, last);
@@ -55,6 +64,9 @@ run('Budget et Projets : pilotage avancé', async ({ check, owner, mgr, mem, oth
     check('prévision : tendance linéaire 1 860, rythme 1 420, plan 1 260', tr.method === 'trend' && tr.landing === 1860 && tr.methods.runRate === 1420 && tr.methods.plan === 1260 && tr.slope === 10, tr);
     const se = C.forecastSeries({ actual: [100, 200, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], planned: Array(12).fill(100), prev: [50, 100, 50, 100, 50, 100, 50, 100, 50, 100, 50, 100], closed: 2, kind: 'expense' });
     check('prévision : saisonnalité de l\'an passé (croissance × 2) -> 1 800', se.method === 'seasonal' && se.growth === 2 && se.landing === 1800, se);
+    // Activité démarrée en octobre de l'an passé : l'an passé ne couvre pas la période, pas de saisonnalité (g vaudrait 10 et l'atterrissage exploserait).
+    const young = C.forecastSeries({ actual: [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 0, 0], planned: Array(12).fill(100), prev: [0, 0, 0, 0, 0, 0, 0, 0, 0, 100, 100, 100], closed: 10, kind: 'expense' });
+    check('prévision : an passé partiel (activité démarrée en octobre) -> pas de saisonnalité, atterrissage 1 200', young.method === 'trend' && young.landing === 1200, young);
     const noisy = C.forecastSeries({ actual: [100, 140, 80, 120, 0, 0, 0, 0, 0, 0, 0, 0], planned: [], prev: null, closed: 4, kind: 'expense' });
     // Tendance : b = 0 (Σ(x-x̄)(y-ȳ) = -1,5×-10 + -0,5×30 + 0,5×-30 + 1,5×10 = 0), a = 110 ; résidus -10, 30, -30, 10 -> σ = √(2000/2) = 31,6
     // demi-largeur = 1,2816 × 31,62 × √8 = 114,6 ; atterrissage 440 + 8 × 110 = 1 320.

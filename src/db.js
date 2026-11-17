@@ -3722,6 +3722,10 @@ const MIGRATIONS = [
   CREATE INDEX idx_log_cinv_lines_delivery ON logistics_carrier_invoice_lines(delivery_id);
   `,
 
+  // Transport : heure réelle de livraison saisie après coup par un responsable (bon papier), comptée à part dans les indicateurs
+  `
+  ALTER TABLE logistics_deliveries ADD COLUMN time_declared INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 

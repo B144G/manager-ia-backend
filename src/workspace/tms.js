@@ -165,21 +165,8 @@ async function shipmentLoad(d) {
 
 // ---------- Véhicules et chauffeurs : aptitude à une date ----------
 const vehOf = (v) => (v ? { id: Number(v.id), plate: v.plate, capacityKg: Number(v.capacity_kg || 0), capacityM3: Number(v.capacity_m3 || 0), capacityPallets: Number(v.capacity_pallets || 0), costPerKm: Number(v.cost_per_km || 0), co2: Number(v.co2_g_km || 0) } : null);
-/** Disponibilité (véhicule actif, chauffeur actif, pas pris ailleurs ce jour, permis valable : contrôles de logistics.js) + papiers du véhicule à jour. */
-async function fitness(req, b, cur, date) {
-  const asg = await LG().assignment(req, b, cur, date);
-  if (asg.vehicleId) {
-    // Assurance et visite technique : la dernière échéance saisie doit couvrir le jour de la tournée.
-    for (const k of ['insurance', 'inspection']) {
-      const row = await db.prepare('SELECT MAX(expires_at) AS m FROM logistics_compliance WHERE vehicle_id = ? AND kind = ?').get(asg.vehicleId, k);
-      if (row && row.m && row.m < date) {
-        const v = await FL().vehicleOf(req, asg.vehicleId);
-        throw new HttpError(400, `${k === 'insurance' ? "L'assurance" : 'La visite technique'} du véhicule ${v.plate} est périmée à la date de la tournée.`);
-      }
-    }
-  }
-  return asg;
-}
+/** Disponibilité (véhicule actif, chauffeur actif, pas pris ailleurs ce jour, permis valable, assurance et visite technique à jour) : contrôles de logistics.js. */
+const fitness = (req, b, cur, date) => LG().assignment(req, b, cur, date);
 
 // ---------- Livraisons à planifier ----------
 async function candidates(req, date, opt = {}) {
@@ -623,6 +610,20 @@ router.post('/tms/stops/:id/complete', async (req, res) => {
   if (resched && resched < r.date) throw new HttpError(400, 'La nouvelle date doit suivre celle de la tournée.');
   const g = gps(b);
   const now = nowISO();
+  // Saisie après coup (bon de livraison papier, chauffeur sans téléphone) : un responsable indique l'heure réelle, avec la pièce qui la justifie.
+  // L'heure est marquée « déclarée » : les indicateurs la comptent à part de l'heure enregistrée en direct.
+  let at = now; let declared = 0;
+  if (b.deliveredAt !== undefined && b.deliveredAt !== null && b.deliveredAt !== '') {
+    if (!A.can(req, 'manager')) throw new HttpError(403, "Seul un responsable peut saisir après coup l'heure réelle d'une livraison.");
+    const m = /^(\d{4}-\d{2}-\d{2})T([01]\d|2[0-3]):([0-5]\d)$/.exec(String(b.deliveredAt));
+    if (!m || !A.date(m[1])) throw new HttpError(400, 'Heure réelle invalide (date et heure attendues).');
+    if (note.length < 5) throw new HttpError(400, 'Saisie après coup : notez la pièce qui justifie cette heure (ex. bon de livraison signé n° …).');
+    if (m[1] < r.date) throw new HttpError(400, "L'heure réelle ne peut pas précéder le jour de la tournée.");
+    const ms = Date.parse(`${m[1]}T${m[2]}:${m[3]}:00Z`) - Number((await settings(req.org.id)).tz_offset) * 60000;
+    if (ms > Date.now()) throw new HttpError(400, "L'heure réelle ne peut pas être dans le futur.");
+    at = new Date(ms).toISOString(); declared = 1;
+  }
+  const atNote = declared ? `Heure réelle saisie après coup : ${String(b.deliveredAt).slice(11, 16)} le ${String(b.deliveredAt).slice(0, 10).split('-').reverse().join('/')}` : '';
   await db.transaction(async () => {
     const fresh = await db.prepare('SELECT * FROM logistics_deliveries WHERE id = ? FOR UPDATE').get(d.id);
     if (FINISHED.includes(fresh.status)) throw new HttpError(409, 'Cet arrêt vient d\'être terminé par quelqu\'un d\'autre.');
@@ -633,15 +634,15 @@ router.post('/tms/stops/:id/complete', async (req, res) => {
         await L.adjust(req, y.x.item_id, y.rest, `Non livré (partiel) livraison #${d.id}`, { serials: part.serials, allocations: part.allocations, refKind: 'delivery', refId: d.id });
         await db.prepare('UPDATE logistics_delivery_items SET returned_qty = ? WHERE id = ?').run(y.rest, y.x.id);
       }
-      await db.prepare("UPDATE logistics_deliveries SET status = 'delivered', outcome = ?, received_by = ?, cod_collected = ?, delivered_at = ?, attempts = attempts + 1, updated_at = ? WHERE id = ?").run(outcome, recipient, cod, now, now, d.id);
+      await db.prepare("UPDATE logistics_deliveries SET status = 'delivered', outcome = ?, received_by = ?, cod_collected = ?, delivered_at = ?, time_declared = ?, attempts = attempts + 1, updated_at = ? WHERE id = ?").run(outcome, recipient, cod, at, declared, now, d.id);
       const gap = due > 0 && cod < due ? `Encaissé ${cod.toLocaleString('fr-FR')} sur ${due.toLocaleString('fr-FR')} ${req.org.currency}` : due > 0 ? `Encaissé ${cod.toLocaleString('fr-FR')} ${req.org.currency}` : '';
-      await event(req, d.id, 'delivered', [outcome === 'partial' ? 'Livraison partielle' : 'Livrée', `reçu par ${recipient}`, back.map((y) => `${y.rest} ${y.x.unit} de « ${y.x.name} » non livré(s), remis en stock`).join(', '), gap, note, stock].filter(Boolean).join(' · '), g);
+      await event(req, d.id, 'delivered', [outcome === 'partial' ? 'Livraison partielle' : 'Livrée', `reçu par ${recipient}`, atNote, back.map((y) => `${y.rest} ${y.x.unit} de « ${y.x.name} » non livré(s), remis en stock`).join(', '), gap, note, stock].filter(Boolean).join(' · '), g);
     } else if (resched) {
       await db.prepare("UPDATE logistics_deliveries SET status = 'shipped', outcome = ?, failure_reason = ?, attempts = attempts + 1, planned_date = ?, round_id = NULL, round_pos = 0, eta = '', arrived_at = NULL, updated_at = ? WHERE id = ?").run(outcome, reason, resched, now, d.id);
       await event(req, d.id, 'failed', [REASONS[reason], note, `Nouvelle tentative le ${resched.split('-').reverse().join('/')}`].filter(Boolean).join(' · '), g);
     } else {
-      await db.prepare("UPDATE logistics_deliveries SET status = 'failed', outcome = ?, failure_reason = ?, attempts = attempts + 1, delivered_at = ?, updated_at = ? WHERE id = ?").run(outcome, reason, now, now, d.id);
-      await event(req, d.id, 'failed', [REASONS[reason], note].filter(Boolean).join(' · '), g);
+      await db.prepare("UPDATE logistics_deliveries SET status = 'failed', outcome = ?, failure_reason = ?, attempts = attempts + 1, delivered_at = ?, time_declared = ?, updated_at = ? WHERE id = ?").run(outcome, reason, at, declared, now, d.id);
+      await event(req, d.id, 'failed', [REASONS[reason], atNote, note].filter(Boolean).join(' · '), g);
     }
   })();
   res.json({ ok: true, outcome, codCollected: cod, returnedToStock: back.map((y) => ({ itemId: y.x.item_id, quantity: y.rest })), rescheduled: resched });

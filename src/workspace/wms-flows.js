@@ -509,7 +509,7 @@ async function validateReturn(req, r) {
       await L.adjust(req, l.item_id, q, 'Retour remis en stock', { ...opts, locationId: l.location_id || undefined, unitCost: Number(l.unit_value) || undefined });
       await db.prepare("UPDATE wms_return_lines SET final = 'restock' WHERE id = ?").run(l.id);
     } else {
-      await L.adjust(req, l.item_id, -q, label, { ...opts, locationId: l.location_id || undefined, lotNo: undefined });
+      await L.adjust(req, l.item_id, -q, label, { ...opts, locationId: l.location_id || undefined, lotNo: undefined, preferLot: { lotNo: l.lot_no } });
       await db.prepare('UPDATE wms_return_lines SET final = ? WHERE id = ?').run(r.kind === 'scrap' ? 'scrap' : null, l.id);
     }
   }
@@ -578,7 +578,7 @@ router.post('/returns/:id/lines/:lineId/dispose', mgr, async (req, res) => {
     if (to === 'restock') {
       const it = await db.prepare('SELECT * FROM stock_items WHERE id = ?').get(l.item_id);
       for (const d of await W.destinationsFor(req.org.id, it, Number(l.quantity))) await W.move(req, l.item_id, loc, d.location.id, d.quantity, { kind: 'return_restock', refKind: 'return', refId: r.id, reason: 'Retour remis en stock' });
-    } else await L.adjust(req, l.item_id, -Number(l.quantity), `Mise au rebut (retour ${r.code})`, { locationId: loc, refKind: 'return', refId: r.id, serials: l.serials || undefined, allowExpired: true });
+    } else await L.adjust(req, l.item_id, -Number(l.quantity), `Mise au rebut (retour ${r.code})`, { locationId: loc, refKind: 'return', refId: r.id, serials: l.serials || undefined, allowExpired: true, preferLot: { lotNo: l.lot_no } });
     await db.prepare('UPDATE wms_return_lines SET final = ? WHERE id = ?').run(to, l.id);
   })();
   res.json({ ok: true });

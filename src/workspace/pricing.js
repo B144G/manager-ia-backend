@@ -71,7 +71,7 @@ async function lastPaid(orgId, customerId, item) {
   const rows = await db.prepare("SELECT number, issued, lines FROM documents WHERE org_id = ? AND customer_id = ? AND kind = 'invoice' AND status IN ('sent','paid') ORDER BY issued DESC, id DESC LIMIT 30").all(orgId, customerId);
   for (const d of rows) {
     let ls = []; try { ls = JSON.parse(d.lines); } catch { ls = []; }
-    const l = ls.find((x) => (x.itemId && Number(x.itemId) === Number(item.id)) || norm(x.label) === want);
+    const l = ls.find((x) => norm(x.label) === want || (x.itemId && Number(x.itemId) === Number(item.id) && !norm(x.label))); // même règle que matchItem
     if (l && Number(l.price) > 0) return { price: Number(l.price), number: d.number, date: d.issued };
   }
   return null;
@@ -116,9 +116,11 @@ async function priceFor(org, item, customer, qty = 1, n = 3) {
 
 const catalogAll = async (orgId) => await db.prepare('SELECT * FROM catalog WHERE org_id = ?').all(orgId);
 /** Retrouve l'article du catalogue d'une ligne de devis/facture : par identifiant, sinon par nom exact (sans accents ni casse). */
+// L'identifiant d'une ligne peut être celui d'un article du STOCK (lien utilisé par la préparation et la livraison) : il n'est retenu
+// pour le catalogue que si le nom concorde, sinon un autre article du catalogue portant le même numéro imposerait son plancher.
 function matchItem(items, line) {
-  if (line.itemId) { const h = items.find((i) => Number(i.id) === Number(line.itemId)); if (h) return h; }
   const w = norm(line.label);
+  if (line.itemId) { const h = items.find((i) => Number(i.id) === Number(line.itemId)); if (h && (!w || norm(h.name) === w)) return h; }
   return w ? items.find((i) => norm(i.name) === w) : null;
 }
 

@@ -36,7 +36,8 @@ function linreg(xs, ys) {
  * Méthodes, pour chaque mois m non clos (m = closed+1 … 12, numérotés de 1 à 12) :
  *   - rythme (run-rate)      f(m) = moyenne des 3 derniers mois clos (ou moins s'il y en a moins)
  *   - tendance linéaire      f(m) = max(0, a + b·m), droite des moindres carrés sur les mois clos (3 mois clos au moins, sinon = rythme)
- *   - saisonnalité           f(m) = prev[m] × g, avec g = Σ réalisé des mois clos / Σ prev des mêmes mois (si l'an passé a des données)
+ *   - saisonnalité           f(m) = prev[m] × g, avec g = Σ réalisé des mois clos / Σ prev des mêmes mois (si l'an passé a des données
+ *                            et que la série y commence au plus tard au même mois que cette année)
  *   - plan                   f(m) = planned[m]  (seule méthode possible sans mois clos)
  * Méthode retenue (« centrale ») : saisonnalité si possible, sinon tendance (≥ 3 mois clos), sinon rythme, sinon plan.
  * Atterrissage = Σ réalisé des mois clos + Σ_{m non clos} max(f(m), réalisé déjà constaté du mois m)   (le mois en cours ne descend pas
@@ -60,7 +61,10 @@ function forecastSeries({ actual, planned, prev, closed, committed = 0, kind = '
     const { a, b } = linreg(hist.map((_, i) => i + 1), hist);
     methods.trend = { f: (m) => Math.max(0, a + b * m), resid: hist.map((y, i) => y - (a + b * (i + 1))), k: 2, slope: b };
   }
-  if (H && n >= 1 && sum(H.slice(0, n)) > 0 && sum(H) > 0) {
+  // L'an passé ne sert de saisonnalité que s'il couvre la période : la série y a commencé au plus tard quand elle commence cette année
+  // (une activité démarrée en octobre de l'an passé donnerait sinon un coefficient g démesuré et un atterrissage absurde).
+  const firstH = H ? H.findIndex((v) => v > 0) : -1; const firstA = hist.findIndex((v) => v > 0);
+  if (H && n >= 1 && sum(H.slice(0, n)) > 0 && sum(H) > 0 && (firstA < 0 || firstH <= firstA)) {
     const g = sum(hist) / sum(H.slice(0, n));
     methods.seasonal = { f: (m) => H[m - 1] * g, resid: hist.map((y, i) => y - H[i] * g), k: 1, growth: g };
   }
@@ -199,7 +203,15 @@ function earnedSchedule(e, window, today) {
   const top = Math.max(D, AT);
   while (k < top && pv(k + 1) <= EV + 1e-9) k++;
   const next = pv(k + 1); const cur = pv(k);
-  const es = next > cur && k < top ? k + (EV - cur) / (next - cur) : k;
+  let es = next > cur && k < top ? k + (EV - cur) / (next - cur) : k;
+  // Palier : si la PV reste égale à l'EV sur plusieurs jours (rien de prévu ces jours-là, ou projet pas encore commencé), tout le palier
+  // « vaut » l'EV ; on retient le jour du palier le plus proche d'aujourd'hui. Sinon un projet dans les temps paraîtrait en avance
+  // (SPI(t) 25 pour un projet qui démarre dans 25 jours, fin prévue le lendemain).
+  if (Math.abs(cur - EV) <= 1e-9) {
+    let lo = k;
+    while (lo > 0 && Math.abs(pv(lo - 1) - EV) <= 1e-9) lo--;
+    es = Math.min(Math.max(AT, lo), k);
+  }
   const spiT = es / AT;
   const dur = spiT > 0 ? Math.ceil(D / spiT - 1e-9) : null;
   return { es: r2(es), at: AT, spiT: r2(spiT), duration: D, forecastDuration: dur, end: dur ? addDays(window.start, dur - 1) : null };

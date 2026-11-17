@@ -51,7 +51,7 @@ router.get('/', async (req, res) => {
 async function payInfo(req, id, b, cur) {
   const has = ['cnpsNo', 'niu', 'payChannel', 'payAccount'].some((k) => b[k] !== undefined);
   if (!has) return;
-  const ch = b.payChannel === undefined ? cur.pay_channel || '' : A.oneOf(b.payChannel, ['', 'bank', 'mobile'], undefined, 'Canal de paiement : banque ou mobile money.');
+  const ch = b.payChannel === undefined ? cur.pay_channel || '' : A.oneOf(b.payChannel, ['', 'bank', 'mobile'], '', 'Canal de paiement : banque ou mobile money.');
   const acc = b.payAccount === undefined ? cur.pay_account || '' : A.text(b.payAccount, 60);
   if (acc && !/^[A-Za-z0-9 +().\-/]{4,60}$/.test(acc)) throw new HttpError(400, 'Compte bancaire ou numéro de mobile money invalide.');
   await db.prepare('UPDATE employees SET cnps_no = ?, niu = ?, pay_channel = ?, pay_account = ? WHERE id = ? AND org_id = ?').run(

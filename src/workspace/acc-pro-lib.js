@@ -29,10 +29,11 @@ const isCharge = (a) => a[0] === '6' || /^8[13579]/.test(a);
 // Fragments SQL (alias « e » = acc_entries) : écritures de clôture du résultat et d'à-nouveaux, et leurs annulations.
 const NOT_CLOSE = "e.source NOT IN ('year_end', 'year_end_rev')";
 const NOT_OPEN = "e.source NOT IN ('year_open', 'year_open_rev')";
+const NOT_VAT = "NOT EXISTS (SELECT 1 FROM acc_lines v WHERE v.entry_id = e.id AND v.account IN ('4441', '4449'))"; // liquidations de TVA : elles soldent 443/445 contre 4441/4449
 
-/** Soldes par compte entre deux dates ; opts.noClose / opts.noOpen comme accounting.balance. */
+/** Soldes par compte entre deux dates ; opts.noClose / opts.noOpen / opts.noVat comme accounting.balance. */
 async function balances(orgId, from, to, opts = {}) {
-  const extra = (opts.noClose ? ` AND ${NOT_CLOSE}` : '') + (opts.noOpen ? ` AND ${NOT_OPEN}` : '');
+  const extra = (opts.noClose ? ` AND ${NOT_CLOSE}` : '') + (opts.noOpen ? ` AND ${NOT_OPEN}` : '') + (opts.noVat ? ` AND ${NOT_VAT}` : '');
   const rows = await db.prepare(`SELECT l.account, a.label, SUM(l.debit) AS debit, SUM(l.credit) AS credit FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id LEFT JOIN acc_accounts a ON a.org_id = l.org_id AND a.code = l.account
     WHERE l.org_id = ? AND e.date >= ? AND e.date <= ?${extra} GROUP BY l.account, a.label ORDER BY l.account`).all(orgId, from, to);
   return rows.map((r) => ({ account: r.account, label: r.label || '', debit: Number(r.debit), credit: Number(r.credit), balance: Number(r.debit) - Number(r.credit) }));

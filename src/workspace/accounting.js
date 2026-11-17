@@ -195,9 +195,11 @@ async function generate(req) {
 }
 
 // ---------- Calculs ----------
-// opts.noClose : sans l'écriture de détermination du résultat (et son annulation) ; opts.noOpen : sans les écritures d'à-nouveaux (et leur annulation).
+// opts.noClose : sans l'écriture de détermination du résultat (et son annulation) ; opts.noOpen : sans les écritures d'à-nouveaux (et leur annulation) ;
+// opts.noVat : sans les liquidations de TVA (écritures qui mouvementent 4441 TVA due ou 4449 crédit de TVA), qui soldent 443/445 et effaceraient la TVA de la période.
+const NOT_VAT = "NOT EXISTS (SELECT 1 FROM acc_lines v WHERE v.entry_id = e.id AND v.account IN ('4441', '4449'))";
 async function balance(org, from, to, opts = {}) {
-  const extra = (opts.noClose ? " AND e.source NOT IN ('year_end', 'year_end_rev')" : '') + (opts.noOpen ? " AND e.source NOT IN ('year_open', 'year_open_rev')" : '');
+  const extra = (opts.noClose ? " AND e.source NOT IN ('year_end', 'year_end_rev')" : '') + (opts.noOpen ? " AND e.source NOT IN ('year_open', 'year_open_rev')" : '') + (opts.noVat ? ` AND ${NOT_VAT}` : '');
   const rows = await db.prepare(`SELECT l.account, a.label, SUM(l.debit) AS debit, SUM(l.credit) AS credit FROM acc_lines l JOIN acc_entries e ON e.id = l.entry_id LEFT JOIN acc_accounts a ON a.org_id = l.org_id AND a.code = l.account
     WHERE l.org_id = ? AND e.date >= ? AND e.date <= ?${extra} GROUP BY l.account, a.label ORDER BY l.account`).all(org.id, from, to);
   return rows.map((r) => ({ account: r.account, label: r.label || '', debit: r.debit, credit: r.credit, balance: r.debit - r.credit }));
@@ -318,7 +320,7 @@ router.get('/statements', async (req, res) => {
   res.json(await require('./acc-pro-analytics').withComparison(req.org, year, base)); // N-1 et variations ; sans « compare », réponse inchangée
 });
 router.get('/vat', async (req, res) => {
-  const { from, to } = range(req); const rows = await balance(req.org, from, to, { noClose: true, noOpen: true }); // flux de TVA de la période : sans les écritures de clôture ni d'à-nouveaux
+  const { from, to } = range(req); const rows = await balance(req.org, from, to, { noClose: true, noOpen: true, noVat: true }); // flux de TVA de la période : sans les écritures de clôture, d'à-nouveaux ni de liquidation
   const collected = -sum(rows, (r) => r.account.startsWith('443')); const deductible = sum(rows, (r) => r.account.startsWith('445'));
   res.json({ from, to, collected, deductible, due: Math.max(collected - deductible, 0), credit: Math.max(deductible - collected, 0), rate: req.acc.vat_rate });
 });
@@ -368,6 +370,7 @@ router.use(require('./acc-pro-analytics'));
 router.use(require('./acc-audit'));
 router.use(require('./acc-trail'));
 router.use(require('./acc-loans'));
+router.use(require('./acc-stock'));
 
 module.exports = router;
 module.exports.pending = pending;

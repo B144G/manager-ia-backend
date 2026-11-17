@@ -64,7 +64,7 @@ async function computeRatios(req, year) {
 
   // Délai moyen de paiement des clients = créances clients / ventes TTC x jours.
   const creances = Math.max(sum(cum, '41'), 0);
-  const tvaColl = Math.max(-sum(yr, '443'), 0);
+  const tvaColl = Math.max(-sum(await L.balances(org.id, start, end, { noClose: true, noVat: true }), '443'), 0); // TVA facturée de l'exercice, hors liquidations
   const ttc = ca + tvaColl;
   if (!(ttc > 0) || !days) na('delai_clients', 'Délai moyen de paiement des clients', 'jours', "Pas de ventes sur la période : le délai ne peut pas être calculé.");
   else { const v = Math.round((creances / ttc) * days); add('delai_clients', 'Délai moyen de paiement des clients', v, 'jours', v <= 45 ? 'ok' : v <= 90 ? 'watch' : 'alert', creances > 0 ? `Vos clients vous paient en moyenne en ${v} jour(s) (${L.fmt(creances)} FCFA restent à encaisser).` : 'Vos clients ne vous doivent rien : tout est encaissé.'); }

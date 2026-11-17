@@ -160,12 +160,16 @@ run('Comptabilité pro : analytique, modèles, récurrentes, clôture annuelle, 
   r = await tp({ template: 'loan_repayment', date: D(7, 5), amount: 100000, options: { interest: 20000 } });
   e = await linesOf(r, 'Remboursement');
   check('emprunt : capital 162 + intérêts 671, total prélevé 120 000 en banque', e && balanced(e) && e.lines.some((l) => l.account === '162' && l.debit === 100000) && e.lines.some((l) => l.account === '671' && l.debit === 20000) && e.lines.some((l) => l.account === '521' && l.credit === 120000), e);
+  const vat7 = async () => [(await owner('GET', `${AC}/vat?from=${P}-07-01&to=${P}-07-31`)).json, (await owner('GET', `${O}/fiscal/vat?month=${P}-07`)).json];
+  const vatBefore = await vat7();
   r = await tp({ template: 'vat_settlement', date: D(7, 10), amount: 200000, options: { deductible: 80000 } });
   e = await linesOf(r, 'Liquidation');
   check('liquidation de TVA : 4431 / 4452 / TVA due 4441 = 120 000', e && balanced(e) && e.lines.some((l) => l.account === '4441' && l.credit === 120000) && e.lines.some((l) => l.account === '4452' && l.credit === 80000), e);
   r = await tp({ template: 'vat_settlement', date: D(7, 11), amount: 50000, options: { deductible: 80000 } });
   e = await linesOf(r, 'Liquidation');
   check('liquidation de TVA avec crédit : 4449 = 30 000', e && balanced(e) && e.lines.some((l) => l.account === '4449' && l.debit === 30000), e);
+  const vatAfter = await vat7();
+  check('TVA du mois inchangée après la liquidation (comptabilité et fiscalité)', vatAfter[0].collected === vatBefore[0].collected && vatAfter[0].deductible === vatBefore[0].deductible && vatAfter[1].collected === vatBefore[1].collected && vatAfter[1].deductible === vatBefore[1].deductible, [vatBefore.map((v) => [v.collected, v.deductible]), vatAfter.map((v) => [v.collected, v.deductible])]);
   r = await tp({ template: 'vat_payment', date: D(7, 12), amount: 120000 });
   check('paiement de la TVA', r.status === 201);
   r = await tp({ template: 'bank_fees', date: D(7, 13), amount: 2500 });

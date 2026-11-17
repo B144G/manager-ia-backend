@@ -141,6 +141,9 @@ run('Stock : lots, séries, CUMP, inventaire, achats', async ({ check, owner, mg
   // Suppression d'un article utilisé
   r = await mgr('DELETE', `${S}/items/${sav}`);
   check('article utilisé (commandes, mouvements) : suppression refusée', r.status === 409 && /utilisé/.test(r.json.error), r.json);
+  r = await mgr('POST', `${S}/items`, { name: 'Kit sans coût', unitCost: 0 });
+  check('article au coût 0 accepté (coût inconnu)', r.status === 201, r.json);
+  await mgr('DELETE', `${S}/items/${r.json.id}`);
   r = await mgr('POST', `${S}/items`, { name: 'Neuf' });
   r = await mgr('DELETE', `${S}/items/${r.json.id}`);
   check('article jamais utilisé : supprimé', r.status === 200, r.json);

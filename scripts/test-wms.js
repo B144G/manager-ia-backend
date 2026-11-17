@@ -215,6 +215,20 @@ run('Stock entrepôt (WMS)', async ({ check, owner, mgr, mem, other, org, org2, 
   const sret = r.json.id;
   r = await owner('POST', `${WM}/returns/${sret}/credit`, { amount: '15000' });
   check('retour fournisseur : avoir enregistré', r.status === 200 && (await owner('GET', `${WM}/returns/${sret}`)).json.return.creditAmount === 15000, r.json);
+  // Retour d'un lot : il garde sa péremption, et le rebut sort de ce lot (pas du lot périmé, premier en FEFO).
+  const dd = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+  r = await owner('POST', `${O}/stock/items`, { name: 'Lait UHT 1 L', unit: 'brique', tracking: 'lot', unitCost: 700 });
+  const lait = r.json.id;
+  await owner('POST', `${O}/stock/items/${lait}/move`, { kind: 'in', quantity: 10, lotNo: 'L-1', expiry: dd(200) });
+  await owner('POST', `${O}/stock/items/${lait}/move`, { kind: 'in', quantity: 2, lotNo: 'L-0', expiry: dd(-5) });
+  await owner('POST', `${O}/stock/items/${lait}/move`, { kind: 'out', quantity: 4 });
+  r = await owner('POST', `${WM}/returns`, { kind: 'customer', customerId: cust, lines: [{ itemId: lait, quantity: '2', reasonCode: 'defective', disposition: 'quarantine', lotNo: 'L-1' }], validate: true });
+  let lotsL = await dbx.prepare('SELECT lot_no, expiry, quantity FROM stock_lots WHERE item_id = ? AND quantity > 0 ORDER BY id').all(lait);
+  check('retour d\'un lot : remis dans le même lot, péremption gardée', lotsL.length === 2 && lotsL.find((l) => l.lot_no === 'L-1').expiry === dd(200) && Number(lotsL.find((l) => l.lot_no === 'L-1').quantity) === 8, lotsL);
+  const ll = (await owner('GET', `${WM}/returns/${r.json.id}`)).json.return.lines[0];
+  await owner('POST', `${WM}/returns/${r.json.id}/lines/${ll.id}/dispose`, { disposition: 'scrap' });
+  lotsL = Object.fromEntries((await dbx.prepare('SELECT lot_no, quantity FROM stock_lots WHERE item_id = ?').all(lait)).map((l) => [l.lot_no, Number(l.quantity)]));
+  check('rebut d\'un retour : sort du lot retourné (L-1 : 6), pas du lot périmé (L-0 : 2)', lotsL['L-1'] === 6 && lotsL['L-0'] === 2, lotsL);
   check('cohérence après retours', (await coherent()).length === 0, await coherent());
 
   // ---------- Réception avec coûts d'arrivée ----------

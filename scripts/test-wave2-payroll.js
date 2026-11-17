@@ -61,6 +61,9 @@ run('Paie Cameroun', async ({ check, owner, mgr, mem, other, org, O }) => {
   const awa = await mk({ name: 'Awa Nkomo', salary: 300000, hiredAt: '2025-03-01', cnpsNo: 'CNPS-0001', niu: 'P111', payChannel: 'bank', payAccount: '10005-00001-12345678901-23' });
   const paul = await mk({ name: 'Paul Eto', salary: 150000, payChannel: 'mobile', payAccount: '677001122' });
   const zoe = await mk({ name: 'Zoé Sans Compte', salary: 120000 });
+  r = await owner('POST', `${H}/employees`, { name: 'Canal Non Précisé', salary: 100000, cnpsNo: 'CNPS-0009', payChannel: '', payAccount: '' });
+  check('canal de paiement « non précisé » (valeur vide du formulaire) accepté', r.status === 201, r.json);
+  if (r.json.id) { r = await owner('PUT', `${H}/employees/${r.json.id}`, { payChannel: '', status: 'left' }); check('modifier une fiche avec le canal « non précisé » accepté', r.status === 200, r.json); }
   r = await mgr('GET', H);
   check('un responsable ne voit pas matricule ni compte de virement', r.json.employees.every((e) => e.payAccount === undefined && e.cnpsNo === undefined), r.json.employees[0]);
   r = await owner('PUT', `${H}/employees/${paul}`, { payAccount: '<script>' });

@@ -87,6 +87,14 @@ run('Vague 4 · Négociation des prix', async ({ check, owner, mgr, mem, other, 
   check('devis sous le plancher : l\'administrateur doit donner un motif', r.status === 422 && /motif/.test(r.json.error), r.json);
   r = await owner('POST', `${C}/documents`, { kind: 'quote', customerId: paul, lines: [{ label: 'Robe wax', quantity: 1, price: 5000 }], priceOverride: { reason: 'Liquidation fin de série' } });
   check('devis sous le plancher : accepté avec motif (administrateur)', r.status === 201, r.json);
+  // Ligne reliée à un article du STOCK (itemId) dont le numéro est aussi celui d'un autre article du catalogue : le plancher de cet autre article ne s'applique pas
+  const sid = 987654;
+  await dbx.prepare("INSERT INTO stock_items (id, org_id, name, unit, quantity, created_at) VALUES (?, ?, 'Pagne imprimé', 'pièce', 10, ?)").run(sid, org, new Date().toISOString());
+  await dbx.prepare("INSERT INTO catalog (id, org_id, name, price, floor_price, created_at) VALUES (?, ?, 'Montre dorée', 90000, 80000, ?)").run(sid, org, new Date().toISOString());
+  r = await mgr('POST', `${C}/documents`, { kind: 'invoice', customerId: paul, lines: [{ itemId: sid, label: 'Pagne imprimé', quantity: 2, price: 7500 }] });
+  check('ligne du stock (itemId) : pas de plancher d\'un article du catalogue portant le même numéro', r.status === 201, r.json);
+  r = await mgr('POST', `${C}/documents`, { kind: 'invoice', customerId: paul, lines: [{ itemId: sid, label: 'Montre dorée', quantity: 1, price: 50000 }] });
+  check('même numéro et même nom : le plancher du catalogue s\'applique', r.status === 403 && /plancher/.test(r.json.error), r.json);
   r = await mgr('POST', `${C}/documents`, { kind: 'quote', customerId: paul, lines: [{ label: 'Robe wax', quantity: 1, price: 6500 }, { label: 'Livraison', quantity: 1, price: 1000 }] });
   check('devis au-dessus du plancher et ligne libre : accepté', r.status === 201, r.json);
   r = await owner('GET', `${S}/negotiation`);

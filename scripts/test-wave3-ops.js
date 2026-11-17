@@ -153,6 +153,15 @@ run('Vague 3 · Décisions, projets, juridique, procédures, équipe', async ({ 
   check('pas de doublon au second passage', r.json.created === 0, r.json);
   r = await mgr('GET', `${P}/tasks?project=${proj}`);
   check('la nouvelle occurrence existe, à faire', r.json.tasks.filter((t) => t.title === 'Inventaire hebdomadaire').length === 2);
+  // Plusieurs semaines manquées (tâche planifiée arrêtée) : une seule occurrence, datée de la plus récente échéance passée
+  r = await mgr('POST', `${P}/tasks`, { projectId: proj, title: 'Comptage hebdomadaire en retard', assigneeId: memId });
+  const tM = r.json.id;
+  r = await mgr('PUT', `${P}/tasks/${tM}/plan`, { recurrence: 'weekly', recurNext: addDays(-15) });
+  r = await mgr('POST', `${P}/recurring/run`, {});
+  r = await mgr('GET', `${P}/tasks?project=${proj}`);
+  const occ = r.json.tasks.filter((t) => t.title === 'Comptage hebdomadaire en retard' && t.id !== tM);
+  check('semaines manquées : une seule occurrence, à la plus récente échéance (J-1), pas à la plus ancienne', occ.length === 1 && occ[0].due === addDays(-1), occ);
+  check('semaines manquées : prochaine échéance J+6', r.json.tasks.find((t) => t.id === tM).recurNext === addDays(6), r.json.tasks.find((t) => t.id === tM));
   r = await mgr('PUT', `${P}/tasks/${tR}/plan`, { recurrence: 'yearly' });
   check('récurrence inconnue refusée', r.status === 400);
 

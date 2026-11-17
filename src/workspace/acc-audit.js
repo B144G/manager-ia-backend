@@ -14,7 +14,7 @@ async function runAudit(req, year) {
   const org = req.org; const start = `${year}-01-01`; const end = `${year}-12-31`; const today = L.today();
   const issues = []; const add = (severity, code, title, detail, extra) => issues.push({ severity, code, title, detail, ...(extra || {}) });
   const cum = await L.balances(org.id, '0001-01-01', end, { noOpen: true });
-  const yr = await L.balances(org.id, start, end, { noClose: true });
+  const yr = await L.balances(org.id, start, end, { noClose: true, noVat: true }); // ventes et TVA de l'exercice (hors liquidations de TVA)
   const bal = (a) => cum.filter((r) => r.account === a).reduce((s, r) => s + r.balance, 0);
 
   // Soldes inhabituels (cumulés à la fin de l'exercice)

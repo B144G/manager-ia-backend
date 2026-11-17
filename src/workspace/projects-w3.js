@@ -196,14 +196,15 @@ async function runRecurring(orgId) {
   const rows = await db.prepare(`SELECT * FROM tasks WHERE recurrence != '' AND recur_next IS NOT NULL AND recur_next <= ?${orgId ? ' AND org_id = ?' : ''} LIMIT 500`).all(...[W.today(), ...(orgId ? [orgId] : [])]);
   let n = 0;
   for (const t of rows) {
-    let next = t.recur_next; let guard = 0;
+    let next = t.recur_next; let due = t.recur_next; let guard = 0;
     await db.transaction(async () => {
       while (next <= W.today() && guard++ < 12) {
         // une seule occurrence par passage : la plus récente à créer, les jours manqués ne sont pas rattrapés
+        due = next;
         next = nextDate(next, t.recurrence);
       }
       await db.prepare("INSERT INTO tasks (org_id, project_id, branch_id, title, description, status, priority, assignee_id, due, created_by, created_at, estimate_hours) VALUES (?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)")
-        .run(t.org_id, t.project_id, t.branch_id, t.title, t.description, t.priority, t.assignee_id, t.recur_next, t.created_by, nowISO(), t.estimate_hours);
+        .run(t.org_id, t.project_id, t.branch_id, t.title, t.description, t.priority, t.assignee_id, due, t.created_by, nowISO(), t.estimate_hours);
       await db.prepare('UPDATE tasks SET recur_next = ? WHERE id = ?').run(next, t.id);
     })();
     if (t.assignee_id) await W.push(t.org_id, t.assignee_id, 'task', `Tâche récurrente à faire : ${t.title}`, 'task:' + t.id);

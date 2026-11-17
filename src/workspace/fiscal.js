@@ -325,7 +325,7 @@ async function vatMonth(req, monthParam) {
   const r = A.monthRange(monthParam);
   const [y, m] = r.month.split('-').map(Number);
   const to = `${r.month}-${pad(lastDay(y, m))}`;
-  const rows = await accounting().balance(req.org, r.from, to, { noClose: true, noOpen: true });
+  const rows = await accounting().balance(req.org, r.from, to, { noClose: true, noOpen: true, noVat: true }); // sans la liquidation de la TVA, qui solde 443/445
   const col = rows.filter((x) => x.account.startsWith('443')); const ded = rows.filter((x) => x.account.startsWith('445'));
   const collected = -col.reduce((a, x) => a + x.balance, 0); const deductible = ded.reduce((a, x) => a + x.balance, 0);
   const missing = [];

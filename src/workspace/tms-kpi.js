@@ -80,7 +80,7 @@ async function compute(req, { from, to }) {
     from, to,
     summary: {
       deliveries: ds.length, delivered: delivered.length, failed: ds.filter((d) => ['failed', 'returned'].includes(d.status)).length, open: ds.filter((d) => ['to_prepare', 'shipped', 'on_route'].includes(d.status)).length,
-      onTimePct: pct(stamped.filter(onTime).length, stamped.length), firstAttemptPct: pct(first.length, finished.length), trips: rounds.length, km: r1(km), kmPerTrip: rounds.length ? r1(km / rounds.length) : null,
+      onTimePct: pct(stamped.filter(onTime).length, stamped.length), declaredTimes: stamped.filter((d) => Number(d.time_declared)).length, onTimeLivePct: pct(stamped.filter((d) => !Number(d.time_declared) && onTime(d)).length, stamped.filter((d) => !Number(d.time_declared)).length), firstAttemptPct: pct(first.length, finished.length), trips: rounds.length, km: r1(km), kmPerTrip: rounds.length ? r1(km / rounds.length) : null,
       kgDelivered: r1(kg), co2Kg: r1(co2), codDue: m ? delivered.reduce((a, d) => a + Number(d.cod_amount || 0), 0) : undefined, codCollected: m ? delivered.reduce((a, d) => a + Number(d.cod_collected || 0), 0) : undefined,
       tripCosts: m ? tripCosts : undefined, carrierCosts: m ? carrierCosts : undefined, totalCost: m ? total : undefined,
       costPerDelivery: m && delivered.length ? Math.round(total / delivered.length) : undefined, costPerKm: m && ownKm > 0 ? Math.round(tripCosts / ownKm) : undefined, costPerKg: m && kg > 0 ? r1(total / kg) : undefined,
