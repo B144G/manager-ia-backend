@@ -55,8 +55,18 @@ async function abc(req) {
 }
 router.get('/abc', mgr, async (req, res) => {
   const { s, total, items } = await abc(req);
-  const classes = ['A', 'B', 'C'].map((c) => { const x = items.filter((i) => i.class === c); return { class: c, items: x.length, share: total ? r1((x.reduce((a, i) => a + i.consumption, 0) / total) * 100) : 0, stockValue: x.reduce((a, i) => a + i.stockValue, 0) }; });
-  res.json({ days: s.abcDays, thresholds: { a: s.abcA, b: s.abcB }, classes, items });
+  const stockTotal = items.reduce((a, i) => a + i.stockValue, 0);
+  const classes = ['A', 'B', 'C'].map((c) => { const x = items.filter((i) => i.class === c); const sv = x.reduce((a, i) => a + i.stockValue, 0); return { class: c, items: x.length, share: total ? r1((x.reduce((a, i) => a + i.consumption, 0) / total) * 100) : 0, stockValue: sv, consumption: x.reduce((a, i) => a + i.consumption, 0), stockShare: stockTotal ? r1((sv / stockTotal) * 100) : 0 }; });
+  // Ajouts (ligne B) : totalConsumption, totalStockValue, since.
+  res.json({ since: daysAgo(s.abcDays).slice(0, 10), days: s.abcDays, thresholds: { a: s.abcA, b: s.abcB }, totalConsumption: total, totalStockValue: stockTotal, classes, items });
+});
+/** Enregistre le classement (réutilisé pour planifier les inventaires tournants). */
+router.post('/abc/refresh', mgr, async (req, res) => {
+  const { items } = await abc(req);
+  await db.transaction(async () => {
+    for (const r of items) await db.prepare('INSERT INTO wms_item_class (item_id, org_id, class, consumption, rank, computed_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (item_id) DO UPDATE SET class = EXCLUDED.class, consumption = EXCLUDED.consumption, rank = EXCLUDED.rank, computed_at = EXCLUDED.computed_at').run(r.itemId, req.org.id, r.class, r.consumption, r.rank, nowISO());
+  })();
+  res.json({ ok: true, items: items.length, counts: Object.fromEntries(['A', 'B', 'C'].map((c) => [c, items.filter((r) => r.class === c).length])) });
 });
 
 // ---------- Inventaire tournant ----------
@@ -79,22 +89,27 @@ async function plan(req) {
 router.get('/cycle-counts/plan', mgr, async (req, res) => {
   const p = await plan(req);
   const soon = iso(Date.now() + 30 * DAY).slice(0, 10);
+  const nextOf = (c) => { const x = p.rows.filter((r) => r.class === c).map((r) => r.dueOn).sort(); return x.length ? x[0] : null; };
   res.json({
-    classes: ['A', 'B', 'C'].map((c) => ({ class: c, everyDays: p.every[c], items: p.rows.filter((r) => r.class === c).length, due: p.rows.filter((r) => r.class === c && r.due).length })),
+    due: p.rows.filter((r) => r.due).length, // ajout (ligne B)
+    classes: ['A', 'B', 'C'].map((c) => ({ class: c, everyDays: p.every[c], items: p.rows.filter((r) => r.class === c).length, due: p.rows.filter((r) => r.class === c && r.due).length, nextDue: nextOf(c) })),
     dueItems: p.rows.filter((r) => r.due).map((r) => ({ itemId: r.itemId, name: r.name, class: r.class, lastCounted: r.lastCounted, stockValue: r.stockValue })),
     upcoming: p.rows.filter((r) => !r.due && r.dueOn <= soon).sort((a, b) => a.dueOn.localeCompare(b.dueOn)).map((r) => ({ itemId: r.itemId, name: r.name, class: r.class, dueOn: r.dueOn })),
   });
 });
 router.post('/cycle-counts', mgr, async (req, res) => {
-  const classes = (Array.isArray((req.body || {}).classes) ? req.body.classes : ['A', 'B', 'C']).filter((c) => ['A', 'B', 'C'].includes(c));
+  const rawClasses = Array.isArray((req.body || {}).classes) && req.body.classes.length ? req.body.classes : ['A', 'B', 'C'];
+  if (rawClasses.some((c) => !['A', 'B', 'C'].includes(String(c).toUpperCase()))) throw new HttpError(400, 'Classe inconnue (A, B ou C).');
+  const classes = rawClasses.map((c) => String(c).toUpperCase());
+  const limit = (req.body || {}).limit === undefined || req.body.limit === '' ? 500 : Math.min(Math.max(Math.round(Number(req.body.limit)) || 50, 1), 500);
   if (await db.prepare("SELECT 1 FROM stock_counts WHERE org_id = ? AND status IN ('open','submitted')").get(req.org.id)) throw new HttpError(409, "Un inventaire est déjà en cours : terminez-le (validation ou rejet) avant d'en ouvrir un autre.");
   const p = await plan(req);
-  const due = p.rows.filter((r) => r.due && classes.includes(r.class));
+  const due = p.rows.filter((r) => r.due && classes.includes(r.class)).sort((a, b) => a.dueOn.localeCompare(b.dueOn) || a.rank - b.rank).slice(0, limit);
   if (!due.length) throw new HttpError(400, 'Aucun article à compter pour ces classes : tout est à jour.');
   const now = nowISO();
   const id = await db.transaction(async () => {
     const seq = Number((await db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM stock_counts WHERE org_id = ?').get(req.org.id)).n);
-    const cid = Number((await db.prepare('INSERT INTO stock_counts (org_id, branch_id, seq, status, note, created_by, created_at) VALUES (?, NULL, ?, ?, ?, ?, ?)').run(req.org.id, seq, 'open', `Inventaire tournant (classes ${classes.join(', ')})`, req.user.id, now)).lastInsertRowid);
+    const cid = Number((await db.prepare('INSERT INTO stock_counts (org_id, branch_id, seq, status, note, created_by, created_at, cycle_class) VALUES (?, NULL, ?, ?, ?, ?, ?, ?)').run(req.org.id, seq, 'open', `Inventaire tournant (classes ${classes.join(', ')})`, req.user.id, now, classes.join(','))).lastInsertRowid);
     for (const r of due) { const it = await db.prepare('SELECT * FROM stock_items WHERE id = ?').get(r.itemId); await db.prepare('INSERT INTO stock_count_lines (count_id, item_id, expected, unit_value) VALUES (?, ?, ?, ?)').run(cid, it.id, it.quantity, L.unitValue(it)); }
     return cid;
   })();
@@ -106,7 +121,7 @@ router.get('/cycle-counts/variance', mgr, async (req, res) => {
   const rows = await db.prepare("SELECT l.*, i.name, c.decided_at FROM stock_count_lines l JOIN stock_counts c ON c.id = l.count_id JOIN stock_items i ON i.id = l.item_id WHERE c.org_id = ? AND c.status = 'validated' AND l.counted IS NOT NULL AND c.decided_at >= ? ORDER BY c.decided_at DESC").all(req.org.id, daysAgo(365));
   const gaps = rows.map((l) => ({ name: l.name, class: cls[Number(l.item_id)] || 'C', expected: r3(l.expected), counted: r3(l.counted), at: l.decided_at, gap: r3(l.counted - l.expected), gapValue: Math.round((l.counted - l.expected) * l.unit_value) }));
   res.json({
-    classes: ['A', 'B', 'C'].map((c) => { const g = gaps.filter((x) => x.class === c); return { class: c, accuracy: g.length ? r1((g.filter((x) => Math.abs(x.gap) < 1e-9).length / g.length) * 100) : null, netValue: g.reduce((a, x) => a + x.gapValue, 0) }; }),
+    classes: ['A', 'B', 'C'].map((c) => { const g = gaps.filter((x) => x.class === c); return { class: c, lines: g.length, withGap: g.filter((x) => Math.abs(x.gap) > 1e-9).length, accuracy: g.length ? r1((g.filter((x) => Math.abs(x.gap) < 1e-9).length / g.length) * 100) : null, shortValue: g.filter((x) => x.gapValue < 0).reduce((a, x) => a + x.gapValue, 0), surplusValue: g.filter((x) => x.gapValue > 0).reduce((a, x) => a + x.gapValue, 0), netValue: g.reduce((a, x) => a + x.gapValue, 0) }; }),
     netValue: gaps.reduce((a, x) => a + x.gapValue, 0),
     gaps: gaps.filter((g) => Math.abs(g.gap) > 1e-9).slice(0, 200),
   });

@@ -117,6 +117,14 @@ const releaseHolds = (o) => db.prepare("UPDATE wms_reservations SET status = 're
 async function plan(itemId, need, warehouseId) {
   const rows = await db.prepare(`SELECT s.location_id, s.quantity, l.code FROM wms_stock s JOIN wms_locations l ON l.id = s.location_id WHERE s.item_id = ? AND s.quantity > 0 AND l.active = 1 AND l.kind IN ('picking','storage','reception')${warehouseId ? ' AND l.warehouse_id = ?' : ''}
     ORDER BY CASE l.kind WHEN 'picking' THEN 0 WHEN 'storage' THEN 1 ELSE 2 END, l.aisle, l.rack, l.bin, l.code`).all(itemId, ...(warehouseId ? [warehouseId] : []));
+  // Article suivi par lot : les lots se prennent là où ils se trouvent, l'emplacement qui garde le lot le plus proche de la péremption (ou le plus ancien) passe d'abord.
+  const item = await db.prepare('SELECT * FROM stock_items WHERE id = ?').get(itemId);
+  if (item && item.tracking === 'lot') {
+    const T = require('./wms-track'); await T.sync(item);
+    const key = item.pick_rule === 'fifo' ? 'MIN(l.received_at)' : "MIN(COALESCE(l.expiry, '9999-12-31'))";
+    const keys = new Map((await db.prepare(`SELECT c.location_id, ${key} AS k FROM wms_lot_levels c JOIN stock_lots l ON l.id = c.lot_id WHERE l.item_id = ? AND c.quantity > 0 AND (l.expiry IS NULL OR l.expiry >= ?) GROUP BY c.location_id`).all(itemId, W.today())).map((r) => [Number(r.location_id), String(r.k)]));
+    rows.sort((a, b) => String(keys.get(Number(a.location_id)) || '~').localeCompare(String(keys.get(Number(b.location_id)) || '~'))); // tri stable : l'ordre par type d'emplacement est gardé à clé égale
+  }
   let left = r3(need); const out = [];
   for (const s of rows) {
     if (left <= W.EPS) break;

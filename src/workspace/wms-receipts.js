@@ -24,9 +24,12 @@ function readCosts(list, { noWeight = false } = {}) {
   return list.map((c) => {
     const x = c || {};
     const amount = A.amount(x.amount);
-    const basis = BASES[x.basis] && !(noWeight && x.basis === 'weight') ? x.basis : 'value';
-    return { kind: COST_KINDS[x.kind] ? x.kind : 'other', label: cleanText(String(x.label || ''), 100), amount, basis };
-  }).filter((c) => c.amount > 0);
+    if (!(amount > 0)) throw new HttpError(400, 'Le montant de chaque coût doit être supérieur à zéro.');
+    if (x.kind !== undefined && x.kind !== '' && !COST_KINDS[x.kind]) throw new HttpError(400, "Type de coût inconnu (transport, douane, manutention, assurance ou autre).");
+    if (x.basis !== undefined && x.basis !== '' && !BASES[x.basis]) throw new HttpError(400, 'Base de répartition inconnue (valeur, quantité ou poids).');
+    if (noWeight && x.basis === 'weight') throw new HttpError(400, 'Répartition au poids impossible ici : indiquez la valeur ou la quantité.');
+    return { kind: COST_KINDS[x.kind] ? x.kind : 'other', label: cleanText(String(x.label || ''), 100), amount, basis: BASES[x.basis] ? x.basis : 'value' };
+  });
 }
 /** Répartit `amount` sur les lignes selon la base ; arrondi à l'unité, le reste va à la dernière ligne. */
 function spread(lines, amount, basis) {
@@ -76,17 +79,24 @@ router.post('/receipts', mgr, async (req, res) => {
   const out = await db.transaction(async () => {
     const code = await W.nextCode(req.org.id, 'RC');
     const id = Number((await db.prepare('INSERT INTO wms_receipts (org_id, code, supplier_id, reference, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(req.org.id, code, supplierId, cleanText(String(b.reference || ''), 80), req.user.id, nowISO())).lastInsertRowid);
+    const lineIds = [];
     for (const l of lines) {
       await L.adjust(req, l.it, l.quantity, `Réception ${code}${b.reference ? ' (' + cleanText(String(b.reference), 60) + ')' : ''}`, { unitCost: l.landedUnit, lotNo: l.lotNo, expiry: l.expiry, serials: l.serials, strict: true, locationId, refKind: 'wms_receipt', refId: id });
       await db.prepare('UPDATE stock_items SET unit_cost = ? WHERE id = ?').run(Math.round(l.unitCost), l.itemId);
-      await db.prepare('INSERT INTO wms_receipt_lines (receipt_id, item_id, quantity, unit_cost, weight, landed_total) VALUES (?, ?, ?, ?, ?, ?)').run(id, l.itemId, l.quantity, l.unitCost, l.weight, l.landedTotal);
+      lineIds.push(Number((await db.prepare('INSERT INTO wms_receipt_lines (receipt_id, item_id, quantity, unit_cost, weight, landed_total) VALUES (?, ?, ?, ?, ?, ?)').run(id, l.itemId, l.quantity, l.unitCost, l.weight, l.landedTotal)).lastInsertRowid));
       // Transbordement : la marchandise attendue par une commande est mise de côté pour partir directement en dépose.
       crossDock.push(...await require('./wms-xdock').onReceipt(req, { itemId: l.itemId, quantity: l.quantity, locationId, sourceKind: 'receipt', sourceId: id, sourceCode: code }));
     }
-    for (const c of costs) await db.prepare('INSERT INTO wms_receipt_costs (receipt_id, kind, label, amount, basis, expensed, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)').run(id, c.kind, c.label, c.amount, c.basis, nowISO());
+    for (const c of costs) {
+      const costId = Number((await db.prepare('INSERT INTO wms_receipt_costs (receipt_id, kind, label, amount, basis, expensed, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)').run(id, c.kind, c.label, c.amount, c.basis, nowISO())).lastInsertRowid);
+      // Journal : une trace par article et par coût (valeur seulement, quantité 0) ; part de chaque ligne (wms_landed_alloc).
+      const shares = spread(lines, c.amount, c.basis);
+      for (let i = 0; i < lines.length; i++) await db.prepare('INSERT INTO wms_landed_alloc (cost_id, line_id, amount, expensed) VALUES (?, ?, ?, 0)').run(costId, lineIds[i], shares[i]);
+      for (let i = 0; i < lines.length; i++) if (shares[i] > 0) await db.prepare("INSERT INTO stock_moves (org_id, item_id, delta, reason, created_by, created_at, unit_cost, ref_kind, ref_id) VALUES (?, ?, 0, ?, ?, ?, ?, 'landed_cost', ?)").run(req.org.id, lines[i].itemId, `Coût d'arrivée : ${c.label || COST_KINDS[c.kind]}`, req.user.id, nowISO(), shares[i], id);
+    }
     await require('./wms-pilot').record(req, 'receive', { lines: lines.length, units: lines.reduce((s, l) => s + Number(l.quantity), 0), refKind: 'wms_receipt', refId: id });
     await require('./wms-vas').autoAttach(req, 'receipt', id, { items: lines.map((l) => ({ itemId: l.itemId, quantity: l.quantity })) });
-    return { id, code, crossDock };
+    return { id, code, crossDock, costs: costs.map((c) => ({ kind: c.kind, label: c.label, amount: c.amount, basis: c.basis })) };
   })();
   await A.logActivity(req.org.id, req.user.id, 'stock', `Réception ${out.code} enregistrée`);
   res.status(201).json(out);
@@ -113,17 +123,19 @@ router.get('/receipts/:id', mgr, async (req, res) => {
   const lines = await db.prepare('SELECT l.*, i.name FROM wms_receipt_lines l JOIN stock_items i ON i.id = l.item_id WHERE l.receipt_id = ? ORDER BY l.id').all(r.id);
   const costs = await db.prepare('SELECT * FROM wms_receipt_costs WHERE receipt_id = ? ORDER BY id').all(r.id);
   const landed = costs.reduce((s, c) => s + Number(c.amount), 0); const expensed = costs.reduce((s, c) => s + Number(c.expensed), 0);
+  const exByLine = Object.fromEntries((await db.prepare('SELECT a.line_id, SUM(a.expensed) AS e FROM wms_landed_alloc a JOIN wms_receipt_lines l ON l.id = a.line_id WHERE l.receipt_id = ? GROUP BY a.line_id').all(r.id)).map((x) => [Number(x.line_id), Number(x.e)]));
   res.json({ receipt: {
     id: Number(r.id), code: r.code, supplier: r.supplier || null, reference: r.reference || '', createdAt: r.created_at,
     baseValue: Math.round(lines.reduce((s, l) => s + Number(l.quantity) * Number(l.unit_cost), 0)), landedCost: landed, incorporated: landed - expensed, expensed,
-    lines: lines.map((l) => ({ id: Number(l.id), itemId: Number(l.item_id), name: l.name, quantity: r3(l.quantity), unitCost: Number(l.unit_cost), baseValue: Math.round(Number(l.quantity) * Number(l.unit_cost)), landedTotal: Number(l.landed_total), landedUnit: Math.round(((Number(l.quantity) * Number(l.unit_cost) + Number(l.landed_total)) / Number(l.quantity)) * 100) / 100 })),
-    costs: costs.map((c) => ({ id: Number(c.id), kind: c.kind, kindLabel: COST_KINDS[c.kind] || 'Autre frais', label: c.label || '', basis: c.basis, basisLabel: BASES[c.basis], amount: Number(c.amount), expensed: Number(c.expensed) })),
+    lines: lines.map((l) => ({ id: Number(l.id), itemId: Number(l.item_id), name: l.name, quantity: r3(l.quantity), unitCost: Number(l.unit_cost), baseValue: Math.round(Number(l.quantity) * Number(l.unit_cost)), landedTotal: Number(l.landed_total), landedUnit: Math.round(((Number(l.quantity) * Number(l.unit_cost) + Number(l.landed_total)) / Number(l.quantity)) * 100) / 100, incorporated: Number(l.landed_total) - (exByLine[Number(l.id)] || 0), expensed: exByLine[Number(l.id)] || 0 })),
+    costs: costs.map((c) => ({ id: Number(c.id), kind: c.kind, kindLabel: COST_KINDS[c.kind] || 'Autre frais', label: c.label || '', basis: c.basis, basisLabel: BASES[c.basis], amount: Number(c.amount), expensed: Number(c.expensed), incorporated: Number(c.amount) - Number(c.expensed) })),
   } });
 });
 
 /** Ajoute un frais à une réception déjà en stock : la part du stock encore présent entre dans le CUMP, le reste est « à passer en charge ». */
 async function addCost(req, receiptId, c) {
-  const lines = (await db.prepare('SELECT l.*, i.quantity AS on_hand, i.avg_cost, i.name FROM wms_receipt_lines l JOIN stock_items i ON i.id = l.item_id WHERE l.receipt_id = ? ORDER BY l.id').all(receiptId))
+  const costId = Number((await db.prepare('INSERT INTO wms_receipt_costs (receipt_id, kind, label, amount, basis, expensed, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)').run(receiptId, c.kind, c.label, c.amount, c.basis, nowISO())).lastInsertRowid);
+  const lines = (await db.prepare('SELECT l.*, i.quantity AS on_hand, i.avg_cost, i.name FROM wms_receipt_lines l JOIN stock_items i ON i.id = l.item_id WHERE l.receipt_id = ? ORDER BY l.id FOR UPDATE OF i').all(receiptId))
     .map((l) => ({ ...l, quantity: Number(l.quantity), unitCost: Number(l.unit_cost), weight: l.weight === null ? null : Number(l.weight) }));
   const shares = spread(lines, c.amount, c.basis);
   let expensed = 0;
@@ -132,6 +144,7 @@ async function addCost(req, receiptId, c) {
     const still = Math.max(0, Math.min(l.quantity, Number(l.on_hand)));
     const inStock = l.quantity > 0 ? Math.round((share * still) / l.quantity) : 0;
     expensed += share - inStock;
+    await db.prepare('INSERT INTO wms_landed_alloc (cost_id, line_id, amount, expensed) VALUES (?, ?, ?, ?)').run(costId, l.id, share, share - inStock);
     if (inStock > 0 && Number(l.on_hand) > 0) {
       const avg = Math.round((Number(l.avg_cost) + inStock / Number(l.on_hand)) * 100) / 100;
       await db.prepare('UPDATE stock_items SET avg_cost = ? WHERE id = ?').run(avg, l.item_id);
@@ -139,7 +152,7 @@ async function addCost(req, receiptId, c) {
     }
     await db.prepare('UPDATE wms_receipt_lines SET landed_total = landed_total + ? WHERE id = ?').run(share, l.id);
   }
-  await db.prepare('INSERT INTO wms_receipt_costs (receipt_id, kind, label, amount, basis, expensed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(receiptId, c.kind, c.label, c.amount, c.basis, expensed, nowISO());
+  await db.prepare('UPDATE wms_receipt_costs SET expensed = ? WHERE id = ?').run(expensed, costId);
   return expensed;
 }
 router.post('/receipts/:id/costs', mgr, async (req, res) => {
@@ -151,7 +164,7 @@ router.post('/receipts/:id/costs', mgr, async (req, res) => {
 });
 router.post('/receipts/from-purchase', mgr, async (req, res) => {
   const b = req.body || {};
-  const ids = [...new Set((Array.isArray(b.purchaseReceiptIds) ? b.purchaseReceiptIds : []).map((x) => A.id(x)))];
+  const ids = [...new Set((Array.isArray(b.purchaseReceiptIds) ? b.purchaseReceiptIds : b.purchaseReceiptId ? [b.purchaseReceiptId] : []).map((x) => A.id(x)))]; // forme de A (liste) ou de B (un seul numéro)
   if (!ids.length || ids.length > 50) throw new HttpError(400, "Indiquez les réceptions d'achat à regrouper (50 au plus).");
   const costs = readCosts(b.costs, { noWeight: true });
   const rows = [];

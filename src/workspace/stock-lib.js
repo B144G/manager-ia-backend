@@ -82,7 +82,11 @@ async function adjust(req, itemOrId, delta, reason, opts = {}) {
     if (!delta) return { quantity: it.quantity, allocations: [], serials: [] };
     const next = round3(it.quantity + delta);
     if (next < 0) throw new HttpError(400, `Stock insuffisant pour « ${it.name} » : il reste ${it.quantity} ${it.unit}.`);
-    let allocations = []; let serials = [];
+    let allocations = []; let serials = []; let outParts;
+    const eff = { ...(req.__wmsOpts || {}), ...opts }; // emplacement demandé (option directe ou withLocation)
+    const T = it.tracking !== 'none' ? require('./wms-track') : null;
+    // Lots et séries par emplacement (ligne B) : la répartition est remise d'accord avant tout mouvement, puis suit l'entrée ou la sortie.
+    if (T) { await require('./wms-core').reconcile(req, it, it.quantity); await T.sync(it); }
     if (it.tracking === 'lot') {
       if (delta > 0) {
         if (opts.allocations && opts.allocations.length) {
@@ -94,11 +98,19 @@ async function adjust(req, itemOrId, delta, reason, opts = {}) {
           const lotId = await addToLot(req.org.id, it, { lotNo: String(opts.lotNo || '').trim() || 'SANS-LOT', expiry: opts.expiry, quantity: delta, unitCost: opts.unitCost });
           allocations = [{ lotId, lotNo: String(opts.lotNo || '').trim() || 'SANS-LOT', expiry: opts.expiry || null, quantity: delta }];
         }
-      } else allocations = await consumeLots(it, -delta, { allowExpired: opts.allowExpired, preferLot: opts.preferLot });
+      } else {
+        // Sortie FEFO / FIFO parmi les lots présents dans les emplacements autorisés (celui demandé, sinon les emplacements disponibles).
+        const lo = await T.lotsOut(it, -delta, { allowExpired: opts.allowExpired, preferLot: opts.preferLot, locationId: eff.locationId });
+        allocations = lo.allocations; outParts = lo.parts;
+      }
     } else if (it.tracking === 'serial') {
       if (!Number.isInteger(delta)) throw new HttpError(400, `« ${it.name} » est suivi par numéro de série : la quantité est un nombre entier.`);
       const list = parseSerials(opts.serials);
       if (list.length !== Math.abs(delta)) throw new HttpError(400, `« ${it.name} » est suivi par numéro de série : indiquez exactement ${Math.abs(delta)} numéro(s) (${list.length} reçu(s)).`);
+      if (delta < 0) {
+        const op = await T.serialsOutParts(req.org.id, it, list, { locationId: eff.locationId });
+        if (round3(-op.reduce((a, x) => a + x.quantity, 0)) === -delta) outParts = op; // sinon : série inconnue, la boucle ci-dessous refuse avec son message
+      }
       const now = nowISO();
       for (const s of list) {
         const row = await db.prepare('SELECT * FROM stock_serials WHERE org_id = ? AND serial = ?').get(req.org.id, s);
@@ -123,9 +135,17 @@ async function adjust(req, itemOrId, delta, reason, opts = {}) {
     }
     await db.prepare('UPDATE stock_items SET quantity = ?, avg_cost = ? WHERE id = ?').run(next, avg, it.id);
     // Stock par emplacement (WMS) : toujours égal au total de l'article.
-    await require('./wms-core').reconcile(req, it, next, { ...(opts.locationId ? { locationId: opts.locationId } : {}), ...(opts.warehouseId ? { warehouseId: opts.warehouseId } : {}) });
-    await db.prepare('INSERT INTO stock_moves (org_id, item_id, delta, reason, created_by, created_at, unit_cost, ref_kind, ref_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(req.org.id, it.id, delta, String(reason).slice(0, 150), req.user ? req.user.id : null, nowISO(), opts.unitCost === undefined ? null : Number(opts.unitCost), opts.refKind || '', opts.refId || null);
+    const parts = await require('./wms-core').reconcile(req, it, next, { ...(opts.locationId ? { locationId: opts.locationId } : {}), ...(opts.warehouseId ? { warehouseId: opts.warehouseId } : {}), ...(opts.covered ? { covered: opts.covered } : {}), ...(outParts ? { parts: outParts } : {}) });
+    if (delta > 0 && it.tracking === 'lot') await T.lotsIn(allocations, parts);
+    if (delta > 0 && it.tracking === 'serial') await T.serialsIn(req.org.id, serials, parts);
+    // Une livraison liée à une commande consomme les réservations de la commande.
+    if (delta < 0 && opts.refKind === 'delivery' && opts.refId) await require('./wms-core').consumeDocReservations(req, it.id, -delta, opts.refId);
+    // Une ligne d'historique par emplacement touché (la somme des deltas reste le mouvement) ; sans détail d'emplacement, une seule ligne.
+    const rows = parts && parts.length > 1 && Math.abs(parts.reduce((a, x) => a + x.quantity, 0) - delta) < 0.0005 ? parts : [{ locationId: parts && parts.length === 1 ? parts[0].locationId : null, quantity: delta }];
+    for (const p of rows) {
+      await db.prepare('INSERT INTO stock_moves (org_id, item_id, delta, reason, created_by, created_at, unit_cost, ref_kind, ref_id, location_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(req.org.id, it.id, p.quantity, String(reason).slice(0, 150), req.user ? req.user.id : null, nowISO(), opts.unitCost === undefined ? null : Number(opts.unitCost), opts.refKind || '', opts.refId || null, p.locationId);
+    }
     return { quantity: next, allocations, serials };
   })();
 }

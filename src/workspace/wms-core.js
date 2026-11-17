@@ -72,14 +72,21 @@ async function defaultOf(orgId, warehouseId) {
   return l;
 }
 async function locationOf(orgId, id, msg = 'Emplacement introuvable.') {
-  const l = await db.prepare('SELECT * FROM wms_locations WHERE id = ? AND org_id = ?').get(Number(id), orgId);
+  const l = await db.prepare('SELECT l.*, w.branch_id AS branch_id FROM wms_locations l JOIN wms_warehouses w ON w.id = l.warehouse_id WHERE l.id = ? AND l.org_id = ?').get(Number(id), orgId);
   if (!l) throw new HttpError(404, msg);
+  return l;
+}
+/** Comme locationOf, mais respecte les antennes : un membre rattaché à une antenne ne voit que ses emplacements et ceux du commun. */
+async function locationFor(req, id, msg) {
+  const l = await locationOf(req.org.id, id, msg);
+  if (req.member && !require('./access').visible(req, l)) throw new HttpError(404, msg || 'Emplacement introuvable.');
   return l;
 }
 
 // ---------- Quantités par emplacement ----------
 const qtyAt = async (locId, itemId) => Number(((await db.prepare('SELECT quantity FROM wms_stock WHERE location_id = ? AND item_id = ?').get(locId, itemId)) || {}).quantity || 0);
 async function add(orgId, locId, itemId, delta) {
+  if (delta > EPS) await capacityGuard(locId, delta);
   const r = await addRaw(orgId, locId, itemId, delta);
   if (delta < 0) await trimHus(locId, itemId);
   return r;
@@ -91,6 +98,13 @@ async function addRaw(orgId, locId, itemId, delta) {
   if (Math.abs(next) < EPS) await db.prepare('DELETE FROM wms_stock WHERE location_id = ? AND item_id = ?').run(locId, itemId);
   else await db.prepare('INSERT INTO wms_stock (org_id, location_id, item_id, quantity, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (location_id, item_id) DO UPDATE SET quantity = excluded.quantity, updated_at = excluded.updated_at').run(orgId, locId, itemId, next, nowISO());
   return next;
+}
+/** Capacité d'un emplacement : une entrée ne la dépasse pas (emplacements « En transit » exceptés : ils ne sont jamais limités). */
+async function capacityGuard(locId, delta) {
+  const l = await db.prepare('SELECT code, kind, capacity FROM wms_locations WHERE id = ?').get(locId);
+  if (!l || l.capacity === null || l.capacity === undefined || l.kind === 'transit') return;
+  const used = Number((await db.prepare('SELECT COALESCE(SUM(quantity), 0) AS q FROM wms_stock WHERE location_id = ?').get(locId)).q);
+  if (used + delta - Number(l.capacity) > EPS) throw new HttpError(400, `L'emplacement ${l.code} est plein : il reste ${Math.max(0, round3(Number(l.capacity) - used))} de place.`);
 }
 /** Quantité d'un article sur les palettes (unités de manutention) d'un emplacement. */
 const huSum = async (locId, itemId) => Number((await db.prepare("SELECT COALESCE(SUM(c.quantity), 0) AS q FROM wms_hu_contents c JOIN wms_hus h ON h.id = c.hu_id WHERE h.location_id = ? AND c.item_id = ?").get(locId, itemId)).q);
@@ -190,20 +204,39 @@ async function reconcile(req, it, next, o = {}) {
   const opts = { ...(req.__wmsOpts || {}), ...o };
   const sum = Number((await db.prepare('SELECT COALESCE(SUM(quantity), 0) AS q FROM wms_stock WHERE item_id = ?').get(it.id)).q);
   const diff = round3(next - sum);
-  if (Math.abs(diff) < EPS) return;
+  const parts = []; // renvoie où la quantité est entrée (+) ou sortie (−) : [{ locationId, quantity }] (les lots et séries suivent ces emplacements)
+  if (Math.abs(diff) < EPS) return parts;
   if (diff > 0) {
     if (opts.locationId) {
-      const l = await locationOf(orgId, opts.locationId);
+      const l = await locationFor(req, opts.locationId);
       if (!Number(l.active) || (l.kind === 'transit' && !opts.allowTransit)) throw new HttpError(400, 'Choisissez un emplacement actif (pas « En transit »).');
       await add(orgId, l.id, it.id, diff);
-    } else for (const d of await destinationsFor(orgId, it, diff, opts.warehouseId)) await add(orgId, d.location.id, it.id, d.quantity);
+      parts.push({ locationId: Number(l.id), quantity: diff });
+    } else for (const d of await destinationsFor(orgId, it, diff, opts.warehouseId)) { await add(orgId, d.location.id, it.id, d.quantity); parts.push({ locationId: Number(d.location.id), quantity: d.quantity }); }
   } else {
-    if (opts.locationId) {
-      const l = await locationOf(orgId, opts.locationId);
-      if (await qtyAt(l.id, it.id) + EPS < -diff) throw new HttpError(400, 'Pas assez de stock dans cet emplacement.');
+    let taken;
+    if (opts.parts) {
+      // Sortie dont les emplacements sont déjà décidés (lots ou numéros de série : on sort là où ils se trouvent).
+      taken = [];
+      for (const p of opts.parts) { const q = round3(-p.quantity); await locationFor(req, p.locationId); await add(orgId, Number(p.locationId), it.id, -q); taken.push({ locationId: Number(p.locationId), quantity: q }); }
+      if (Math.abs(round3(taken.reduce((a, x) => a + x.quantity, 0)) + diff) > 0.0005) throw new HttpError(400, 'Pas assez de stock dans cet emplacement.');
+    } else {
+      if (opts.locationId) {
+        const l = await locationFor(req, opts.locationId);
+        if (await qtyAt(l.id, it.id) + EPS < -diff) throw new HttpError(400, 'Pas assez de stock dans cet emplacement.');
+      }
+      taken = await takeFrom(orgId, it.id, -diff, { locationId: opts.locationId });
     }
-    await takeFrom(orgId, it.id, -diff, { locationId: opts.locationId });
+    for (const t of taken) parts.push({ locationId: t.locationId, quantity: -t.quantity });
+    // Réservations par entrepôt : une sortie ne mord pas sur ce qui est réservé pour l'entrepôt d'où elle part.
+    if ((await db.prepare("SELECT 1 FROM wms_reservations WHERE item_id = ? AND warehouse_id IS NOT NULL AND status = 'active' LIMIT 1").get(it.id))) {
+      const whs = new Set();
+      for (const t of taken) { const l = await locationOf(orgId, t.locationId); if (isUsable(l)) whs.add(Number(l.warehouse_id)); }
+      const cov = opts.covered || {};
+      for (const w of whs) await whGuard(it.id, w, 0, Number(cov[w] || 0));
+    }
   }
+  return parts;
 }
 /** Exécute fn avec des options d'emplacement transmises à reconcile() (sans toucher à la signature de adjust). */
 async function withLocation(req, opts, fn) {
@@ -213,26 +246,37 @@ async function withLocation(req, opts, fn) {
 }
 
 /** Déplacement interne (aucune quantité totale ne change). */
-async function move(req, itemId, fromId, toId, qty, { kind = 'internal', refKind = '', refId = null, reason = '', allowTransit = false } = {}) {
+async function move(req, itemId, fromId, toId, qty, { kind = 'internal', refKind = '', refId = null, reason = '', allowTransit = false, guardReserved = false, lotId, serials } = {}) {
   const orgId = req.org.id;
   if (Number(fromId) === Number(toId)) throw new HttpError(400, "L'emplacement de départ et celui d'arrivée sont identiques.");
-  const from = await locationOf(orgId, fromId); const to = await locationOf(orgId, toId);
+  const from = await locationFor(req, fromId); const to = await locationFor(req, toId);
   if (!allowTransit && (to.kind === 'transit' || from.kind === 'transit')) throw new HttpError(400, "L'emplacement « En transit » ne reçoit que des transferts.");
   if (CONTROLLED.includes(from.kind) && !canLeaveControlled(req)) throw new HttpError(403, CONTROLLED_MSG);
-  await lockItem(orgId, itemId);
+  const item = await lockItem(orgId, itemId);
   if (!Number(to.active)) throw new HttpError(400, 'Choisissez un emplacement actif (pas « En transit »).');
   const q = round3(qty);
+  const T = item.tracking !== 'none' ? require('./wms-track') : null; // lots et numéros de série suivent le déplacement
+  if (T) await T.sync(item);
   if (await qtyAt(from.id, itemId) + EPS < q) throw new HttpError(400, 'Pas assez de stock dans cet emplacement.');
+  // Déplacement demandé par une personne (pas un flux interne) : le stock réservé ne quitte pas les emplacements disponibles, ni l'entrepôt pour lequel il est réservé.
+  if (guardReserved && isUsable(from) && !isUsable(to)) await reservedGuard(itemId, q);
+  if (guardReserved && isUsable(from) && (!isUsable(to) || Number(to.warehouse_id) !== Number(from.warehouse_id))) await whGuard(itemId, from.warehouse_id, q);
   await add(orgId, from.id, itemId, -q);
   await add(orgId, to.id, itemId, q);
-  await db.prepare('INSERT INTO wms_moves (org_id, item_id, from_location_id, to_location_id, quantity, kind, ref_kind, ref_id, reason, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(orgId, itemId, from.id, to.id, q, kind, refKind, refId, String(reason || '').slice(0, 200), req.user ? req.user.id : null, nowISO());
+  if (T && item.tracking === 'lot') await T.moveLots(item, from.id, to.id, q, lotId);
+  else if (T && item.tracking === 'serial') await T.moveSerials(orgId, item, from.id, to.id, q, serials);
+  await db.prepare('INSERT INTO wms_moves (org_id, item_id, from_location_id, to_location_id, quantity, kind, ref_kind, ref_id, reason, created_by, created_at, unit_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(orgId, itemId, from.id, to.id, q, kind, refKind, refId, String(reason || '').slice(0, 200), req.user ? req.user.id : null, nowISO(), Number(item.avg_cost) > 0 ? Number(item.avg_cost) : Number(item.unit_cost) || 0);
   return { from, to, quantity: q };
 }
 
 // ---------- Disponibilité ----------
 async function expireReservations(orgId) {
   await db.prepare("UPDATE wms_reservations SET status = 'released', close_reason = 'Réservation expirée' WHERE org_id = ? AND status = 'active' AND expires_at IS NOT NULL AND expires_at < ?").run(orgId, today());
+  // Une commande ou un devis annulé, refusé ou supprimé libère ses réservations (à chaque calcul de disponibilité : aucun écran ne peut l'oublier).
+  await db.prepare(`UPDATE wms_reservations SET status = 'released', close_reason = 'Document annulé ou refusé' WHERE org_id = ? AND status = 'active' AND source_kind = 'document'
+    AND document_id IN (SELECT id FROM documents WHERE org_id = ? AND status IN ('cancelled','refused'))`).run(orgId, orgId);
+  await db.prepare("UPDATE wms_reservations SET status = 'released', close_reason = 'Document supprimé' WHERE org_id = ? AND status = 'active' AND source_kind = 'document' AND document_id IS NOT NULL AND document_id NOT IN (SELECT id FROM documents WHERE org_id = ?)").run(orgId, orgId);
 }
 async function reservedOf(itemId, { exceptDocument, exceptPick } = {}) {
   return round3(Number((await db.prepare(`SELECT COALESCE(SUM(quantity - fulfilled_qty), 0) AS q FROM wms_reservations WHERE item_id = ? AND status = 'active'${exceptDocument ? ' AND COALESCE(document_id, 0) != ?' : ''}${exceptPick ? ' AND COALESCE(pick_id, 0) != ?' : ''}`).get(itemId, ...(exceptDocument ? [exceptDocument] : []), ...(exceptPick ? [exceptPick] : []))).q));
@@ -242,7 +286,59 @@ async function usableOf(itemId) {
 }
 async function availability(itemId, opts) {
   const usable = await usableOf(itemId); const reserved = await reservedOf(itemId, opts);
-  return { usable, reserved, available: round3(usable - reserved) };
+  return { usable, reserved, available: round3(usable - reserved), short: Math.max(0, round3(reserved - usable)) };
+}
+// ---------- Réservations par entrepôt (ligne B) ----------
+/** Quantité utilisable d'un article dans un entrepôt. */
+async function usableIn(itemId, warehouseId) {
+  return round3(Number((await db.prepare(`SELECT COALESCE(SUM(s.quantity), 0) AS q FROM wms_stock s JOIN wms_locations l ON l.id = s.location_id WHERE s.item_id = ? AND l.warehouse_id = ? AND l.active = 1 AND l.kind IN ('storage','picking','reception')`).get(itemId, warehouseId)).q));
+}
+/** Quantité réservée POUR un entrepôt (réservations qui portent un entrepôt). */
+async function reservedFor(itemId, warehouseId) {
+  return round3(Number((await db.prepare("SELECT COALESCE(SUM(quantity - fulfilled_qty), 0) AS q FROM wms_reservations WHERE item_id = ? AND warehouse_id = ? AND status = 'active'").get(itemId, warehouseId)).q));
+}
+/** Disponibilité par entrepôt : [{ warehouseId, usable, reserved, available }] (entrepôts qui ont du stock utilisable ou une réservation). */
+async function warehouseAvailability(itemId) {
+  const rows = await db.prepare(`SELECT w.id, w.code, w.name FROM wms_warehouses w WHERE w.org_id = (SELECT org_id FROM stock_items WHERE id = ?) ORDER BY w.is_default DESC, w.name`).all(itemId);
+  const out = [];
+  for (const w of rows) {
+    const usable = await usableIn(itemId, w.id); const reserved = await reservedFor(itemId, w.id);
+    if (usable > EPS || reserved > EPS) out.push({ warehouseId: Number(w.id), code: w.code, name: w.name, usable, reserved, available: round3(usable - reserved) });
+  }
+  return out;
+}
+/**
+ * Garde : une sortie de `qty` hors des emplacements utilisables de l'entrepôt ne mord pas sur ce qui est réservé pour lui.
+ * `covered` : quantité qui livre une réservation de cet entrepôt (elle se libère en même temps). Appelée avant (qty > 0) ou après la sortie (qty = 0).
+ */
+async function whGuard(itemId, warehouseId, qty, covered = 0) {
+  const reserved = await reservedFor(itemId, warehouseId);
+  if (reserved <= EPS) return;
+  const usable = await usableIn(itemId, warehouseId);
+  if (usable - qty + covered + EPS < reserved) throw new HttpError(409, `Stock réservé pour cet entrepôt : il reste ${Math.max(0, round3(usable - reserved))} disponible(s) dans l'entrepôt.`);
+}
+/** Garde : une sortie ou un déplacement vers un emplacement non disponible ne mord pas sur le stock réservé (toutes réservations). */
+async function reservedGuard(itemId, qty, covered = 0) {
+  await expireReservationsOfItem(itemId);
+  const a = await availability(itemId);
+  if (a.reserved > EPS && a.available + covered + EPS < qty) throw new HttpError(409, `Stock réservé : il reste ${Math.max(0, a.available)} disponible(s) (${a.reserved} réservé(s)).`);
+}
+const expireReservationsOfItem = async (itemId) => { const it = await db.prepare('SELECT org_id FROM stock_items WHERE id = ?').get(itemId); if (it) await expireReservations(it.org_id); };
+/** Une livraison liée à une commande consomme les réservations de la commande (stock sorti = réservation livrée). */
+async function consumeDocReservations(req, itemId, qty, deliveryId) {
+  const d = await db.prepare('SELECT doc_id FROM logistics_deliveries WHERE id = ? AND org_id = ?').get(deliveryId, req.org.id);
+  if (!d || !d.doc_id) return 0;
+  const rows = await db.prepare("SELECT * FROM wms_reservations WHERE org_id = ? AND item_id = ? AND status = 'active' AND source_kind = 'document' AND document_id = ? ORDER BY id FOR UPDATE").all(req.org.id, itemId, d.doc_id);
+  let left = qty; let used = 0;
+  for (const r of rows) {
+    if (left <= EPS) break;
+    const take = round3(Math.min(left, Number(r.quantity) - Number(r.fulfilled_qty)));
+    if (take <= EPS) continue;
+    const done = round3(Number(r.fulfilled_qty) + take);
+    await db.prepare('UPDATE wms_reservations SET fulfilled_qty = ?, status = ? WHERE id = ?').run(done, done + EPS >= Number(r.quantity) ? 'fulfilled' : 'active', r.id);
+    left = round3(left - take); used = round3(used + take);
+  }
+  return used;
 }
 
 /** Numérotation : TR-0001, PR-0001 (préparation), RT-0001, RC-0001. */
@@ -252,6 +348,7 @@ async function nextCode(orgId, prefix) {
 }
 
 module.exports = {
-  KINDS, ZONE_KINDS, USABLE, OUTBOUND, outboundOf, addRaw, DEFAULTS, isUsable, lockRow, lockItem, CONTROLLED, CONTROLLED_MSG, canLeaveControlled, round3, EPS, today, ensure, settingsOf, transitOf, quarantineOf, returnsOf, defaultOf, locationOf,
+  KINDS, ZONE_KINDS, USABLE, OUTBOUND, outboundOf, addRaw, DEFAULTS, isUsable, lockRow, lockItem, CONTROLLED, CONTROLLED_MSG, canLeaveControlled, round3, EPS, today, ensure, settingsOf, transitOf, quarantineOf, returnsOf, defaultOf, locationOf, locationFor,
+  usableIn, reservedFor, warehouseAvailability, whGuard, reservedGuard, consumeDocReservations,
   qtyAt, add, locTotal, huSum, looseAt, markEmpty, putawayPlan, destinationsFor, takeFrom, reconcile, withLocation, move, expireReservations, reservedOf, usableOf, availability, nextCode,
 };

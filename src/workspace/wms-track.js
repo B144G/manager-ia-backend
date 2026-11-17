@@ -4,7 +4,11 @@
 // Si une écriture directe les a séparés, sync() reconstruit la répartition (premier entré, premier placé). Les séries portent leur emplacement (stock_serials.location_id).
 const { db } = require('../db');
 const { HttpError } = require('../util');
-const W = require('./wms-lib');
+const W = require('./wms-core'); // fusion : couche d'entrepôt de A (wms_stock) ; B utilisait wms-lib / wms_levels
+const kindUsable = (kind) => W.USABLE.includes(kind);
+/** Quantités par emplacement d'un article (forme attendue par ce fichier). */
+const levelRows = async (itemId) => (await db.prepare(`SELECT s.location_id, s.quantity, l.kind, l.code, l.warehouse_id FROM wms_stock s JOIN wms_locations l ON l.id = s.location_id WHERE s.item_id = ? AND s.quantity > 0 ORDER BY s.location_id`).all(itemId))
+  .map((r) => ({ location_id: Number(r.location_id), quantity: Number(r.quantity), kind: r.kind, code: r.code, warehouse_id: Number(r.warehouse_id) }));
 
 const round3 = (n) => Math.round(n * 1000) / 1000;
 const EPS = 0.0005;
@@ -15,7 +19,7 @@ async function sync(it) {
   if (it.tracking === 'serial') return syncSerials(it);
   if (it.tracking !== 'lot') return;
   const lots = await db.prepare('SELECT id, quantity FROM stock_lots WHERE item_id = ? AND quantity > 0 ORDER BY received_at, id').all(it.id);
-  const levels = await db.prepare('SELECT location_id, quantity FROM wms_levels WHERE item_id = ? AND quantity > 0 ORDER BY location_id').all(it.id);
+  const levels = await db.prepare('SELECT location_id, quantity FROM wms_stock WHERE item_id = ? AND quantity > 0 ORDER BY location_id').all(it.id);
   const cells = await db.prepare('SELECT c.lot_id, c.location_id, c.quantity FROM wms_lot_levels c JOIN stock_lots l ON l.id = c.lot_id WHERE l.item_id = ? AND c.quantity > 0').all(it.id);
   const byLot = new Map(); const byLoc = new Map();
   for (const c of cells) { byLot.set(c.lot_id, (byLot.get(c.lot_id) || 0) + c.quantity); byLoc.set(c.location_id, (byLoc.get(c.location_id) || 0) + c.quantity); }
@@ -38,7 +42,7 @@ async function sync(it) {
 
 async function syncSerials(it) {
   const ser = await db.prepare("SELECT id, location_id FROM stock_serials WHERE item_id = ? AND status = 'in_stock' ORDER BY id").all(it.id);
-  const levels = await db.prepare('SELECT location_id, quantity FROM wms_levels WHERE item_id = ? AND quantity > 0 ORDER BY location_id').all(it.id);
+  const levels = await db.prepare('SELECT location_id, quantity FROM wms_stock WHERE item_id = ? AND quantity > 0 ORDER BY location_id').all(it.id);
   const count = new Map(); for (const s of ser) count.set(s.location_id, (count.get(s.location_id) || 0) + 1);
   if (levels.every((v) => count.get(v.location_id) === v.quantity) && [...count.keys()].every((k) => levels.some((v) => v.location_id === k))) return;
   const room = levels.map((v) => ({ id: v.location_id, left: v.quantity })); let k = 0;
@@ -77,12 +81,15 @@ async function lotsIn(allocations, parts) {
  * Met à jour les lots et leur répartition. Renvoie { allocations, parts } (parts = quantités négatives par emplacement, avec leur type).
  */
 async function lotsOut(it, need, opts = {}) {
-  const levels = await W.levelRows(it.id);
+  const levels = await levelRows(it.id);
   const kindOf = new Map(levels.map((l) => [l.location_id, l.kind]));
   const qOf = new Map(levels.map((l) => [l.location_id, l.quantity]));
-  const allowed = (locId) => (opts.locationId ? locId === Number(opts.locationId) : W.isUsable(kindOf.get(locId)));
+  const allowed = (locId) => (opts.locationId ? locId === Number(opts.locationId) : kindUsable(kindOf.get(locId)));
   const order = it.pick_rule === 'fifo' ? 'l.received_at, l.id' : 'l.expiry IS NULL, l.expiry, l.received_at, l.id';
   const lots = await db.prepare(`SELECT l.* FROM stock_lots l WHERE l.item_id = ? AND l.quantity > 0 ORDER BY ${order}`).all(it.id);
+  // preferLot ({ lotNo, expiry }) : la sortie concerne un lot précis (refus au contrôle qualité, rebut d'un retour) : ce lot part d'abord (tri stable).
+  const want = opts.preferLot && String(opts.preferLot.lotNo || '').trim();
+  if (want) { const hit = (l) => l.lot_no === want && (!opts.preferLot.expiry || l.expiry === opts.preferLot.expiry); lots.sort((a, b) => Number(hit(b)) - Number(hit(a))); }
   const cells = await db.prepare('SELECT c.* FROM wms_lot_levels c JOIN stock_lots l ON l.id = c.lot_id WHERE l.item_id = ? AND c.quantity > 0').all(it.id);
   const t = today();
   const live = (l) => opts.allowExpired || !l.expiry || l.expiry >= t;
@@ -135,14 +142,14 @@ async function serialsIn(orgId, serials, parts) {
   for (const p of parts) for (let n = 0; n < p.quantity && i < serials.length; n++, i++) await db.prepare('UPDATE stock_serials SET location_id = ? WHERE org_id = ? AND serial = ?').run(p.locationId, orgId, serials[i]);
 }
 async function serialsOutParts(orgId, it, serials, opts = {}) {
-  const levels = await W.levelRows(it.id);
+  const levels = await levelRows(it.id);
   const kindOf = new Map(levels.map((l) => [l.location_id, l.kind]));
   const by = new Map();
   for (const s of serials) {
     const row = await db.prepare("SELECT location_id FROM stock_serials WHERE org_id = ? AND serial = ? AND item_id = ? AND status = 'in_stock'").get(orgId, s, it.id);
     if (!row) continue; // l'erreur « pas en stock » est levée par adjust
     if (opts.locationId && row.location_id !== Number(opts.locationId)) throw new HttpError(400, `Le numéro de série ${s} n'est pas à l'emplacement demandé.`);
-    if (!opts.locationId && !W.isUsable(kindOf.get(row.location_id))) throw new HttpError(400, `Le numéro de série ${s} n'est pas dans un emplacement disponible (transit, quarantaine, retour ou rebut).`);
+    if (!opts.locationId && !kindUsable(kindOf.get(row.location_id))) throw new HttpError(400, `Le numéro de série ${s} n'est pas dans un emplacement disponible (transit, quarantaine, retour ou rebut).`);
     by.set(row.location_id, (by.get(row.location_id) || 0) + 1);
   }
   return [...by.entries()].map(([locationId, q]) => ({ locationId, quantity: -q, kind: kindOf.get(locationId) }));

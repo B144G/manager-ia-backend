@@ -11,7 +11,7 @@ const express = require('express');
 const { db, nowISO } = require('../db');
 const A = require('./access');
 const L = require('./stock-lib');
-const W = require('./wms-lib');
+const W = require('./wms-b-lib'); // fusion : socle de B servi par la couche de A
 const { HttpError } = require('../util');
 
 const router = express.Router({ mergeParams: true });
