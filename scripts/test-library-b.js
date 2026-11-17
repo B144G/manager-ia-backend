@@ -552,7 +552,9 @@ run('Bibliothèque : blocs protégés, droits, documents, corbeille, journal', a
   const alerts = require('../src/services/alerts');
   const made = await alerts.scan();
   const al = await dbx.prepare("SELECT title, severity FROM admin_alerts WHERE kind = 'library_fails'").all();
-  check('alerte « library_fails » : créée à partir des échecs écrits dans le journal central par la Bibliothèque de A', made >= 1 && al.length === 1 && al[0].severity === 'high' && /Paul/.test(al[0].title), al);
+  // `made` n'est pas exigé : le balayage automatique des alertes (tâche de fond du serveur) peut avoir créé l'alerte juste avant ce balayage, surtout sous charge ;
+  // ce qui compte est qu'une seule alerte existe, de gravité haute, au nom de la personne.
+  check('alerte « library_fails » : créée à partir des échecs écrits dans le journal central par la Bibliothèque de A', al.length === 1 && al[0].severity === 'high' && /Paul/.test(al[0].title), { made, al });
   check('alerte : le titre ne contient aucun mot de passe', !al.some((x) => x.title.includes(WRONG)));
 
   // ---------- Export et suppression complète d'une organisation ----------
