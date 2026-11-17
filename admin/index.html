@@ -2,32 +2,64 @@
 <html lang="fr">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="robots" content="noindex, nofollow">
+  <meta name="color-scheme" content="light dark">
   <title>Administration Brij-IA</title>
+  <link rel="icon" href="data:,">
+  <link rel="preload" href="/admin/fonts/inter-latin-var.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/admin/admin.css">
+  <script src="/admin/theme.js"></script>
 </head>
 <body>
-  <section id="login" class="login hidden">
-    <form id="loginForm" class="lcard">
-      <h1>BRIJ<b>-IA</b></h1>
-      <p class="muted">Espace administrateur</p>
-      <label>Identifiant <input name="username" autocomplete="username" required></label>
-      <label>Mot de passe <input name="password" type="password" autocomplete="current-password" required></label>
-      <label id="codeRow" class="hidden">Code de l'application d'authentification (ou code de secours) <input name="code" autocomplete="one-time-code" inputmode="numeric"></label>
-      <p id="loginError" class="error" role="alert"></p>
-      <button class="bt solid" type="submit">Se connecter</button>
-    </form>
+  <a class="skip" href="#main">Aller au contenu</a>
+
+  <section id="login" class="login hidden" aria-label="Connexion">
+    <div class="login-art" aria-hidden="true">
+      <div class="logo">BRIJ<b>-IA</b></div>
+      <div>
+        <h2>Le poste de pilotage de la plateforme.</h2>
+        <p>Comptes, paiements, alertes et sécurité : tout ce qui demande votre attention, au même endroit.</p>
+        <ul id="loginPoints"></ul>
+      </div>
+      <small>Accès réservé. Toute connexion est journalisée.</small>
+    </div>
+    <div class="login-main">
+      <form id="loginForm" class="lcard" autocomplete="on" novalidate>
+        <div class="logo-m">BRIJ<b>-IA</b></div>
+        <div><h1>Connexion</h1></div>
+        <p class="lead">Saisissez vos identifiants pour continuer.</p>
+        <label class="field">Identifiant <input class="input" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+        <label class="field">Mot de passe
+          <span class="pw"><input class="input" name="password" type="password" autocomplete="current-password" required><button class="btn ghost icon" type="button" id="pwToggle" aria-label="Afficher le mot de passe"></button></span>
+        </label>
+        <label id="codeRow" class="field hidden">Code de l'application d'authentification (ou code de secours)
+          <input class="input" name="code" autocomplete="one-time-code" inputmode="numeric" spellcheck="false">
+        </label>
+        <p id="loginError" class="err" role="alert"></p>
+        <button class="btn primary" type="submit" id="loginBtn">Se connecter</button>
+        <div class="foot"><span>Session sécurisée</span><button class="link" type="button" id="loginTheme">Thème clair / sombre</button></div>
+      </form>
+    </div>
   </section>
 
-  <div id="app" class="shell hidden">
-    <aside class="side" id="side"></aside>
+  <div id="app" class="app hidden">
+    <aside class="side" id="side" aria-label="Menu principal"></aside>
+    <div class="scrim" id="scrim"></div>
     <div class="col">
       <header class="top" id="top"></header>
-      <main class="main" id="main"></main>
+      <main class="main" id="main" tabindex="-1"></main>
     </div>
   </div>
-  <div id="toast" class="toast hidden" role="status"></div>
+  <div id="toasts" class="toast-host" role="status" aria-live="polite"></div>
+  <div id="overlays"></div>
+
+  <script src="/admin/ui.js"></script>
+  <script src="/admin/charts.js"></script>
+  <script src="/admin/live.js"></script>
+  <script src="/admin/views-a.js"></script>
+  <script src="/admin/views-b.js"></script>
+  <script src="/admin/views-c.js"></script>
   <script src="/admin/admin.js"></script>
 </body>
 </html>
