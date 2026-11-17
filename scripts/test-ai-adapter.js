@@ -12,7 +12,9 @@ function fake(handler) {
         const body = JSON.parse(b || '{}'); seen.push({ url: req.url, headers: req.headers, body });
         const out = handler(req.url, body); rsp.statusCode = out.error ? 401 : 200; rsp.setHeader('content-type', 'application/json'); rsp.end(JSON.stringify(out));
       });
-    }).listen(0, '127.0.0.1', () => res({ srv, seen, port: srv.address().port }));
+    });
+    srv.keepAliveTimeout = 120000; // FUSION : le garde-fou de coût (aibudget) lit la base entre deux appels ; sous charge, l'initialisation dépasse 5 s et le serveur de test fermait la connexion réutilisée (« fetch failed »)
+    srv.listen(0, '127.0.0.1', () => res({ srv, seen, port: srv.address().port }));
   });
 }
 const load = (env) => {
