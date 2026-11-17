@@ -118,12 +118,17 @@ run('Sécurité des données : chiffrement, audit, CSV, IA, injections', async (
   check("IA : le plafond global (6/jour) s'applique aussi aux organisations connectées", r.status === 200, r.status);
   let last = 200; for (let i = 0; i < 5 && last === 200; i++) last = (await owner('POST', `${O}/ai/chat`, { message: 'Encore ' + i })).status;
   check("IA : au-delà du plafond global, 429 (même pour une organisation connectée)", last === 429, last);
-  // Sauvegarde chiffrée : refus d'écrire en clair sans clé, aller-retour avec la bonne clé, échec avec une mauvaise
+  // Sauvegarde chiffrable (optionnelle) : aller-retour avec la bonne clé, échec avec une mauvaise
   const { spawnSync } = require('child_process'); const fs = require('fs'); const os = require('os'); const nodePath = require('path');
   const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'mia-bk-'));
   const envBk = { ...process.env, DATABASE_URL: 'pglite://memory', BACKUP_DIR: dir, DATA_KEY: '', BACKUP_KEY: '' };
   let p = spawnSync(process.execPath, [nodePath.join(__dirname, 'backup.js')], { env: envBk, encoding: 'utf8' });
-  check('sauvegarde : refusée en clair sans clé', p.status === 1 && /refusée/.test(p.stderr), p.stderr.slice(-120));
+  // FUSION A+B : le chiffrement des sauvegardes est OPTIONNEL (BACKUP_KEY) ; sans clé : écrite en clair avec un avertissement, comme sur la ligne A.
+  const plainFile = fs.readdirSync(dir).find((x) => x.endsWith('.json.gz'));
+  check('sauvegarde : sans clé, écrite en clair (comportement de la ligne A) avec un avertissement', p.status === 0 && plainFile && /BACKUP_KEY absent/.test(p.stderr), p.stderr.slice(-160));
+  for (const x of fs.readdirSync(dir)) fs.rmSync(nodePath.join(dir, x));
+  p = spawnSync(process.execPath, [nodePath.join(__dirname, 'backup.js')], { env: { ...envBk, NODE_ENV: 'production', STRICT_PROD_CONFIG: '1', JWT_SECRET: 'j'.repeat(48), ADMIN_PASSWORD: 'MotDePasseSolide-2026', ALLOWED_ORIGINS: 'https://x.example.com' }, encoding: 'utf8' });
+  check('sauvegarde : en production avec STRICT_PROD_CONFIG=1, refusée en clair sans clé', p.status === 1 && /refusée/.test(p.stderr), p.stderr.slice(-160));
   p = spawnSync(process.execPath, [nodePath.join(__dirname, 'backup.js')], { env: { ...envBk, BACKUP_KEY: 'cle-test-sauvegarde-1' }, encoding: 'utf8' });
   const f = fs.readdirSync(dir).find((x) => x.endsWith('.enc'));
   check('sauvegarde : fichier chiffré (.enc) sans texte lisible', p.status === 0 && f && !fs.readFileSync(nodePath.join(dir, f)).includes('manager-ia-backup') && !fs.readFileSync(nodePath.join(dir, f)).toString('latin1').includes('"tables"'), p.stderr.slice(-120));

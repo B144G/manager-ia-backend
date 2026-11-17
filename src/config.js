@@ -21,31 +21,46 @@ const resolvePath = (p) => (path.isAbsolute(p) ? p : path.join(ROOT, p));
 
 const isProd = str('NODE_ENV') === 'production';
 
-// --- Secret JWT : obligatoire en production ---
+// --- Contrôles de configuration en production ---
+// FUSION des lignes A et B : la ligne A bloquait sous 16 caractères (JWT_SECRET) et 10 (ADMIN_PASSWORD) ; la ligne B exige 32 et 12 et refuse les
+// sites autorisés en joker ou en http://. Pour ne pas faire tomber un site déjà déployé, les seuils de B ne sont qu'un AVERTISSEMENT très visible,
+// sauf si STRICT_PROD_CONFIG=1 est défini (alors le serveur refuse de démarrer, comme sur la ligne B). Les seuils de A restent bloquants (comportement d'origine).
+const strictProd = isProd && bool('STRICT_PROD_CONFIG', false);
+const configProblems = [];
+const weak = (msg) => {
+  const bar = '='.repeat(78);
+  console.warn(`\n${bar}\n[AVERTISSEMENT SÉCURITÉ — PRODUCTION] ${msg}\nCorrigez-le dès que possible. Avec STRICT_PROD_CONFIG=1, le serveur refusera de démarrer tant que ce n'est pas corrigé.\n${bar}\n`);
+  configProblems.push(msg);
+};
+
 let jwtSecret = str('JWT_SECRET');
-if (isProd && jwtSecret.length < 32) {
+if (isProd && jwtSecret.length < 16) {
   console.error(
-    '\n[ERREUR] JWT_SECRET est obligatoire en production (au moins 32 caractères, idéalement 48+).\n' +
+    '\n[ERREUR] JWT_SECRET est obligatoire en production (au moins 16 caractères, idéalement 48+).\n' +
       'Générez-en un avec : node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))"\n' +
       'Puis ajoutez-le dans les variables d\'environnement. Le serveur refuse de démarrer sans lui.\n'
   );
   process.exit(1);
 }
+if (isProd && jwtSecret.length < 32) weak(`JWT_SECRET fait ${jwtSecret.length} caractères : 32 au minimum sont recommandés (48+ idéalement). Changer ce secret déconnecte tout le monde.`);
 if (!jwtSecret) {
   jwtSecret = crypto.randomBytes(32).toString('hex');
   console.warn('[AVERTISSEMENT] JWT_SECRET absent : un secret temporaire est utilisé (les connexions sont perdues à chaque redémarrage). OK en développement seulement.');
 }
 
-// --- Production : refuser un mot de passe administrateur faible ---
-if (isProd && str('ADMIN_PASSWORD') && str('ADMIN_PASSWORD').length < 12) {
-  console.error('\n[ERREUR] ADMIN_PASSWORD est trop court pour la production (12 caractères minimum, idéalement 16+).\n');
+if (isProd && str('ADMIN_PASSWORD') && str('ADMIN_PASSWORD').length < 10) {
+  console.error('\n[ERREUR] ADMIN_PASSWORD est trop court pour la production (10 caractères minimum, idéalement 16+).\n');
   process.exit(1);
 }
-if (isProd && !str('DATA_KEY')) console.warn('[AVERTISSEMENT] DATA_KEY absent : les jetons WhatsApp sont chiffrés avec une clé dérivée de JWT_SECRET. Définissez DATA_KEY (48+ caractères aléatoires) et conservez-la : sans elle, ils deviennent illisibles.');
+if (isProd && str('ADMIN_PASSWORD') && str('ADMIN_PASSWORD').length < 12) weak(`ADMIN_PASSWORD fait ${str('ADMIN_PASSWORD').length} caractères : 12 au minimum sont recommandés (16+ idéalement).`);
+if (isProd && !str('DATA_KEY')) console.warn('[AVERTISSEMENT] DATA_KEY absent : les jetons WhatsApp et les champs sensibles (CNPS, NIU, CNI, comptes de paie, secrets de webhooks) sont chiffrés avec une clé dérivée de JWT_SECRET. Définissez DATA_KEY (48+ caractères aléatoires) et conservez-la : sans elle, ils deviennent illisibles.');
 
-// --- Production : jamais de joker dans les sites autorisés, jamais d'adresse non chiffrée (hors machine locale) ---
+// Sites autorisés : jamais de joker, jamais d'adresse non chiffrée (hors machine locale).
 if (isProd && str('ALLOWED_ORIGINS').split(',').some((o) => { const t = o.trim(); return t === '*' || (/^http:\/\//i.test(t) && !/localhost|127\.0\.0\.1/.test(t)); })) {
-  console.error('\n[ERREUR] ALLOWED_ORIGINS ne doit contenir ni « * » ni adresse en http:// en production.\n');
+  weak('ALLOWED_ORIGINS contient « * » ou une adresse en http:// : n\'autorisez que vos sites en https://.');
+}
+if (strictProd && configProblems.length) {
+  console.error(`\n[ERREUR] STRICT_PROD_CONFIG=1 : configuration de production refusée (${configProblems.length} problème(s) ci-dessus).\n`);
   process.exit(1);
 }
 

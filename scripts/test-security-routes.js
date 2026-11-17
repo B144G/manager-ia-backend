@@ -22,6 +22,7 @@ const PUBLIC = new Set([
   'GET /api/ws/public/file/:token', 'GET /api/ws/public/calendar/:token.ics', 'GET /api/ws/public/csat/:token', 'POST /api/ws/public/csat/:token',
   'GET /api/ws/public/intake/:token/info', 'GET /api/ws/public/unsubscribe/:token', 'GET /api/ws/public/digest-unsub/:token', 'GET /api/ws/public/followup-stop/:token',
   'GET /api/ws/public/whatsapp/:token', 'POST /api/ws/public/whatsapp/:token', 'GET /api/ws/public/meta/:token', 'POST /api/ws/public/meta/:token',
+  'GET /api/ws/public/track/:token', // FUSION (ligne A) : suivi de livraison pour le client final, protégé par un jeton secret non devinable dans l'adresse
 ]);
 // Routes protégées par une clé d'API (en-tête), pas par un cookie : sans clé, 401 aussi.
 const fill = (p, orgId) => p.replace(/:orgId/g, String(orgId)).replace(/:action\([^)]*\)/g, 'confirm').replace(/:token\.ics/, 'abc.ics').replace(/:[A-Za-z]+/g, '1');
@@ -31,6 +32,12 @@ run('Sécurité : routes publiques (liste blanche) et isolation entre organisati
   const key = (r) => `${r.method} ${r.path}`;
   check(`énumération : ${routes.length} routes trouvées (plus de 500 attendues)`, routes.length > 500, routes.length);
 
+  // FUSION : l'énumération couvre aussi tout ce que la ligne A a ajouté (Transport, Budget et Projets pro, entrepôt, achats, bibliothèque, comptabilité…).
+  for (const [label, re] of [['Transport (TMS et flotte)', /\/orgs\/:orgId\/(logistics|tms)\//], ['Budget pro', /\/orgs\/:orgId\/budget\/(pro|annual)|\/orgs\/:orgId\/budget-pro/], ['Projets pro', /\/orgs\/:orgId\/projects\//],
+    ['Entrepôt (WMS)', /\/orgs\/:orgId\/stock\/wms\//], ['Achats', /\/orgs\/:orgId\/purchasing\//], ['Bibliothèque', /\/orgs\/:orgId\/library\//], ['Comptabilité (stock, banque)', /\/orgs\/:orgId\/accounting\//]]) {
+    const n = routes.filter((r) => re.test(r.path)).length;
+    check(`couverture : ${label} — ${n} routes énumérées (donc testées sans connexion et en isolation)`, n > 0, n);
+  }
   const unknownPublic = [...PUBLIC].filter((k) => !routes.some((r) => key(r) === k));
   check('liste blanche : aucune entrée périmée (chaque route publique existe encore)', unknownPublic.length === 0, unknownPublic);
 

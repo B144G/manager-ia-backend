@@ -22,11 +22,13 @@ const { db } = require('../src/db');
     out.tables[t] = rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, Buffer.isBuffer(v) || v instanceof Uint8Array ? { $b64: Buffer.from(v).toString('base64') } : v])));
   }
   const file = path.join(dir, `manager-ia-${new Date().toISOString().replace(/[:.]/g, '-')}.json.gz`);
-  // La sauvegarde contient TOUTES les données : elle est chiffrée (AES-256-GCM) avec BACKUP_KEY, sinon DATA_KEY. Sans clé, on refuse d'écrire en clair (BACKUP_ALLOW_PLAIN=1 pour forcer).
-  const secret = process.env.BACKUP_KEY || config.dataKey;
+  // La sauvegarde contient TOUTES les données : elle est chiffrée (AES-256-GCM) quand BACKUP_KEY est définie. FUSION A+B : le chiffrement reste OPTIONNEL (comme sur la ligne A,
+  // une sauvegarde sans clé s'écrit en clair, avec un avertissement) ; seul STRICT_PROD_CONFIG=1 en production exige la clé. DATA_KEY ne sert plus de clé de sauvegarde implicite.
+  const secret = process.env.BACKUP_KEY || '';
   let payload = zlib.gzipSync(JSON.stringify(out)); let finalFile = file;
   if (secret) { const crypto = require('crypto'); const salt = crypto.randomBytes(16); const iv = crypto.randomBytes(12); const c = crypto.createCipheriv('aes-256-gcm', crypto.scryptSync(secret, salt, 32), iv); const ct = Buffer.concat([c.update(payload), c.final()]); payload = Buffer.concat([Buffer.from('MIABK1'), salt, iv, c.getAuthTag(), ct]); finalFile = file + '.enc'; }
-  else if (process.env.BACKUP_ALLOW_PLAIN !== '1') { console.error('Sauvegarde refusée : définissez BACKUP_KEY (ou DATA_KEY) pour la chiffrer, ou BACKUP_ALLOW_PLAIN=1 pour l\'écrire en clair.'); await db.close(); process.exit(1); }
+  else if (config.isProd && ['1', 'true', 'yes', 'oui'].includes(String(process.env.STRICT_PROD_CONFIG || '').toLowerCase()) && process.env.BACKUP_ALLOW_PLAIN !== '1') { console.error('Sauvegarde refusée : STRICT_PROD_CONFIG=1 exige BACKUP_KEY (ou BACKUP_ALLOW_PLAIN=1 pour l\'écrire en clair).'); await db.close(); process.exit(1); }
+  else console.warn('[AVERTISSEMENT] BACKUP_KEY absent : la sauvegarde est écrite EN CLAIR (toutes les données lisibles). Définissez BACKUP_KEY pour la chiffrer ; déchiffrement : node scripts/backup-decrypt.js.');
   fs.writeFileSync(finalFile, payload, { mode: 0o600 });
   const all = fs.readdirSync(dir).filter((f) => /^manager-ia-.*\.json\.gz(\.enc)?$/.test(f)).sort();
   for (const old of all.slice(0, Math.max(0, all.length - keep))) fs.unlinkSync(path.join(dir, old));

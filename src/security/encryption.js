@@ -36,6 +36,7 @@ async function run() {
 
 /** Lancé au démarrage : met à niveau les données en clair sans jamais bloquer le serveur. */
 function startupUpgrade() {
+  if (process.env.SKIP_STARTUP_ENCRYPTION === '1') { log.warn('Chiffrement au repos au démarrage désactivé (SKIP_STARTUP_ENCRYPTION=1) : les anciennes données en clair le restent.'); return; }
   run().then((r) => { if (r.upgraded) log.info(`Chiffrement au repos : ${r.upgraded} valeur(s) ancienne(s) chiffrée(s).`); if (r.unreadable) log.warn(`Chiffrement au repos : ${r.unreadable} valeur(s) illisible(s) avec les clés actuelles (DATA_KEY / DATA_KEY_PREVIOUS).`); })
     .catch((e) => log.warn('Chiffrement au repos : mise à niveau impossible : ' + String(e.message).slice(0, 120)));
 }
