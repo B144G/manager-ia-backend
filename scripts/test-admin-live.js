@@ -9,14 +9,14 @@ const { freePort } = require('./lib/testdb');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PASS = 'Cacao-Mangue-42';
 
-run('Administration : comptes en direct, inscriptions en attente, recherche', async ({ check, owner, base, extra }) => {
+run('Administration : comptes en direct, inscriptions en attente, recherche', async ({ check, owner, base, extra, dbx }) => {
   const mails = extra.mails;
   const lastCode = (to) => { const m = [...mails].reverse().find((x) => x.to && x.to[0] && x.to[0].email === to); const c = m && /: (\d{6})/.exec(m.textContent || ''); return c && c[1]; };
   const secrets = []; // tout ce que l'administration a pu lire : on y cherche les fuites à la fin
   const keep = (x) => { secrets.push(typeof x === 'string' ? x : JSON.stringify(x)); return x; };
 
   // ---------- Accès refusé sans connexion administrateur ----------
-  for (const u of ['/api/admin/live/accounts', '/api/admin/live/stream', '/api/admin/search?q=awa']) {
+  for (const u of ['/api/admin/live/accounts', '/api/admin/live/stream', '/api/admin/search?q=awa', '/api/admin/insights/modules', '/api/admin/insights/health', '/api/admin/insights/security', '/api/admin/insights/expiring']) {
     const r = await fetch(base + u);
     check(`sans connexion : ${u.split('?')[0]} refusé (401)`, r.status === 401, r.status);
     if (r.body) await r.body.cancel().catch(() => {});
@@ -114,6 +114,23 @@ run('Administration : comptes en direct, inscriptions en attente, recherche', as
   check('tableau de bord : séries journalières et comparaison de période', ov.json.daily.days.length === 30 && ov.json.daily.signups.length === 30 && typeof ov.json.kpi.newUsersPrev === 'number');
   const st = await adm('/api/admin/settings');
   check('paramètres : catalogue présent', st.status === 200 && st.json.catalog.sold.length === 5, st.json && Object.keys(st.json));
+
+  // ---------- Étape 2 : modules, santé, sécurité, abonnements à expirer ----------
+  const nad = (await adm('/api/admin/live/accounts')).json.accounts.find((a) => a.contact === contact);
+  const iso = (ms) => new Date(Date.now() + ms).toISOString();
+  await dbx.prepare("UPDATE users SET plan = 'Illimité', plan_expires = ? WHERE id = ?").run(iso(5 * 86400000), nad.id);
+  await dbx.prepare("INSERT INTO payments (reference, user_id, plan, operator, phone, amount_xaf, mode, status, created_at, paid_at) VALUES ('MI-TESTLIVE', ?, 'unl_month', 'mtn', '670000000', 80000, 'manual', 'paid', ?, ?)").run(nad.id, iso(-25 * 86400000), iso(-25 * 86400000));
+  const ex = await adm('/api/admin/insights/expiring?days=30');
+  const ne = ex.json && ex.json.list.find((x) => x.id === nad.id);
+  check('à expirer : l’abonné apparaît avec jours restants et dernier paiement', ex.status === 200 && ne && ne.daysLeft >= 4 && ne.daysLeft <= 5 && ne.lastPaidXAF === 80000 && ex.json.atRiskXAF >= 80000, ex.json);
+  check('à expirer : fenêtre de 7 jours contient la tranche « 0 à 7 jours »', (await adm('/api/admin/insights/expiring?days=7')).json.buckets.length === 1);
+  const mo = await adm('/api/admin/insights/modules?days=30');
+  check('modules : forme attendue (total, modules, tendance journalière)', mo.status === 200 && Array.isArray(mo.json.modules) && mo.json.daily.days.length === 30 && typeof mo.json.totalOrgs === 'number', mo.json && Object.keys(mo.json));
+  const he = await adm('/api/admin/insights/health');
+  check('santé : processus, base, volumes, services, verdict', he.status === 200 && he.json.process.uptimeSec >= 0 && he.json.db.latencyMs >= 0 && he.json.volumes.users >= 2 && he.json.services.length === 4 && ['ok', 'warn', 'bad'].includes(he.json.verdict), he.json);
+  check('santé : aucun secret de configuration (clés, jetons, mots de passe)', !/jwt|secret|password|token|api[_-]?key|DATABASE_URL|postgres:/i.test(he.text), he.text.slice(0, 200));
+  const se = await adm('/api/admin/insights/security');
+  check('sécurité : adoption 2FA, échecs 24 h, suspendus, alertes, séries', se.status === 200 && se.json.twofa.total >= 2 && se.json.failuresDaily.values.length === 7 && typeof se.json.alertsOpen === 'number', se.json);
 
   // ---------- Battement de cœur (toutes les 20 s) ----------
   const ping = await waitFor(() => events.find((e) => e.event === 'ping'), 23000);

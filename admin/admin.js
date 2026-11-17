@@ -8,11 +8,11 @@
   // ---------- Plan du menu ----------
   const NAV = [
     ['Pilotage', [['overview', "Vue d'ensemble", 'overview'], ['clients', 'Clients', 'users'], ['orgs', 'Organisations', 'orgs'], ['payments', 'Paiements', 'payments'], ['alerts', 'Alertes', 'alerts']]],
-    ['Commercial', [['plans', 'Offres et abonnements', 'plans'], ['contacts', 'Contacts reçus', 'contacts']]],
-    ['Plateforme', [['ai', "Utilisation de l'IA", 'ai'], ['notifications', 'Notifications', 'notifications'], ['security', 'Sécurité', 'security'], ['settings', 'Paramètres', 'settings']]],
+    ['Commercial', [['plans', 'Offres et abonnements', 'plans'], ['expiring', 'Abonnements à expirer', 'clock'], ['contacts', 'Contacts reçus', 'contacts']]],
+    ['Plateforme', [['modules', 'Utilisation des modules', 'grid'], ['ai', "Utilisation de l'IA", 'ai'], ['health', 'Santé de la plateforme', 'activity'], ['notifications', 'Notifications', 'notifications'], ['security', 'Sécurité', 'security'], ['settings', 'Paramètres', 'settings']]],
   ];
   const TITLES = Object.fromEntries(NAV.flatMap(([, items]) => items.map(([k, l]) => [k, l])));
-  const VIEW_OF = { overview: 'overview', clients: 'users', orgs: 'orgs', payments: 'payments', alerts: 'alerts', plans: 'plans', contacts: 'contacts', ai: 'ai', notifications: 'notifications', security: 'security', settings: 'settings' };
+  const VIEW_OF = { overview: 'overview', clients: 'users', orgs: 'orgs', payments: 'payments', alerts: 'alerts', plans: 'plans', expiring: 'expiring', modules: 'modules', health: 'health', contacts: 'contacts', ai: 'ai', notifications: 'notifications', security: 'security', settings: 'settings' };
 
   let gen = 0, leaves = [], crumbDetail = '', route = { name: 'overview', arg: null };
   A.onLeave = (fn) => { leaves.push(fn); return fn; };
@@ -28,7 +28,7 @@
   // ---------- Compteurs du menu ----------
   const counts = () => {
     const sm = A.live.st.summary || (S.ov && S.ov.todo ? { payments: S.ov.todo.payments, leads: S.ov.todo.leads, alerts: S.ov.todo.alerts } : { payments: 0, leads: 0, alerts: 0 });
-    return { payments: sm.payments || 0, alerts: sm.alerts || 0, contacts: sm.leads || 0, clients: A.live.unseen() };
+    return { payments: sm.payments || 0, alerts: sm.alerts || 0, contacts: sm.leads || 0, clients: A.live.unseen(), expiring: (S.ov && S.ov.todo && S.ov.todo.expiring) || 0 };
   };
   function setTitle() { const c = counts(); const n = c.payments + c.alerts + c.clients; document.title = (n ? '(' + n + ') ' : '') + 'Administration Brij-IA'; }
 

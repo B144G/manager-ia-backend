@@ -376,4 +376,5 @@ ul.dleg{margin:0;padding:0}
 .main:focus{outline:none}
 .sw{display:inline-block}
 .kpi .v{overflow-wrap:normal}.kpi .v small{white-space:nowrap}
-@media (max-width:560px){.g-kpi{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:560px){.g-kpi{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--s3)}.kpi{padding:var(--s3) var(--s3);grid-template-columns:minmax(0,1fr)}.kpi .sp{display:none}.kpi .v{font-size:var(--fs-xl)}.kpi .l{font-size:var(--fs-xs)}}
+@media (max-width:359px){.g-kpi{grid-template-columns:minmax(0,1fr)}}
