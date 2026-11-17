@@ -201,11 +201,11 @@ const config = {
   durationDays: int('PLAN_DURATION_DAYS', 30),
   // Offres vendues : « Illimité », une par durée (le forfait sur mesure se règle aussi sur ces prix : il atteint « Illimité » au prix de la durée choisie).
   plans: {
-    unl_week: { id: 'unl_week', name: 'Illimité', period: 'week', days: 7, priceXAF: int('PRICE_UNL_WEEK', 40000) },
-    unl_month: { id: 'unl_month', name: 'Illimité', period: 'month', days: int('PLAN_DURATION_DAYS', 30), priceXAF: int('PRICE_UNL_MONTH', int('PRICE_ILLIMITE', 150000)) },
-    unl_quarter: { id: 'unl_quarter', name: 'Illimité', period: 'quarter', days: 91, priceXAF: int('PRICE_UNL_QUARTER', 420000) },
-    unl_semester: { id: 'unl_semester', name: 'Illimité', period: 'semester', days: 183, priceXAF: int('PRICE_UNL_SEMESTER', 800000) },
-    unl_year: { id: 'unl_year', name: 'Illimité', period: 'year', days: 365, priceXAF: int('PRICE_UNL_YEAR', 1500000) },
+    unl_week: { id: 'unl_week', name: 'Illimité', period: 'week', days: 7, priceXAF: int('PRICE_UNL_WEEK', 21500) },
+    unl_month: { id: 'unl_month', name: 'Illimité', period: 'month', days: int('PLAN_DURATION_DAYS', 30), priceXAF: int('PRICE_UNL_MONTH', int('PRICE_ILLIMITE', 80000)) },
+    unl_quarter: { id: 'unl_quarter', name: 'Illimité', period: 'quarter', days: 91, priceXAF: int('PRICE_UNL_QUARTER', 224000) },
+    unl_semester: { id: 'unl_semester', name: 'Illimité', period: 'semester', days: 183, priceXAF: int('PRICE_UNL_SEMESTER', 425000) },
+    unl_year: { id: 'unl_year', name: 'Illimité', period: 'year', days: 365, priceXAF: int('PRICE_UNL_YEAR', 800000) },
   },
   // Anciennes offres : on ne les vend plus, mais des abonnés les ont encore (et des paiements anciens peuvent attendre une validation).
   legacyPlans: {

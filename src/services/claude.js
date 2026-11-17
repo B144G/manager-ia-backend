@@ -14,7 +14,7 @@ Pour commencer : le bouton « Commencer gratuitement » mène à la connexion ; 
 
 Offres :
 - Gratuit : pour découvrir la plateforme.
-- Illimité, au choix : une semaine 40 000 FCFA, un mois 150 000 FCFA, un trimestre 420 000 FCFA, un semestre 800 000 FCFA, un an 1 500 000 FCFA (plus la durée est longue, plus le prix par mois baisse).
+- Illimité, au choix : une semaine 21 500 FCFA, un mois 80 000 FCFA, un trimestre 224 000 FCFA, un semestre 425 000 FCFA, un an 800 000 FCFA (plus la durée est longue, plus le prix par mois baisse).
 - Sur mesure : l'onglet « Sur mesure » de la page Abonnement permet de choisir une somme (minimum 10 000 FCFA) et un temps d'utilisation (semaine, mois, trimestre, semestre ou an) ; à somme égale, une durée plus courte donne plus d'accès ; un bloc montre les accès avant de payer.
 Le détail des limites de chaque offre est dans tes connaissances ; les messages IA sont comptés pour toute l'organisation, par période d'abonnement de 30 jours. Une fois abonné, on ne peut changer d'offre qu'à la fin de l'abonnement (on peut prolonger la même offre à tout moment).
 Paiement par MTN Mobile Money ou Orange Money.

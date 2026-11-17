@@ -141,7 +141,7 @@ async function main() {
     r = await anon('POST', '/api/contact', { name: '', message: '' });
     check('contact invalide -> 400', r.status === 400);
     r = await anon('GET', '/api/plans');
-    check('plans', r.status === 200 && r.json.plans.length === 5 && r.json.plans[0].id === 'unl_week' && r.json.plans[0].priceXAF === 40000 && r.json.plans[1].id === 'unl_month' && r.json.plans[1].priceXAF === 150000 && r.json.plans[4].priceXAF === 1500000 && r.json.plans.every((x) => x.name === 'Illimité') && r.json.durationDays === 30 && r.json.automatic === false && r.json.manual.mtn === '670000001' && r.json.manual.holder === 'Titulaire Test', r.json);
+    check('plans', r.status === 200 && r.json.plans.length === 5 && r.json.plans[0].id === 'unl_week' && r.json.plans[0].priceXAF === 21500 && r.json.plans[1].id === 'unl_month' && r.json.plans[1].priceXAF === 80000 && r.json.plans[4].priceXAF === 800000 && r.json.plans.every((x) => x.name === 'Illimité') && r.json.durationDays === 30 && r.json.automatic === false && r.json.manual.mtn === '670000001' && r.json.manual.holder === 'Titulaire Test', r.json);
     r = await anon('POST', '/api/assistant', { messages: [{ role: 'user', content: 'Bonjour' }] });
     check('assistant sans clé -> 503', r.status === 503 && r.json.error === 'Assistant indisponible', r.json);
 
@@ -152,7 +152,7 @@ async function main() {
     check('offre inconnue -> 400', r.status === 400);
     r = await user('POST', '/api/payments/initiate', { plan: 'unl_month', operator: 'mtn', phone: '670000010' });
     const pay = r.json;
-    check('initiate manuel', r.status === 200 && pay.mode === 'manual' && pay.status === 'pending' && pay.amountXAF === 150000 && /^MI-[A-Z0-9]{6}$/.test(pay.reference) && pay.instructions.includes(pay.reference) && pay.instructions.includes('670000001') && pay.instructions.includes('Titulaire Test'), r.json);
+    check('initiate manuel', r.status === 200 && pay.mode === 'manual' && pay.status === 'pending' && pay.amountXAF === 80000 && /^MI-[A-Z0-9]{6}$/.test(pay.reference) && pay.instructions.includes(pay.reference) && pay.instructions.includes('670000001') && pay.instructions.includes('Titulaire Test'), r.json);
     r = await user('GET', '/api/payments/' + pay.reference);
     check('statut pending', r.status === 200 && r.json.status === 'pending' && r.json.plan === 'unl_month', r.json);
     r = await client(base)('POST', '/api/payments/confirm-manual', { reference: pay.reference, transactionId: 'XXXX' });
@@ -197,7 +197,7 @@ async function main() {
 
     r = await adm('GET', '/api/admin/stats');
     const s = r.json;
-    check('stats', r.status === 200 && s.users >= 2 && s.byPlan['Illimité'] === 1 && s.revenueMonthXAF === 150000 && s.leads === 1 && s.byInterest.ia >= 1 && s.pendingPayments >= 0, s);
+    check('stats', r.status === 200 && s.users >= 2 && s.byPlan['Illimité'] === 1 && s.revenueMonthXAF === 80000 && s.leads === 1 && s.byInterest.ia >= 1 && s.pendingPayments >= 0, s);
     r = await adm('GET', '/api/admin/users?q=' + encodeURIComponent('awa'));
     check('recherche inscrits', r.status === 200 && r.json.users.length === 1 && r.json.users[0].name === 'Awa Test' && !('pass_hash' in r.json.users[0]), r.json);
     r = await adm('GET', '/api/admin/users?plan=Illimit%C3%A9');

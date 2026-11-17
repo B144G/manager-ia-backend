@@ -36,7 +36,7 @@ async function main() {
     const P5 = ['week', 'month', 'quarter', 'semester', 'year'];
     const cap = (a, p) => C.quote(a, p).limits;
     // La règle voulue : pour la MÊME somme, plus la durée est courte, plus le forfait est élevé, sur chaque capacité.
-    for (const amount of [10000, 20000, 35000]) {
+    for (const amount of [10000, 15000, 20000]) {
       const rows = P5.map((p) => ({ p, c: cap(amount, p), d: C.quote(amount, p).aiPerDay, rank: C.quote(amount, p).rank }));
       for (const k of ['members', 'orgs', 'branches', 'emailDay']) check(`${amount} FCFA : « ${k} » ne monte jamais quand la durée s'allonge`, rows.every((r, i) => i === 0 || r.c[k] <= rows[i - 1].c[k]), rows.map((r) => r.c[k]));
       check(`${amount} FCFA : messages IA par jour décroissants (semaine > mois > trimestre > semestre > an)`, rows.every((r, i) => i === 0 || r.d <= rows[i - 1].d) && rows[0].d > rows[1].d, rows.map((r) => r.d));
@@ -45,22 +45,22 @@ async function main() {
     let q = C.quote(10000, 'week');
     check('10 000 FCFA pour 7 jours : nettement plus que pour 1 mois (plus de personnes, d\'antennes, d\'e-mails)', q.limits.members > cap(10000, 'month').members && q.limits.branches > cap(10000, 'month').branches && q.limits.emailDay > cap(10000, 'month').emailDay, [q.limits, cap(10000, 'month')]);
     q = C.quote(10000, 'month');
-    check('10 000 FCFA / mois : 300 messages IA, 5 personnes, 1 organisation', q.limits.aiMonth === 300 && q.limits.members === 5 && q.limits.orgs === 1 && q.level === 10000, q);
+    check('10 000 FCFA / mois : 370 messages IA, 7 personnes, 1 organisation, 2 antennes', q.limits.aiMonth === 370 && q.limits.members === 7 && q.limits.orgs === 1 && q.limits.branches === 2 && q.level === 18750, q);
     check('10 000 FCFA / an : ne descend jamais sous le niveau de l\'offre Gratuite', cap(10000, 'year').members >= 3 && cap(10000, 'year').aiMonth >= 40 && cap(10000, 'year').emailDay >= 5, cap(10000, 'year'));
     check('l\'offre Illimité de chaque durée donne tout (au prix de la durée)', P5.every((p) => { const m = C.info().periods.find((x) => x.id === p).max; const l = cap(m, p); return l.members === 9999 && l.orgs === 999 && C.quote(m, p).rank === 4; }));
-    check('prix Illimité : semaine 40 000, mois 150 000, trimestre 420 000, semestre 800 000, an 1 500 000', JSON.stringify(C.info().periods.map((x) => x.unlimited)) === JSON.stringify([40000, 150000, 420000, 800000, 1500000]), C.info().periods.map((x) => x.unlimited));
-    check('le prix par mois baisse avec la durée (150 000, 140 000, 133 333, 125 000)', (150000 > 420000 / 3) && (420000 / 3 > 800000 / 6) && (800000 / 6 > 1500000 / 12));
-    check('50 000 FCFA / mois : capacités de Pro avec 50 % de messages IA en plus', C.quote(50000, 'month').limits.aiMonth === 1500 && C.quote(50000, 'month').limits.members === 15 && C.quote(50000, 'month').limits.orgs === 3);
-    const ai = [10000, 15000, 20000, 30000, 40000, 50000, 75000, 100000, 150000].map((a) => cap(a, 'month').aiMonth);
+    check('prix Illimité : semaine 21 500, mois 80 000, trimestre 224 000, semestre 425 000, an 800 000', JSON.stringify(C.info().periods.map((x) => x.unlimited)) === JSON.stringify([21500, 80000, 224000, 425000, 800000]), C.info().periods.map((x) => x.unlimited));
+    check('le prix par mois baisse avec la durée (80 000, 74 667, 70 833, 66 667)', (80000 > 224000 / 3) && (224000 / 3 > 425000 / 6) && (425000 / 6 > 800000 / 12));
+    check('40 000 FCFA / mois (la moitié d\'Illimité) : capacités de Pro Max, messages IA bornés par la marge', C.quote(40000, 'month').limits.members === 100 && C.quote(40000, 'month').limits.orgs === 10 && C.quote(40000, 'month').limits.aiMonth === 1490, C.quote(40000, 'month').limits);
+    const ai = [10000, 15000, 20000, 30000, 40000, 50000, 60000, 70000, 80000].map((a) => cap(a, 'month').aiMonth);
     check('plus la somme est haute, plus le quota IA est grand (jamais à la baisse)', ai.every((v, i) => i === 0 || v >= ai[i - 1]), ai);
     const wk = C.quote(10000, 'week');
     check('une semaine : le quota IA est celui de la semaine (proportionnel au mois)', wk.limits.aiMonth < C.capacityAt(wk.level).aiMonth && wk.limits.aiMonth >= 20, [wk.limits.aiMonth, C.capacityAt(wk.level).aiMonth]);
-    for (const [a, p, why] of [[9500, 'month', 'sous le minimum (10 000, toutes durées)'], [9500, 'year', 'sous le minimum, un an'], [10250, 'month', 'pas un multiple de 500'], [200000, 'month', 'au-delà du prix Illimité du mois'], [50000, 'week', 'au-delà du prix Illimité de la semaine (40 000)'], [10000, 'jour', 'durée inconnue'], ['abc', 'month', 'pas un nombre'], [-5000, 'month', 'négative']]) {
+    for (const [a, p, why] of [[9500, 'month', 'sous le minimum (10 000, toutes durées)'], [9500, 'year', 'sous le minimum, un an'], [10250, 'month', 'pas un multiple de 500'], [200000, 'month', 'au-delà du prix Illimité du mois'], [50000, 'week', 'au-delà du prix Illimité de la semaine (21 500)'], [10000, 'jour', 'durée inconnue'], ['abc', 'month', 'pas un nombre'], [-5000, 'month', 'négative']]) {
       let err = null; try { C.quote(a, p); } catch (e) { err = e; }
       check('refusé : ' + why, err && err.status === 400 && err.message.length > 10, err && err.message);
     }
     check('10 000 FCFA est accepté pour toutes les durées', P5.every((p) => { try { C.quote(10000, p); return true; } catch { return false; } }));
-    check('accès : le forfait minimum ouvre les fonctions Pro, pas Pro Max ; Illimité ouvre tout', (() => { const f = (a, p) => Object.fromEntries(C.quote(a, p).features.map((x) => [x.key, x.included])); return f(10000, 'month').assistant === true && f(10000, 'month').followups === true && f(10000, 'month').handoff === false && f(75000, 'month').handoff === true && f(75000, 'month').multisite === false && Object.values(f(150000, 'month')).every(Boolean) && f(10000, 'year').assistant === true && f(10000, 'year').followups === false; })());
+    check('accès : le forfait minimum ouvre les fonctions Pro, pas Pro Max ; Illimité ouvre tout', (() => { const f = (a, p) => Object.fromEntries(C.quote(a, p).features.map((x) => [x.key, x.included])); return f(10000, 'month').assistant === true && f(10000, 'month').followups === true && f(10000, 'month').handoff === false && f(40000, 'month').handoff === true && f(40000, 'month').multisite === false && Object.values(f(80000, 'month')).every(Boolean) && f(10000, 'year').assistant === true && f(10000, 'year').followups === false; })());
     check('nom lisible', C.label('Sur mesure|15000|7') === 'Sur mesure (15 000 FCFA / semaine)' && C.label('Sur mesure|60000|183') === 'Sur mesure (60 000 FCFA / semestre)' && C.label('Pro') === 'Pro');
     check('un nom falsifié n\'est pas reconnu', C.parse('Sur mesure|999999999999|7') === null && C.parse('Sur mesure|15000|9') === null && C.parse('Pro') === null);
 
@@ -70,7 +70,7 @@ async function main() {
     r = await web('GET', '/api/plans/custom/quote?amount=5000&period=month');
     check('aperçu refusé sous le minimum, avec un message clair', r.status === 400 && /minimum/.test(r.json.error), r.json);
     r = await web('GET', '/api/plans');
-    check('/plans publie les 5 durées, le minimum et le prix Illimité de chaque durée', r.json.custom && r.json.custom.periods.length === 5 && r.json.custom.periods.every((x) => x.min === 10000) && r.json.custom.periods.find((x) => x.id === 'quarter').unlimited === 420000 && r.json.plans.length === 5, r.json.custom);
+    check('/plans publie les 5 durées, le minimum et le prix Illimité de chaque durée', r.json.custom && r.json.custom.periods.length === 5 && r.json.custom.periods.every((x) => x.min === 10000) && r.json.custom.periods.find((x) => x.id === 'quarter').unlimited === 224000 && r.json.plans.length === 5, r.json.custom);
 
     console.log('Paiement et activation');
     const mail = 'client-' + Date.now() + '@exemple.com';
@@ -130,7 +130,7 @@ async function main() {
     check('à l\'échéance, retour à Gratuit', fresh.plan === 'Gratuit', fresh.plan);
 
     console.log('Offres Illimité par durée');
-    for (const [id, days, price] of [['unl_week', 7, 40000], ['unl_quarter', 91, 420000], ['unl_year', 365, 1500000]]) {
+    for (const [id, days, price] of [['unl_week', 7, 21500], ['unl_quarter', 91, 224000], ['unl_year', 365, 800000]]) {
       r = await web('POST', '/api/payments/initiate', { plan: id, operator: 'mtn', phone: '670000010' });
       check(`Illimité (${id}) : montant fixé à ${price} FCFA`, r.status === 200 && r.json.amountXAF === price, r.json);
       const pr = await db.prepare('SELECT id FROM payments WHERE reference = ?').get(r.json.reference);

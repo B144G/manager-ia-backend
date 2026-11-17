@@ -55,8 +55,8 @@ for (const p of PER) {
   const q = C.quote(a, p.id);
   check(`${a} FCFA / ${p.label} : bornée par la marge visée sauf garantie Gratuit (${q.limits.aiMonth} messages)`, q.limits.aiMonth <= Math.max(E.targetCap(a, p.blocks), config.workspaceLimits.Gratuit.aiMonth, 20));
 }
-const wk = [10000, 20000, 40000].map((a) => C.quote(a, 'week').limits.aiMonth); const mo = [10000, 20000, 40000].map((a) => C.quote(a, 'month').limits.aiMonth);
-check('même somme : une semaine donne plus de messages par jour qu\'un mois', [10000, 20000, 40000].every((a) => C.quote(a, 'week').aiPerDay > C.quote(a, 'month').aiPerDay), [wk, mo]);
+const wk = [10000, 15000, 20000].map((a) => C.quote(a, 'week').limits.aiMonth); const mo = [10000, 15000, 20000].map((a) => C.quote(a, 'month').limits.aiMonth);
+check('même somme : une semaine donne plus de messages par jour qu\'un mois', [10000, 15000, 20000].every((a) => C.quote(a, 'week').aiPerDay > C.quote(a, 'month').aiPerDay), [wk, mo]);
 check('somme maximale d\'une durée = Illimité de cette durée : même quota et même nom lisible', PER.every((p) => { const max = C.info().periods.find((x) => x.id === p.id).max; return C.label(C.nameOf(max, p.days)).startsWith('Illimité') && C.quote(max, p.id).rank === 4; }));
 check('offres historiques toujours rentables au pire cas (Pro, Pro Max, Méga Pro)', Object.values(config.legacyPlans).every((p) => E.marginOf(p.priceXAF, config.workspaceLimits[p.name].aiMonth, 1) >= E.TARGET - 0.001));
 
