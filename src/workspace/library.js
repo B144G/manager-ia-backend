@@ -67,8 +67,13 @@ const ACTIONS = {
   settings: 'Réglages modifiés',
   denied: 'Accès refusé',
   auto_purge: 'Corbeille vidée automatiquement',
+  view_doc: 'Consultation de la fiche d’un document',
 };
+// Noms d'actions de la ligne B, acceptés comme filtre du journal (même sens).
+const ACTION_ALIAS = { unlock_ok: 'unlock', add: 'upload', delete: 'trash', restore_version: 'version_restore', folder_add: 'folder_create', folder_edit: 'folder_rename', block_add: 'block_create', block_edit: 'block_update', trash_auto: 'auto_purge' };
 async function audit(req, action, block, detail) {
+  // Dossier personnel : le journal n'expose jamais le nom d'un document privé.
+  if (block && Number(block.personal) && ['upload', 'download', 'preview', 'view_doc', 'edit', 'trash', 'restore', 'purge', 'version', 'version_restore', 'version_delete', 'denied'].includes(action)) detail = '';
   await db.prepare('INSERT INTO lib_audit (org_id, block_id, block_name, user_id, action, detail, ip, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
     .run(req.org.id, block ? block.id : null, block ? block.name : '', req.user ? req.user.id : null, action, String(detail || '').slice(0, 300), String(req.ip || '').slice(0, 64), nowISO());
 }
@@ -84,6 +89,14 @@ const DEFAULT_BLOCKS = [
   ['Comptabilité et finances', '#0f766e', 'wallet', 0, '', 'vr', 'vraed'],
   ['Juridique', '#9f1239', 'scale', 0, '', 'vr', 'vraed'],
 ];
+const SLUGS = { 'Mes documents': 'personnel', Administratif: 'administratif', Commercial: 'commercial', Projets: 'projets', 'Ressources humaines': 'rh', 'Comptabilité et finances': 'comptabilite', Juridique: 'juridique' };
+const slugify = (name) => String(name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'bloc';
+/** Identifiant court unique dans l'organisation (« Achats et stock » → achats-et-stock). */
+async function freeSlug(orgId, name) {
+  const base = slugify(name); let slug = base; let i = 2;
+  while (await db.prepare('SELECT 1 FROM lib_blocks WHERE org_id = ? AND slug = ?').get(orgId, slug)) slug = `${base}-${i++}`;
+  return slug;
+}
 const letters = (s) => ({ view: s.includes('v'), read: s.includes('r'), add: s.includes('a'), edit: s.includes('e'), delete: s.includes('d') });
 
 async function ensureDefaults(org) {
@@ -93,7 +106,7 @@ async function ensureDefaults(org) {
   await db.transaction(async () => {
     let pos = 0;
     for (const [name, color, icon, personal, m, g, a] of DEFAULT_BLOCKS) {
-      const id = Number((await db.prepare('INSERT INTO lib_blocks (org_id, name, color, icon, personal, builtin, position, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)').run(org.id, name, color, icon, personal, pos++, now)).lastInsertRowid);
+      const id = Number((await db.prepare('INSERT INTO lib_blocks (org_id, slug, name, color, icon, personal, builtin, position, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)').run(org.id, SLUGS[name] || slugify(name), name, color, icon, personal, pos++, now)).lastInsertRowid);
       if (!personal) for (const [role, s] of [['member', m], ['manager', g], ['admin', a]]) await saveRolePerms(id, role, letters(s));
     }
   })();
@@ -103,6 +116,7 @@ async function saveRolePerms(blockId, role, p) {
   await db.prepare(`INSERT INTO lib_role_perms (block_id, role, p_view, p_read, p_add, p_edit, p_delete) VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (block_id, role) DO UPDATE SET p_view = excluded.p_view, p_read = excluded.p_read, p_add = excluded.p_add, p_edit = excluded.p_edit, p_delete = excluded.p_delete`)
     .run(blockId, role, +v.view, +v.read, +v.add, +v.edit, +v.delete);
+  await db.prepare('UPDATE lib_role_perms SET org_id = (SELECT org_id FROM lib_blocks WHERE id = ?) WHERE block_id = ? AND role = ? AND org_id IS NULL').run(blockId, blockId, role);
 }
 /** Un droit plus fort implique « voir » ; « modifier » et « supprimer » impliquent « lire ». */
 function normPerms(p) {
@@ -151,22 +165,24 @@ const minIso = (a, b) => (a < b ? a : b);
 /** Grants valides de cette session : { blockId: expiresAt }. */
 async function liveGrants(req) {
   const now = nowISO();
-  const rows = await db.prepare('SELECT block_id, expires_at, hard_expires_at FROM lib_grants WHERE session_id = ? AND org_id = ? AND user_id = ?').all(String(req.sessionId || ''), req.org.id, req.user.id);
+  const rows = await db.prepare('SELECT block_id, expires_at, hard_expires_at, pass_stamp FROM lib_grants WHERE session_id = ? AND org_id = ? AND user_id = ?').all(String(req.sessionId || ''), req.org.id, req.user.id);
   const out = {};
-  for (const g of rows) if (g.expires_at > now && g.hard_expires_at > now) out[Number(g.block_id)] = g.expires_at;
+  for (const g of rows) if (g.expires_at > now && g.hard_expires_at > now && (g.pass_stamp === null || g.pass_stamp === undefined || String(g.pass_stamp) === String(req.user.pass_changed_at || ''))) out[Number(g.block_id)] = g.expires_at;
   return out;
 }
 /** Vérifie l'autorisation de la session pour ce bloc et la renouvelle (sans dépasser la durée maximale). */
 async function requireGrant(req, block) {
   const now = nowISO();
   const g = await db.prepare('SELECT * FROM lib_grants WHERE session_id = ? AND block_id = ? AND user_id = ?').get(String(req.sessionId || ''), block.id, req.user.id);
-  if (!g || g.expires_at <= now || g.hard_expires_at <= now) {
+  // Mot de passe changé depuis l'ouverture : l'autorisation tombe (défense en plus de la fermeture des sessions).
+  const stale = g && g.pass_stamp !== null && g.pass_stamp !== undefined && String(g.pass_stamp) !== String(req.user.pass_changed_at || '');
+  if (!g || stale || g.expires_at <= now || g.hard_expires_at <= now) {
     if (g) await db.prepare('DELETE FROM lib_grants WHERE session_id = ? AND block_id = ?').run(g.session_id, g.block_id);
     throw err(403, LOCKED_MSG, 'library_locked');
   }
   const set = await settingsOf(req.org);
   const exp = minIso(new Date(Date.now() + set.grantMinutes * 60000).toISOString(), g.hard_expires_at);
-  await db.prepare('UPDATE lib_grants SET expires_at = ? WHERE session_id = ? AND block_id = ?').run(exp, g.session_id, g.block_id);
+  await db.prepare('UPDATE lib_grants SET expires_at = ?, last_used_at = ? WHERE session_id = ? AND block_id = ?').run(exp, now, g.session_id, g.block_id);
   return exp;
 }
 /** Bloc + droits + autorisation : pour toute lecture ou écriture de contenu. */
@@ -180,7 +196,8 @@ async function openBlock(req, idv, need) {
 async function openDoc(req, idv, need, { deleted = false } = {}) {
   const d = await db.prepare('SELECT * FROM lib_docs WHERE id = ? AND org_id = ?').get(A.id(idv), req.org.id);
   if (!d || Boolean(d.deleted_at) !== deleted) throw new HttpError(404, 'Document introuvable.');
-  const { b, perms, expiresAt } = await openBlock(req, d.block_id);
+  // Bloc non visible pour cette personne : même réponse qu'un document inexistant (aucun indice).
+  const { b, perms, expiresAt } = await openBlock(req, d.block_id).catch((e) => { throw e instanceof HttpError && e.status === 404 ? new HttpError(404, 'Document introuvable.') : e; });
   if (Number(b.personal) && Number(d.owner_id) !== Number(req.user.id)) throw new HttpError(404, 'Document introuvable.');
   if (need && !perms[need]) { await audit(req, 'denied', b, `${need} · ${d.name}`); throw new HttpError(403, DENIED); }
   return { d, b, perms, expiresAt };
@@ -224,11 +241,12 @@ async function docViews(req, rows, blocks) {
     return {
       id: Number(d.id), name: d.name, mime: d.mime, size: Number(d.size), version: Number(d.version), tags: parseTags(d.tags),
       favorite: fav.has(Number(d.id)), author: names[Number(d.created_by)] || '', updatedAt: d.updated_at,
+      linkType: d.link_type || null, linkId: d.link_id ? Number(d.link_id) : null, folderId: d.folder_id ? Number(d.folder_id) : null,
       block: b ? { id: Number(b.id), name: b.name, color: b.color } : undefined,
     };
   });
 }
-const blockView = (b) => ({ id: Number(b.id), name: b.name, color: b.color, icon: b.icon, hidden: Boolean(Number(b.hidden)), personal: Boolean(Number(b.personal)), builtin: Boolean(Number(b.builtin)) });
+const blockView = (b) => ({ id: Number(b.id), slug: b.slug || SLUGS[b.name] || slugify(b.name), name: b.name, color: b.color, icon: b.icon, hidden: Boolean(Number(b.hidden)), personal: Boolean(Number(b.personal)), builtin: Boolean(Number(b.builtin)) });
 /** Filtre SQL des documents visibles d'un bloc (le bloc personnel ne montre que les siens). */
 const ownFilter = (req, b) => (Number(b.personal) ? { sql: ' AND owner_id = ?', args: [req.user.id] } : { sql: '', args: [] });
 
@@ -280,22 +298,22 @@ function detect(buf, name) {
   if (head(4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WAVE') return { ext: 'wav', mime: MIME.wav };
   if (head(4) === 'OggS') return { ext: 'ogg', mime: MIME.ogg };
   if (b.length >= 4 && b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return { ext: 'webm', mime: MIME.webm };
-  if (['txt', 'csv', 'md'].includes(ext) && b.length && !b.includes(0)) {
+  if ((!ext || ['txt', 'csv', 'md'].includes(ext)) && b.length && !b.includes(0)) {
     const s = b.toString('utf8');
-    if (!s.includes('�') && !/<\s*(script|html|svg|iframe)\b/i.test(s.slice(0, 4096))) return { ext, mime: MIME[ext] };
+    if (!s.includes('�') && !/<\s*(script|html|svg|iframe)\b/i.test(s.slice(0, 4096))) return { ext: ext || 'txt', mime: MIME[ext || 'txt'] };
   }
   throw new HttpError(400, 'Fichier non reconnu : formats acceptés : PDF, images, documents Office ou OpenDocument, texte, audio et vidéo courants.');
 }
 /** Nom propre ; l'extension suit toujours le type réellement reconnu. */
 function fileName(raw, ext) {
-  const base = cleanText(String(raw || ''), 120).replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/\.[A-Za-z0-9]{1,8}$/, '').trim() || 'document';
+  const base = cleanText(String(raw || '').split(/[\\/]/).pop(), 120).replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/\.[A-Za-z0-9]{1,8}$/, '').trim() || 'document';
   return `${base.slice(0, 110)}.${ext}`;
 }
 const typeLabel = (mime) => (mime === 'application/pdf' ? 'PDF' : mime.startsWith('image/') ? 'Images' : /^(audio|video)\//.test(mime) ? 'Audio et vidéo' : /msword|ms-excel|ms-powerpoint|officedocument|opendocument/.test(mime) ? 'Documents Office' : 'Fichier');
 
-const upLimit = limits.make(10 * 60 * 1000, 60, "Trop d'envois de fichiers. Réessayez dans quelques minutes.");
+const upLimit = limits.make(10 * 60 * 1000, 120, "Trop d'envois de fichiers. Réessayez dans quelques minutes.");
 const dlLimit = limits.make(10 * 60 * 1000, 300, 'Trop de téléchargements. Réessayez dans quelques minutes.');
-const unlockLimit = limits.make(15 * 60 * 1000, 20, 'Trop de tentatives. Réessayez dans 15 minutes.', { shared: true, prefix: 'libunlock' });
+const unlockLimit = limits.make(15 * 60 * 1000, 40, 'Trop de tentatives. Réessayez dans 15 minutes.', { shared: true, prefix: 'libunlock' });
 const rawBody = express.raw({ type: () => true, limit: HARD_MAX_FILE + 1024 });
 
 async function checkSpace(req, size) {
@@ -346,7 +364,7 @@ router.post('/blocks', A.need('admin'), async (req, res) => {
   const n = Number((await db.prepare('SELECT COUNT(*) AS c FROM lib_blocks WHERE org_id = ?').get(req.org.id)).c);
   if (n >= MAX_BLOCKS) throw new HttpError(403, 'Vous avez atteint 40 blocs : supprimez-en un avant d’en ajouter.');
   const pos = Number((await db.prepare('SELECT COALESCE(MAX(position), 0) AS p FROM lib_blocks WHERE org_id = ?').get(req.org.id)).p) + 1;
-  const id = Number((await db.prepare('INSERT INTO lib_blocks (org_id, name, color, icon, hidden, position, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, v.name, v.color, v.icon, v.hidden, pos, req.user.id, nowISO())).lastInsertRowid);
+  const id = Number((await db.prepare('INSERT INTO lib_blocks (org_id, slug, name, color, icon, hidden, position, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, await freeSlug(req.org.id, v.name), v.name, v.color, v.icon, v.hidden, pos, req.user.id, nowISO())).lastInsertRowid);
   // Par défaut : les administrateurs ont tout, les autres rien (à ouvrir dans « Droits d'accès »).
   await saveRolePerms(id, 'admin', ALL); await saveRolePerms(id, 'manager', NONE); await saveRolePerms(id, 'member', NONE);
   await audit(req, 'block_create', { id, name: v.name });
@@ -394,9 +412,17 @@ router.put('/blocks/:id/perms', A.need('admin'), async (req, res) => {
   for (const u of users) {
     const uid = A.id(u && u.userId);
     const role = members[uid];
-    if (!role || role === 'owner') continue; // inconnu ou propriétaire (il a toujours tout)
+    if (!role) throw new HttpError(400, 'Cette personne ne fait pas partie de l’organisation.');
+    if (role === 'owner') continue; // le propriétaire a toujours tout
     if (role === 'admin' && !isOwner) continue; // seul le propriétaire règle les droits d'un administrateur
     wanted.set(uid, normPerms(u));
+  }
+  if (!isOwner && roles.admin) {
+    // Seul le propriétaire règle les droits des administrateurs : une MODIFICATION par un administrateur est refusée (une valeur inchangée est ignorée).
+    const cur = await db.prepare('SELECT * FROM lib_role_perms WHERE block_id = ? AND role = ?').get(b.id, 'admin');
+    const was = cur ? normPerms(fromRow(cur)) : { ...ALL };
+    const want = normPerms(roles.admin);
+    if (PERM_KEYS.some((k) => was[k] !== want[k])) throw new HttpError(403, 'Seul le propriétaire règle les droits des administrateurs.');
   }
   await db.transaction(async () => {
     for (const r of ROLE_KEYS) {
@@ -414,6 +440,7 @@ router.put('/blocks/:id/perms', A.need('admin'), async (req, res) => {
       await db.prepare(`INSERT INTO lib_user_perms (block_id, user_id, p_view, p_read, p_add, p_edit, p_delete) VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (block_id, user_id) DO UPDATE SET p_view = excluded.p_view, p_read = excluded.p_read, p_add = excluded.p_add, p_edit = excluded.p_edit, p_delete = excluded.p_delete`)
         .run(b.id, uid, +p.view, +p.read, +p.add, +p.edit, +p.delete);
+      await db.prepare('UPDATE lib_user_perms SET org_id = ? WHERE block_id = ? AND user_id = ? AND org_id IS NULL').run(req.org.id, b.id, uid);
     }
   })();
   // Droits retirés : les autorisations ouvertes de ces personnes sont fermées tout de suite.
@@ -428,6 +455,35 @@ router.put('/blocks/:id/perms', A.need('admin'), async (req, res) => {
 });
 
 // ---------- Entrer, refermer ----------
+// Limitation PERSISTANTE des essais (table lib_attempts, portée de la ligne B) : un compteur par personne et par bloc, plus un compteur « tous blocs »
+// qui suit la personne dans toutes ses organisations. Au 5e échec dans la fenêtre, le blocage (locked_until) dure 15 minutes et survit à un redémarrage.
+const LOCK_MIN = 15;
+const LOCKED_TRY_MSG = 'Trop d’essais : ce bloc est fermé pour votre compte pendant 15 minutes.';
+/** Millisecondes de blocage restantes pour cette personne sur ce bloc (compteur du bloc ou « tous blocs »), ou 0. */
+async function lockedFor(userId, blockId) {
+  const rows = await db.prepare('SELECT locked_until FROM lib_attempts WHERE user_id = ? AND block_id IN (?, 0) AND locked_until IS NOT NULL').all(userId, blockId);
+  let ms = 0;
+  for (const r of rows) ms = Math.max(ms, Date.parse(r.locked_until) - Date.now());
+  return ms > 0 ? ms : 0;
+}
+async function bumpAttempt(userId, key, orgId) {
+  const now = Date.now();
+  const r = await db.prepare('SELECT * FROM lib_attempts WHERE user_id = ? AND block_id = ?').get(userId, key);
+  let fails = 1; let start = new Date(now).toISOString();
+  if (r && now - Date.parse(r.window_start) < FAIL_WINDOW_MIN * 60000) { fails = Number(r.fails) + 1; start = r.window_start; }
+  const locked = fails >= FAIL_MAX ? new Date(now + LOCK_MIN * 60000).toISOString() : null;
+  await db.prepare(`INSERT INTO lib_attempts (user_id, block_id, org_id, fails, window_start, locked_until) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT (user_id, block_id) DO UPDATE SET fails = excluded.fails, window_start = excluded.window_start, locked_until = excluded.locked_until`)
+    .run(userId, key, key === 0 ? null : orgId, locked ? 0 : fails, start, locked);
+  return { fails, locked: !!locked };
+}
+async function recordFail(userId, blockId, orgId) {
+  const a = await bumpAttempt(userId, blockId, orgId);
+  const g = await bumpAttempt(userId, 0, null);
+  return { locked: a.locked || g.locked, left: Math.max(FAIL_MAX - Math.max(a.fails, g.fails), 0) };
+}
+const clearFails = (userId, blockId) => db.prepare('DELETE FROM lib_attempts WHERE user_id = ? AND block_id = ?').run(userId, blockId);
+
 // Verrou consultatif par personne : les essais d'une même personne passent un par un (pas de rafale d'essais simultanés avant le blocage).
 const UNLOCK_LOCK_NS = 727276;
 router.post('/blocks/:id/unlock', unlockLimit, async (req, res) => {
@@ -436,23 +492,31 @@ router.post('/blocks/:id/unlock', unlockLimit, async (req, res) => {
   const set = await settingsOf(req.org);
   const outcome = await db.transaction(async () => {
     await db.prepare('SELECT pg_advisory_xact_lock(CAST(? AS INTEGER), CAST(? AS INTEGER))').get(UNLOCK_LOCK_NS, Number(req.user.id) % 2147483647);
-    // Les essais ratés se comptent pour la personne, toutes organisations confondues : en créer une autre ne remet pas le compteur à zéro.
-    const since = new Date(Date.now() - FAIL_WINDOW_MIN * 60000).toISOString();
-    const fails = Number((await db.prepare("SELECT COUNT(*) AS c FROM lib_audit WHERE user_id = ? AND action = 'unlock_fail' AND at > ?").get(req.user.id, since)).c);
-    if (fails >= FAIL_MAX) { await audit(req, 'unlock_locked', b); return { locked: true }; }
-    if (!pass || !(await bcrypt.compare(pass, req.user.pass_hash))) { await audit(req, 'unlock_fail', b); return { failed: true }; }
+    if (await lockedFor(req.user.id, b.id)) { await audit(req, 'unlock_locked', b); return { locked: true, again: true }; }
+    if (!pass || !(await bcrypt.compare(pass, req.user.pass_hash))) {
+      const f = await recordFail(req.user.id, b.id, req.org.id);
+      await audit(req, 'unlock_fail', b, `${f.left} essai(s) restant(s)`);
+      if (f.locked) await audit(req, 'unlock_locked', b);
+      return f.locked ? { locked: true } : { failed: true };
+    }
+    await clearFails(req.user.id, b.id);
     const now = Date.now();
     const exp = new Date(now + set.grantMinutes * 60000).toISOString();
     const hard = new Date(now + Math.max(set.grantMaxMinutes, set.grantMinutes) * 60000).toISOString();
-    await db.prepare(`INSERT INTO lib_grants (session_id, block_id, org_id, user_id, expires_at, hard_expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT (session_id, block_id) DO UPDATE SET user_id = excluded.user_id, expires_at = excluded.expires_at, hard_expires_at = excluded.hard_expires_at, created_at = excluded.created_at`)
-      .run(String(req.sessionId), b.id, req.org.id, req.user.id, exp, hard, nowISO());
+    await db.prepare(`INSERT INTO lib_grants (session_id, block_id, org_id, user_id, expires_at, hard_expires_at, created_at, last_used_at, pass_stamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (session_id, block_id) DO UPDATE SET user_id = excluded.user_id, expires_at = excluded.expires_at, hard_expires_at = excluded.hard_expires_at, created_at = excluded.created_at, last_used_at = excluded.last_used_at, pass_stamp = excluded.pass_stamp`)
+      .run(String(req.sessionId), b.id, req.org.id, req.user.id, exp, hard, nowISO(), nowISO(), String(req.user.pass_changed_at || ''));
     await audit(req, 'unlock', b);
     return { exp, hard };
   })();
-  if (outcome.locked) throw new HttpError(429, 'Trop d’essais : ce bloc est fermé pour votre compte pendant 15 minutes.');
+  // Journal CENTRAL (audit_trail) : alimente l'alerte « library_fails » (src/services/alerts.js). Jamais de mot de passe.
+  const central = require('../security');
+  if (outcome.locked) {
+    await central.audit.record(req, 'library.unlock_locked', { severity: 'high', orgId: req.org.id, target: `bloc ${b.id}` });
+    if (!outcome.again) await central.abuse.strike(req, 'login_fail');
+    throw new HttpError(429, LOCKED_TRY_MSG);
+  }
   if (outcome.failed) {
-    const central = require('../security');
     await central.audit.record(req, 'library.unlock_fail', { severity: 'warn', orgId: req.org.id, target: `bloc ${b.id}` });
     await central.abuse.strike(req, 'login_fail');
     throw new HttpError(403, 'Mot de passe incorrect.');
@@ -579,6 +643,15 @@ router.delete('/folders/:id', async (req, res) => {
 });
 
 // ---------- Documents ----------
+/** Lien d'un document vers un projet ou un contrat de CETTE organisation : { type, id } (ou null), sinon 400. */
+async function linkOf(req, type, idv) {
+  if (type === undefined || type === null || type === '') return { type: null, id: null };
+  if (!['project', 'contract'].includes(type)) throw new HttpError(400, 'Lien inconnu (project ou contract).');
+  const id = A.id(idv, 'Lien invalide.');
+  const table = type === 'project' ? 'projects' : 'legal_contracts';
+  if (!(await db.prepare(`SELECT 1 FROM ${table} WHERE id = ? AND org_id = ?`).get(id, req.org.id))) throw new HttpError(400, type === 'project' ? 'Projet inconnu.' : 'Contrat inconnu.');
+  return { type, id };
+}
 router.post('/blocks/:id/docs', upLimit, rawBody, async (req, res) => {
   const { b } = await openBlock(req, req.params.id, 'add');
   const folder = await loadFolder(req, b, (req.query || {}).folderId);
@@ -587,10 +660,12 @@ router.post('/blocks/:id/docs', upLimit, rawBody, async (req, res) => {
   const t = detect(buf, req.query.name);
   await checkSpace(req, buf.length);
   const name = fileName(req.query.name, t.ext);
+  const link = await linkOf(req, req.query.linkType, req.query.linkId);
+  const tags = cleanTags(req.query.tags);
   const now = nowISO();
   const id = await db.transaction(async () => {
-    const did = Number((await db.prepare('INSERT INTO lib_docs (org_id, block_id, folder_id, owner_id, name, mime, size, version, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)')
-      .run(req.org.id, b.id, folder ? folder.id : null, Number(b.personal) ? req.user.id : null, name, t.mime, buf.length, req.user.id, req.user.id, now, now)).lastInsertRowid);
+    const did = Number((await db.prepare('INSERT INTO lib_docs (org_id, block_id, folder_id, owner_id, name, mime, size, version, tags, link_type, link_id, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)')
+      .run(req.org.id, b.id, folder ? folder.id : null, Number(b.personal) ? req.user.id : null, name, t.mime, buf.length, JSON.stringify(tags), link.type, link.id, req.user.id, req.user.id, now, now)).lastInsertRowid);
     await db.prepare('INSERT INTO lib_versions (org_id, doc_id, n, name, mime, size, data, note, created_by, created_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, did, name, t.mime, buf.length, X.seal(buf), '', req.user.id, now);
     return did;
   })();
@@ -599,10 +674,11 @@ router.post('/blocks/:id/docs', upLimit, rawBody, async (req, res) => {
 });
 
 router.get('/docs/:id', async (req, res) => {
-  const { d, perms } = await openDoc(req, req.params.id, 'read');
+  const { d, b, perms } = await openDoc(req, req.params.id, 'read');
   const versions = await db.prepare('SELECT n, name, size, note, created_by, created_at FROM lib_versions WHERE doc_id = ? ORDER BY n DESC').all(d.id);
   const names = await namesOf([d.created_by, d.updated_by, ...versions.map((v) => v.created_by)]);
   const [view] = await docViews(req, [d]);
+  await audit(req, 'view_doc', b, d.name);
   await db.prepare('INSERT INTO lib_recent (user_id, doc_id, at) VALUES (?, ?, ?) ON CONFLICT (user_id, doc_id) DO UPDATE SET at = excluded.at').run(req.user.id, d.id, nowISO());
   res.json({
     doc: { ...view, createdAt: d.created_at, editor: d.updated_by && Number(d.updated_by) !== Number(d.created_by) ? names[Number(d.updated_by)] || '' : '', linkType: d.link_type || null, linkId: d.link_id ? Number(d.link_id) : null },
@@ -621,16 +697,11 @@ router.put('/docs/:id', async (req, res) => {
   }
   const tags = body.tags === undefined ? parseTags(d.tags) : cleanTags(body.tags);
   let linkType = d.link_type; let linkId = d.link_id;
-  if (body.linkType !== undefined) {
-    if (body.linkType === null || body.linkType === '') { linkType = null; linkId = null; } else {
-      if (!['project', 'contract'].includes(body.linkType)) throw new HttpError(400, 'Lien inconnu (project ou contract).');
-      linkId = A.id(body.linkId, 'Lien invalide.');
-      const table = body.linkType === 'project' ? 'projects' : 'legal_contracts';
-      if (!(await db.prepare(`SELECT 1 FROM ${table} WHERE id = ? AND org_id = ?`).get(linkId, req.org.id))) throw new HttpError(400, body.linkType === 'project' ? 'Projet inconnu.' : 'Contrat inconnu.');
-      linkType = body.linkType;
-    }
-  }
-  await db.prepare('UPDATE lib_docs SET name = ?, tags = ?, link_type = ?, link_id = ?, updated_by = ?, updated_at = ? WHERE id = ?').run(name, JSON.stringify(tags), linkType, linkId, req.user.id, nowISO(), d.id);
+  if (body.linkType !== undefined) { const l = await linkOf(req, body.linkType, body.linkId); linkType = l.type; linkId = l.id; }
+  // Déplacer le document dans un autre dossier du même bloc (folderId: null = racine du bloc).
+  let folderId = d.folder_id;
+  if (body.folderId !== undefined) { const f = await loadFolder(req, b, body.folderId); folderId = f ? f.id : null; }
+  await db.prepare('UPDATE lib_docs SET name = ?, tags = ?, link_type = ?, link_id = ?, folder_id = ?, updated_by = ?, updated_at = ? WHERE id = ?').run(name, JSON.stringify(tags), linkType, linkId, folderId, req.user.id, nowISO(), d.id);
   await audit(req, 'edit', b, name !== d.name ? `${d.name} → ${name}` : name);
   res.json({ ok: true, name });
 });
@@ -702,6 +773,7 @@ router.post('/docs/:id/versions', upLimit, rawBody, async (req, res) => {
   const buf = bodyBuf(req);
   if (!buf.length) throw new HttpError(400, 'Fichier non reconnu : formats acceptés : PDF, images, documents Office ou OpenDocument, texte, audio et vidéo courants.');
   const t = detect(buf, req.query.name || d.name);
+  if (t.mime !== d.mime) throw new HttpError(400, 'Le contenu du fichier ne correspond pas au type du document : envoi refusé.');
   const count = Number((await db.prepare('SELECT COUNT(*) AS c FROM lib_versions WHERE doc_id = ?').get(d.id)).c);
   if (count >= MAX_VERSIONS) throw new HttpError(403, 'Ce document a déjà 20 versions : supprimez-en d’anciennes pour en ajouter.');
   await checkSpace(req, buf.length);
@@ -761,12 +833,18 @@ router.get('/recent', async (req, res) => {
 router.get('/search', async (req, res) => {
   const q = cleanText(String((req.query || {}).q || ''), 100);
   const tag = cleanText(String((req.query || {}).tag || ''), 30);
-  if (!q && !tag) throw new HttpError(400, 'Indiquez ce que vous cherchez.');
-  const { rows, blocks } = await docsAcross(req, q ? "AND LOWER(d.name) LIKE ? ESCAPE '\\'" : '', q ? [`%${likeEsc(q.toLowerCase())}%`] : [], { limit: 500 });
+  const lt = String((req.query || {}).linkType || '');
+  if (!q && !tag && !lt) throw new HttpError(400, 'Indiquez ce que vous cherchez.');
+  const link = lt ? await linkOf(req, lt, req.query.linkId) : null;
+  let extra = ''; const extraArgs = [];
+  if (q) { extra += " AND LOWER(d.name) LIKE ? ESCAPE '\\'"; extraArgs.push(`%${likeEsc(q.toLowerCase())}%`); }
+  if (link) { extra += ' AND d.link_type = ? AND d.link_id = ?'; extraArgs.push(link.type, link.id); }
+  const { rows, blocks } = await docsAcross(req, extra, extraArgs, { limit: 500 });
   const hits = tag ? rows.filter((d) => parseTags(d.tags).some((t) => t.toLowerCase().includes(tag.toLowerCase()))) : rows;
   res.json({ docs: await docViews(req, hits.slice(0, 200), blocks) });
 });
 router.get('/trash', async (req, res) => {
+  await cleanup(req.org.id); // plus de 30 jours : supprimé définitivement dès la consultation
   const { rows, blocks, open } = await docsAcross(req, '', [], { deleted: true, order: 'd.deleted_at DESC', limit: 500 });
   const visible = rows.filter((d) => open[Number(d.block_id)].perms.delete);
   res.json({
@@ -783,14 +861,14 @@ router.get('/audit', A.need('admin'), async (req, res) => {
   const q = req.query || {};
   const limit = Math.max(1, Math.min(200, Number(q.limit) || 100));
   let where = 'a.org_id = ?'; const args = [req.org.id];
-  if (q.action) { if (!ACTIONS[q.action]) throw new HttpError(400, 'Action inconnue.'); where += ' AND a.action = ?'; args.push(q.action); }
+  if (q.action) { const act = ACTION_ALIAS[q.action] || q.action; if (!ACTIONS[act]) throw new HttpError(400, 'Action inconnue.'); where += ' AND a.action = ?'; args.push(act); }
   if (q.blockId) { where += ' AND a.block_id = ?'; args.push(A.id(q.blockId, 'Bloc invalide.')); }
   if (q.before) { where += ' AND a.id < ?'; args.push(A.id(q.before, 'Repère invalide.')); }
   const rows = await db.prepare(`SELECT a.*, u.name AS uname FROM lib_audit a LEFT JOIN users u ON u.id = a.user_id WHERE ${where} ORDER BY a.id DESC LIMIT ${limit + 1}`).all(...args);
   const more = rows.length > limit;
   const list = rows.slice(0, limit);
   res.json({
-    entries: list.map((e) => ({ id: Number(e.id), action: e.action, label: ACTIONS[e.action] || e.action, user: e.uname || '', block: e.block_name || '', detail: e.detail, ip: e.ip, at: e.at })),
+    entries: list.map((e) => ({ id: Number(e.id), userId: e.user_id ? Number(e.user_id) : null, action: e.action, label: ACTIONS[e.action] || e.action, user: e.uname || '', block: e.block_name || '', detail: e.detail, ip: e.ip, at: e.at })),
     actions: Object.entries(ACTIONS).map(([id, label]) => ({ id, label })),
     next: more ? Number(list[list.length - 1].id) : null,
   });
@@ -810,15 +888,18 @@ router.put('/settings', A.need('admin'), async (req, res) => {
   if (!Number.isInteger(f) || f < 0 || f > 20) throw new HttpError(400, 'Taille maximale d’un fichier : entre 0 (offre) et 20 Mo.');
   await db.prepare('UPDATE lib_settings SET grant_minutes = ?, grant_max_minutes = ?, max_file_mb = ?, updated_at = ? WHERE org_id = ?').run(g, m, f, nowISO(), req.org.id);
   await audit(req, 'settings', null, `ouverture ${g} min, maximum ${m} min, fichier ${f || 'offre'} Mo`);
-  res.json({ ok: true });
+  res.json({ ok: true, settings: await settingsOf(req.org) });
 });
 
 // ---------- Nettoyage (tâche horaire) : corbeille de plus de 30 jours, autorisations expirées ----------
-async function cleanup() {
+async function cleanup(orgId) {
   const now = nowISO();
-  await db.prepare('DELETE FROM lib_grants WHERE hard_expires_at <= ? OR expires_at <= ?').run(now, now);
+  if (!orgId) {
+    await db.prepare('DELETE FROM lib_grants WHERE hard_expires_at <= ? OR expires_at <= ?').run(now, now);
+    await db.prepare('DELETE FROM lib_attempts WHERE window_start < ? AND (locked_until IS NULL OR locked_until < ?)').run(new Date(Date.now() - 86400000).toISOString(), now);
+  }
   const cut = new Date(Date.now() - TRASH_DAYS * 86400000).toISOString();
-  const old = await db.prepare('SELECT d.id, d.org_id, d.name, d.block_id, b.name AS bname FROM lib_docs d JOIN lib_blocks b ON b.id = d.block_id WHERE d.deleted_at IS NOT NULL AND d.deleted_at <= ? LIMIT 1000').all(cut);
+  const old = await db.prepare('SELECT d.id, d.org_id, d.name, d.block_id, b.name AS bname FROM lib_docs d JOIN lib_blocks b ON b.id = d.block_id WHERE d.deleted_at IS NOT NULL AND d.deleted_at <= ?' + (orgId ? ' AND d.org_id = ?' : '') + ' LIMIT 1000').all(...(orgId ? [cut, orgId] : [cut]));
   for (const d of old) {
     await db.prepare('DELETE FROM lib_docs WHERE id = ?').run(d.id);
     await db.prepare('INSERT INTO lib_audit (org_id, block_id, block_name, user_id, action, detail, ip, at) VALUES (?, ?, ?, NULL, ?, ?, ?, ?)').run(d.org_id, d.block_id, d.bname, 'auto_purge', d.name, '', now);
@@ -826,4 +907,4 @@ async function cleanup() {
   return old.length;
 }
 
-module.exports = { router, cleanup, detect, normPerms };
+module.exports = { router, cleanup, detect, normPerms, lockedFor, recordFail };

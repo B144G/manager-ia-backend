@@ -1,6 +1,7 @@
 'use strict';
 // Bibliothèque : déverrouillage par mot de passe, autorisations, droits par bloc, documents, versions, corbeille, journal d'audit.
-// Lancez-le avec : node scripts/test-library.js
+// Ligne B portée sur la couche de A (blocs de départ de A : 7 ; voir docs/fusion/matrice/bibliotheque.md pour chaque adaptation).
+// Lancez-le avec : node scripts/test-library-b.js
 const { run, client } = require('./lib/wave2');
 
 const PW = 'secret123';
@@ -19,15 +20,24 @@ run('Bibliothèque : blocs protégés, droits, documents, corbeille, journal', a
 
   // ---------- Blocs par défaut et visibilité ----------
   r = await owner('GET', `${L}/overview`);
+  // ADAPTATION : A crée 7 blocs de départ (B en créait 16). « Achats » et « Formation » (blocs de B) sont ajoutés ici comme blocs personnalisés ; slug = identifiant court ajouté à A.
+  r = await owner('POST', `${L}/blocks`, { name: 'Achats' }); const achatsId = r.json.id;
+  r = await owner('POST', `${L}/blocks`, { name: 'Formation', icon: 'book' }); const formationId = r.json.id;
+  await owner('PUT', `${L}/blocks/${achatsId}/perms`, { roles: { member: { view: true, read: true }, manager: { view: true, read: true, add: true, edit: true } } });
+  await owner('PUT', `${L}/blocks/${formationId}/perms`, { roles: { member: { view: true, read: true }, manager: { view: true, read: true, add: true, edit: true } } });
+  r = await owner('GET', `${L}/overview`);
   const ids = Object.fromEntries((r.json.blocks || []).map((b) => [b.slug, b.id]));
-  check('seize blocs par défaut pour le propriétaire', r.status === 200 && r.json.blocks.length === 16 && ids.comptabilite && ids.personnel, r.json.blocks && r.json.blocks.length);
+  check('blocs de départ de A (7) + 2 blocs ajoutés, tous avec un slug', r.status === 200 && r.json.blocks.length === 9 && ids.comptabilite && ids.personnel && ids.achats && ids.formation && r.json.blocks.every((b) => b.slug), r.json.blocks && r.json.blocks.map((b) => b.slug));
   check('bandeau de statistiques présent', ['documents', 'modulesUsed', 'activeProjects', 'volume'].every((k) => typeof r.json.stats[k] === 'number'), r.json.stats);
   check('toutes les cartes démarrent verrouillées', r.json.blocks.every((b) => b.unlocked === false));
   r = await mem('GET', `${L}/overview`);
   const slugsMem = r.json.blocks.map((b) => b.slug);
   check('membre : les blocs sensibles n\'apparaissent pas', !slugsMem.includes('comptabilite') && !slugsMem.includes('rh') && !slugsMem.includes('juridique') && slugsMem.includes('commercial') && slugsMem.includes('personnel'), slugsMem);
   r = await mgr('GET', `${L}/overview`);
-  check('responsable : voit aussi les blocs sensibles', r.json.blocks.length === 16);
+  check('responsable : voit aussi les blocs sensibles', r.json.blocks.length === 9);
+
+  // ADAPTATION : « Commercial » de A laisse les membres ajouter (vra) ; B : lire seulement. On aligne le réglage de départ sur B avant les contrôles.
+  r = await owner('PUT', `${L}/blocks/${ids.commercial}/perms`, { roles: { member: { view: true, read: true, add: false }, manager: { view: true, read: true, add: true, edit: true } } });
 
   // ---------- Verrouillage : rien sans autorisation ----------
   r = await owner('GET', `${L}/blocks/${ids.commercial}`);
@@ -49,14 +59,16 @@ run('Bibliothèque : blocs protégés, droits, documents, corbeille, journal', a
   r = await unlock(mem, ids.achats, PW);
   check('pendant le blocage, même le bon mot de passe est refusé', r.status === 429, r.status);
   r = await unlock(mem, ids.commercial, PW);
-  check('le blocage d\'un bloc ne bloque pas un autre bloc', r.status === 200, r.status);
-  await mem('POST', `${L}/blocks/${ids.commercial}/lock`);
+  // ADAPTATION (tranchage « le plus protecteur ») : A compte aussi les échecs de la personne tous blocs et toutes organisations confondus ; B isolait chaque bloc.
+  check('blocage : suit la personne, il vaut aussi pour un autre bloc (plus protecteur que B)', r.status === 429, r.status);
+  const perBlock = await dbx.prepare('SELECT COUNT(*) AS n FROM lib_attempts WHERE user_id = (SELECT id FROM users WHERE name = ?) AND block_id IN (?, 0) AND locked_until IS NOT NULL').get('Paul', ids.achats);
+  check('blocage persistant : lignes lib_attempts par bloc et « tous blocs » en base', Number(perBlock.n) === 2, perBlock);
   await dbx.prepare('UPDATE lib_attempts SET locked_until = ? WHERE user_id = (SELECT id FROM users WHERE name = ?)').run(past, 'Paul');
   r = await unlock(mem, ids.achats, PW);
   check('blocage levé après le délai : le bon mot de passe passe', r.status === 200 && r.json.expiresAt, r.status);
   await mem('POST', `${L}/blocks/${ids.achats}/lock`);
   r = await unlock(mem, ids.achats, '');
-  check('mot de passe vide : 400', r.status === 400, r.status);
+  check('mot de passe vide : refusé (403 chez A : compté comme un échec)', r.status === 403, r.status); // ADAPTATION : B répondait 400
   const fails = await dbx.prepare("SELECT COUNT(*) AS n FROM audit_trail WHERE action IN ('library.unlock_fail', 'library.unlock_locked')").get();
   check('échecs enregistrés au journal central (base des alertes)', Number(fails.n) >= 5, fails);
   const leak = await dbx.prepare('SELECT COUNT(*) AS n FROM lib_audit WHERE detail LIKE ? OR detail LIKE ?').get(`%${WRONG}%`, `%${PW}%`);
@@ -70,7 +82,7 @@ run('Bibliothèque : blocs protégés, droits, documents, corbeille, journal', a
   // ---------- Déverrouillage et documents ----------
   r = await unlock(owner, ids.commercial);
   check('déverrouillage réussi', r.status === 200 && r.json.ok, r.status);
-  const gr = await dbx.prepare('SELECT * FROM lib_grants WHERE block_id = ? ORDER BY id DESC LIMIT 1').get(ids.commercial);
+  const gr = await dbx.prepare('SELECT * FROM lib_grants WHERE block_id = ? ORDER BY created_at DESC LIMIT 1').get(ids.commercial);
   const cols = Object.keys(gr).join(',');
   check('autorisation en base : liée à la personne, au bloc et à la session, sans mot de passe', gr.session_id && gr.user_id && !/pass_hash|password/.test(cols) && Date.parse(gr.expires_at) > Date.now(), cols);
   check('durée courte par défaut (15 min)', Date.parse(gr.expires_at) - Date.parse(gr.last_used_at) <= 15 * 60000 + 2000);
@@ -85,7 +97,7 @@ run('Bibliothèque : blocs protégés, droits, documents, corbeille, journal', a
   check('aperçu PDF en ligne', r.status === 200 && /inline/.test(r.headers.get('content-disposition')) && r.headers.get('content-type') === 'application/pdf', r.status);
   const dx = (await up(owner, ids.commercial, 'Contrat.docx', docx())).json.id;
   r = await owner('GET', `${L}/docs/${dx}/preview`);
-  check('pas d\'aperçu pour un document Office (téléchargement seulement)', r.status === 415, r.status);
+  check('pas d\'aperçu pour un document Office (téléchargement seulement)', r.status === 400 || r.status === 415, r.status); // ADAPTATION : A répond 400, B 415
   const di = (await up(owner, ids.commercial, 'logo.png', png())).json.id;
   r = await owner('GET', `${L}/docs/${di}/preview`);
   check('aperçu image', r.status === 200 && r.headers.get('content-type') === 'image/png');
@@ -104,15 +116,15 @@ run('Bibliothèque : blocs protégés, droits, documents, corbeille, journal', a
   r = await owner2('GET', `${L}/docs/${d1}`);
   check('autre session : fiche refusée', r.status === 403);
 
-  await dbx.prepare('UPDATE lib_grants SET expires_at = ? WHERE block_id = ? AND revoked_at IS NULL').run(new Date(Date.now() + 60000).toISOString(), ids.commercial);
+  await dbx.prepare('UPDATE lib_grants SET expires_at = ? WHERE block_id = ?').run(new Date(Date.now() + 60000).toISOString(), ids.commercial);
   r = await owner('GET', `${L}/docs/${d1}`);
-  const g2 = await dbx.prepare('SELECT * FROM lib_grants WHERE block_id = ? AND revoked_at IS NULL ORDER BY id DESC LIMIT 1').get(ids.commercial);
+  const g2 = await dbx.prepare('SELECT * FROM lib_grants WHERE block_id = ? ORDER BY created_at DESC LIMIT 1').get(ids.commercial);
   check('l\'activité renouvelle l\'autorisation', r.status === 200 && Date.parse(g2.expires_at) > Date.now() + 10 * 60000, g2.expires_at);
-  await dbx.prepare('UPDATE lib_grants SET hard_expires_at = ?, expires_at = ? WHERE id = ?').run(new Date(Date.now() + 120000).toISOString(), new Date(Date.now() + 60000).toISOString(), g2.id);
+  await dbx.prepare('UPDATE lib_grants SET hard_expires_at = ?, expires_at = ? WHERE session_id = ? AND block_id = ?').run(new Date(Date.now() + 120000).toISOString(), new Date(Date.now() + 60000).toISOString(), g2.session_id, g2.block_id);
   await owner('GET', `${L}/docs/${d1}`);
-  const g3 = await dbx.prepare('SELECT * FROM lib_grants WHERE id = ?').get(g2.id);
+  const g3 = await dbx.prepare('SELECT * FROM lib_grants WHERE session_id = ? AND block_id = ?').get(g2.session_id, g2.block_id);
   check('le renouvellement ne dépasse jamais le plafond', Date.parse(g3.expires_at) <= Date.parse(g3.hard_expires_at), [g3.expires_at, g3.hard_expires_at]);
-  await dbx.prepare('UPDATE lib_grants SET expires_at = ? WHERE id = ?').run(past, g2.id);
+  await dbx.prepare('UPDATE lib_grants SET expires_at = ? WHERE session_id = ? AND block_id = ?').run(past, g2.session_id, g2.block_id);
   for (const [n, u] of [['téléchargement', `/docs/${d1}/download`], ['aperçu', `/docs/${d1}/preview`], ['fiche', `/docs/${d1}`], ['contenu du bloc', `/blocks/${ids.commercial}`], ['statistiques du bloc', `/blocks/${ids.commercial}/stats`]]) {
     r = await owner('GET', L + u);
     check(`autorisation expirée : ${n} refusé`, r.status === 403, r.status);
@@ -120,7 +132,7 @@ run('Bibliothèque : blocs protégés, droits, documents, corbeille, journal', a
   r = await owner('GET', `${L}/overview`);
   check('autorisation expirée : la carte redevient verrouillée', r.json.blocks.find((b) => b.id === ids.commercial).unlocked === false);
   await unlock(owner, ids.commercial);
-  await dbx.prepare('UPDATE lib_grants SET hard_expires_at = ? WHERE block_id = ? AND revoked_at IS NULL').run(past, ids.commercial);
+  await dbx.prepare('UPDATE lib_grants SET hard_expires_at = ? WHERE block_id = ?').run(past, ids.commercial);
   r = await owner('GET', `${L}/docs/${d1}`);
   check('plafond dépassé : refusé même si l\'activité est récente', r.status === 403);
   await unlock(owner, ids.commercial);
@@ -137,7 +149,7 @@ run('Bibliothèque : blocs protégés, droits, documents, corbeille, journal', a
   r = await unlock(mgr2, ids.commercial);
   check('responsable : déverrouille depuis sa session', r.status === 200);
   await mgr2('POST', '/api/logout');
-  const live = await dbx.prepare('SELECT COUNT(*) AS n FROM lib_grants g JOIN users u ON u.id = g.user_id WHERE u.name = ? AND g.revoked_at IS NULL').get('Marc');
+  const live = await dbx.prepare('SELECT COUNT(*) AS n FROM lib_grants g JOIN users u ON u.id = g.user_id WHERE u.name = ?').get('Marc');
   check('déconnexion : autorisations révoquées en base', Number(live.n) === 0, live);
   const mgr3 = client(base);
   await mgr3('POST', '/api/login', { contact: mc, pass: PW });
@@ -248,9 +260,15 @@ run('Bibliothèque : blocs protégés, droits, documents, corbeille, journal', a
   await bad('faux.pdf', Buffer.from('MZ\u0090\u0000\u0003\u0000\u0000\u0000\u0004\u0000\u0000\u0000', 'latin1'), 'exécutable renommé .pdf refusé');
   await bad('virus.exe', pdf(), 'extension dangereuse refusée même avec un contenu PDF');
   await bad('page.html', Buffer.from('<html><body>x</body></html>'), 'fichier HTML refusé');
-  await bad('image.png', pdf(), 'PDF renommé .png refusé (contenu ≠ extension)');
+  // ADAPTATION : B refusait une extension qui ne correspond pas au contenu ; A (testé par test-library.js) accepte et corrige : le type et l'extension suivent TOUJOURS le contenu réel.
+  r = await up(owner, ids.commercial, 'image.png', pdf('renomme'));
+  check('PDF renommé .png : type et extension suivent le contenu (application/pdf, image.pdf)', r.status === 201 && r.json.mime === 'application/pdf' && r.json.name === 'image.pdf', r.json);
   await bad('texte.pdf', Buffer.from('juste du texte qui se fait passer pour un pdf'), 'texte renommé .pdf refusé');
-  await bad('archive.zip', zip(), 'ZIP quelconque refusé');
+  // ADAPTATION : B refusait tout ZIP non Office ; A accepte les archives (type application/zip, servies seulement en pièce jointe, jamais interprétées).
+  r = await up(owner, ids.commercial, 'archive.zip', zip());
+  check('ZIP quelconque : accepté comme archive, téléchargement forcé', r.status === 201 && r.json.mime === 'application/zip', r.json);
+  r = await owner('GET', `${L}/docs/${r.json.id}/preview`);
+  check('ZIP : aucun aperçu en ligne', r.status === 400 || r.status === 415, r.status);
   await bad('dessin.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>'), 'SVG refusé');
   await bad('vide.pdf', Buffer.alloc(0), 'fichier vide refusé');
   r = await up(owner, ids.commercial, '../../etc/passwd.pdf', pdf('t'));
@@ -318,7 +336,7 @@ run('Bibliothèque : blocs protégés, droits, documents, corbeille, journal', a
   r = await owner('GET', `${L}/search?q=alpha`);
   check('recherche par nom', r.json.docs.length === 1 && r.json.docs[0].block.name === 'Commercial', r.json);
   r = await owner('GET', `${L}/search?tag=devis`);
-  check('recherche par étiquette (sans doublon de casse)', r.json.docs.length === 1 && r.json.docs[0].tags.filter((t) => t === 'devis').length === 1, r.json.docs[0] && r.json.docs[0].tags);
+  check('recherche par étiquette (sans doublon de casse)', r.json.docs.length === 1 && r.json.docs[0].tags.filter((t) => t.toLowerCase() === 'devis').length === 1, r.json.docs[0] && r.json.docs[0].tags); // ADAPTATION : A garde la casse saisie (B passait en minuscules)
   r = await owner('GET', `${L}/search?q=${encodeURIComponent('%')}`);
   check('recherche : le caractère % est littéral', r.json.docs.length === 0, r.json.docs.length);
   r = await owner('GET', `${L}/search?q=quota`);
@@ -461,8 +479,8 @@ run('Bibliothèque : blocs protégés, droits, documents, corbeille, journal', a
   await dbx.prepare("UPDATE org_members SET role = 'admin' WHERE org_id = ? AND user_id = ?").run(org, pid);
   await owner('PUT', `${L}/blocks/${ids.commercial}/perms`, { users: [{ userId: pid, view: true, read: true }] });
   r = await mgr('PUT', `${L}/blocks/${ids.commercial}/perms`, { roles: { member: { view: true, read: true } }, users: [{ userId: pid, view: true, read: true, add: true, edit: true, delete: true }] });
-  const keep = await dbx.prepare("SELECT can_add FROM lib_perms WHERE block_id = ? AND subject = ?").get(ids.commercial, 'user:' + pid);
-  check('administrateur : l\'exception d\'un autre administrateur n\'est pas modifiée', r.status === 200 && Number(keep.can_add) === 0, keep);
+  const keep = await dbx.prepare("SELECT p_add FROM lib_user_perms WHERE block_id = ? AND user_id = ?").get(ids.commercial, pid);
+  check('administrateur : l\'exception d\'un autre administrateur n\'est pas modifiée', r.status === 200 && Number(keep.p_add) === 0, keep);
   await dbx.prepare("UPDATE org_members SET role = 'member' WHERE org_id = ? AND user_id = ?").run(org, pid);
   await owner('PUT', `${L}/blocks/${ids.commercial}/perms`, { roles: { member: { view: true, read: true } }, users: [] });
 
@@ -470,11 +488,17 @@ run('Bibliothèque : blocs protégés, droits, documents, corbeille, journal', a
   r = await owner('GET', `${L}/audit?limit=300`);
   const acts = new Set(r.json.entries.map((e) => e.action));
   check('audit : consultable par le propriétaire', r.status === 200 && r.json.entries.length > 20);
-  for (const a of ['unlock_ok', 'unlock_fail', 'unlock_locked', 'lock', 'open', 'add', 'download', 'preview', 'delete', 'restore', 'purge', 'version', 'perms', 'block_add', 'block_edit', 'settings', 'denied', 'trash_auto']) check(`audit : action « ${a} » journalisée`, acts.has(a), [...acts]);
+  // ADAPTATION : noms d'actions de A (B : unlock_ok, add, delete, block_add, block_edit, trash_auto) ; le filtre accepte aussi les noms de B.
+  await dbx.prepare("INSERT INTO lib_audit (org_id, block_id, block_name, user_id, action, detail, ip, at) VALUES (?, NULL, '', NULL, 'auto_purge', 'x', '', ?)").run(org, new Date().toISOString());
+  r = await owner('GET', `${L}/audit?limit=300`);
+  const acts2 = new Set(r.json.entries.map((e) => e.action));
+  for (const a of ['unlock', 'unlock_fail', 'unlock_locked', 'lock', 'open', 'upload', 'download', 'preview', 'view_doc', 'trash', 'restore', 'purge', 'version', 'perms', 'block_create', 'block_update', 'settings', 'denied', 'auto_purge']) check(`audit : action « ${a} » journalisée`, acts2.has(a), [...acts2]);
+  r = await owner('GET', `${L}/audit?action=unlock_ok`);
+  check('audit : le filtre accepte aussi les noms d\'actions de B (unlock_ok = unlock)', r.status === 200 && r.json.entries.length >= 1 && r.json.entries.every((e) => e.action === 'unlock'), r.status);
   r = await mgr('GET', `${L}/audit?action=unlock_fail`);
   check('audit : administrateur filtre par action', r.status === 200 && r.json.entries.length >= 4 && r.json.entries.every((e) => e.action === 'unlock_fail' && e.user === 'Paul'), r.json.entries.length);
   r = await owner('GET', `${L}/audit?blockId=${ids.personnel}&limit=50`);
-  check('audit : les dossiers personnels n\'exposent aucun nom de document', r.json.entries.length > 0 && r.json.entries.filter((e) => ['add', 'download', 'view_doc'].includes(e.action)).every((e) => e.detail === ''), r.json.entries.map((e) => e.detail));
+  check('audit : les dossiers personnels n\'exposent aucun nom de document', r.json.entries.length > 0 && r.json.entries.filter((e) => ['upload', 'download', 'view_doc'].includes(e.action)).every((e) => e.detail === ''), r.json.entries.map((e) => e.detail));
   const all = JSON.stringify((await owner('GET', `${L}/audit?limit=300`)).json);
   check('audit : jamais de mot de passe', !all.includes(WRONG) && !all.includes(PW));
   r = await owner('GET', `${L}/audit?action=piratage`);
@@ -494,4 +518,56 @@ run('Bibliothèque : blocs protégés, droits, documents, corbeille, journal', a
   check('ancien mot de passe refusé', r.status === 403);
   r = await unlock(mem, ids.commercial, 'Nouveau-Mdp-2026!x');
   check('nouveau mot de passe accepté', r.status === 200, r.json);
+  const stale = await dbx.prepare('SELECT COUNT(*) AS n FROM lib_grants g JOIN users u ON u.id = g.user_id WHERE u.name = ? AND g.pass_stamp IS NOT NULL AND g.pass_stamp <> COALESCE(u.pass_changed_at, \'\')').get('Paul');
+  check('changement de mot de passe : aucune autorisation d\'avant le changement ne subsiste (sessions fermées)', Number(stale.n) === 0, stale);
+
+  // ---------- AJOUTS DE LA FUSION : aucune route de documents ne sert un bloc verrouillé (autre session du propriétaire) ----------
+  await owner('POST', `${L}/docs/${d1}/favorite`, { on: true });
+  await owner('GET', `${L}/docs/${d1}`); // alimente « récents »
+  await owner('DELETE', `${L}/docs/${dm}`).catch(() => null);
+  const dTrash = (await up(owner, ids.commercial, 'a-jeter.pdf', pdf('jeter'))).json.id;
+  await owner('DELETE', `${L}/docs/${dTrash}`);
+  const locked = [
+    ['GET', `/docs/${d1}`], ['GET', `/docs/${d1}/download`], ['GET', `/docs/${d1}/download?version=1`], ['GET', `/docs/${d1}/preview`], ['GET', `/docs/${d1}/preview?version=1`],
+    ['PUT', `/docs/${d1}`, { name: 'pirate' }], ['DELETE', `/docs/${d1}`], ['POST', `/docs/${d1}/favorite`, { on: true }], ['POST', `/docs/${d1}/versions`, pdf('x')],
+    ['POST', `/docs/${d1}/versions/1/restore`, {}], ['DELETE', `/docs/${d1}/versions/1`], ['POST', `/docs/${dTrash}/restore`, {}], ['DELETE', `/docs/${dTrash}/purge`],
+    ['GET', `/blocks/${ids.commercial}`], ['GET', `/blocks/${ids.commercial}/stats`], ['POST', `/blocks/${ids.commercial}/folders`, { name: 'x' }], ['POST', `/blocks/${ids.commercial}/docs?name=z.pdf`, pdf('z')],
+  ];
+  for (const [m, u, body] of locked) {
+    const x = await owner2(m, L + u, body);
+    check(`autre session, bloc verrouillé : ${m} ${u.replace(/\/\d+/g, '/:id').split('?')[0]}${u.includes('version=') ? '?version' : ''} refusé (403, library_locked)`, x.status === 403 && x.json && x.json.code === 'library_locked' && !x.buf.includes(Buffer.from('%PDF-')), [x.status, x.json]);
+  }
+  for (const u of ['/favorites', '/recent', '/trash', '/search?q=Devis', '/search?tag=devis', `/search?linkType=project&linkId=${pj}`]) {
+    const x = await owner2('GET', L + u);
+    check(`autre session, bloc verrouillé : GET ${u.split('?')[0]} sans aucun document`, x.status === 200 && x.json.docs.length === 0, x.json);
+  }
+  check('même requêtes depuis la session qui a ouvert le bloc : le contenu est bien servi', (await owner('GET', `${L}/favorites`)).json.docs.length >= 1 && (await owner('GET', `${L}/trash`)).json.docs.some((x) => x.id === dTrash));
+
+  // ---------- Limitation persistante des essais et alerte du journal central ----------
+  const persisted = await dbx.prepare('SELECT COUNT(*) AS n FROM lib_attempts').get();
+  check('lib_attempts : les compteurs d\'essais sont conservés en base', Number(persisted.n) >= 1, persisted);
+  const port = (await dbx.prepare('SHOW port').get()).port;
+  Object.assign(process.env, { NODE_ENV: 'test', DATABASE_URL: `postgres://postgres:test@127.0.0.1:${port}/mia`, JWT_SECRET: 'secret-de-test-assez-long-123456', ALERT_LIBRARY_FAILS: '5' });
+  const mainDb = require('../src/db').db; await mainDb.ready;
+  const alerts = require('../src/services/alerts');
+  const made = await alerts.scan();
+  const al = await dbx.prepare("SELECT title, severity FROM admin_alerts WHERE kind = 'library_fails'").all();
+  check('alerte « library_fails » : créée à partir des échecs écrits dans le journal central par la Bibliothèque de A', made >= 1 && al.length === 1 && al[0].severity === 'high' && /Paul/.test(al[0].title), al);
+  check('alerte : le titre ne contient aucun mot de passe', !al.some((x) => x.title.includes(WRONG)));
+
+  // ---------- Export et suppression complète d'une organisation ----------
+  const o2docs = (await up(other, o2, 'secret-org2.pdf', pdf('CONTENU-ORG2-UNIQUE'), '', L2)).json.id;
+  r = await unlock(other, o2, 'faux-org2', L2);
+  check('organisation 2 : un document et un échec d\'essai créés', Number(o2docs) > 0 && r.status === 403, r.status);
+  r = await other('GET', `/api/privacy/orgs/${org2}/export`);
+  const ex = r.json && r.json.tables ? r.json.tables : {};
+  check('export d\'organisation : blocs, documents, versions, droits et journal de la bibliothèque inclus, sans le contenu des fichiers', r.status === 200 && ex.lib_blocks && ex.lib_docs && ex.lib_versions && ex.lib_audit && ex.lib_role_perms && !r.text.includes('CONTENU-ORG2-UNIQUE') && !/"data":/.test(JSON.stringify(ex.lib_versions)), Object.keys(ex).filter((k) => k.startsWith('lib_')));
+  r = await other('DELETE', ws(org2), { confirm: 'Autre Société' });
+  check('suppression de l\'organisation 2', r.status === 200, r.json);
+  const left = {};
+  for (const t of ['lib_blocks', 'lib_docs', 'lib_versions', 'lib_folders', 'lib_audit', 'lib_grants', 'lib_settings', 'lib_attempts']) left[t] = Number((await dbx.prepare(`SELECT COUNT(*) AS n FROM ${t} WHERE org_id = ?`).get(org2)).n);
+  const leftPerms = Number((await dbx.prepare('SELECT COUNT(*) AS n FROM lib_role_perms WHERE block_id NOT IN (SELECT id FROM lib_blocks)').get()).n);
+  check('suppression d\'organisation : plus aucune ligne lib_* de cette organisation', Object.values(left).every((n) => n === 0) && leftPerms === 0, left);
+  const still = Number((await dbx.prepare('SELECT COUNT(*) AS n FROM lib_docs WHERE org_id = ?').get(org)).n);
+  check('suppression d\'organisation : les documents de l\'autre organisation sont intacts', still > 0, still);
 }, {});
