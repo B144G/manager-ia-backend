@@ -696,7 +696,7 @@ router.post('/returns/:id/credit', mgr, async (req, res) => {
   const amount = A.amount(b.amount);
   if (r.credit_entry_id) throw new HttpError(409, 'Cet avoir est déjà comptabilisé : annulez-le avant de le refaire.');
   // Échange avec la comptabilité : l'avoir est écrit (D 401, C 609 et TVA) et imputé sur les dettes du fournisseur, sauf si on demande de seulement l'enregistrer.
-  const book = b.book !== false && b.book !== 'false';
+  const book = b.book !== false && b.book !== 'false' && Boolean(r.supplier_id); // sans fournisseur : l'avoir est seulement enregistré (aucune dette où l'imputer)
   const out = await db.transaction(async () => {
     await db.prepare("UPDATE wms_returns SET credit_amount = ?, credit_status = 'received', credited_at = ? WHERE id = ?").run(amount, nowISO(), r.id);
     return book ? await require('./stock-compta').bookSupplierCredit(req, r, amount, b.vat === undefined || b.vat === '' ? 0 : A.amount(b.vat)) : null;
