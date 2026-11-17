@@ -1,0 +1,159 @@
+
+===== npm run test:margin =====
+
+> manager-ia-backend@1.0.0 test:margin
+> node scripts/test-plan-margin.js
+
+Hypothèses
+  OK   coût d'un message par défaut : 13 FCFA (Claude Sonnet 5.5, le cas le plus cher prévu)
+  OK   frais de paiement 3 %, marge visée 50 %, plancher 30 %
+Offres Illimité
+  OK   Illimité / week (21500 FCFA) : marge au pire cas ≥ marge visée (50 %)
+  OK   Illimité / week : tout reste ouvert (équipe, organisations)
+  OK   Illimité / month (80000 FCFA) : marge au pire cas ≥ marge visée (50 %)
+  OK   Illimité / month : tout reste ouvert (équipe, organisations)
+  OK   Illimité / quarter (224000 FCFA) : marge au pire cas ≥ marge visée (50 %)
+  OK   Illimité / quarter : tout reste ouvert (équipe, organisations)
+  OK   Illimité / semester (425000 FCFA) : marge au pire cas ≥ marge visée (50 %)
+  OK   Illimité / semester : tout reste ouvert (équipe, organisations)
+  OK   Illimité / year (800000 FCFA) : marge au pire cas ≥ marge visée (50 %)
+  OK   Illimité / year : tout reste ouvert (équipe, organisations)
+  OK   messages par mois : la semaine (ramenée au mois) ≥ mois ≥ trimestre ≥ semestre ≥ an
+  OK   Illimité d'un mois : jamais plus de 6 000 messages (plafond d'origine)
+Forfaits sur mesure : toutes les sommes (pas de 500 FCFA) de toutes les durées
+  OK   3006 forfaits : aucun sous le plancher de marge (30 %) même à usage maximal (pire cas 36 % : 10000/year)
+  OK   le quota IA ne baisse jamais quand la somme augmente (pour chaque durée)
+  OK   les seuls forfaits sous la marge visée (6) sont ceux qui garantissent le quota de l'offre Gratuite (petites sommes, très longue durée)
+  OK   chaque forfait payant a au moins le quota de l'offre Gratuite (tant que le plancher le permet)
+  OK   20000 FCFA / semaine : bornée par la marge visée sauf garantie Gratuit (745 messages)
+  OK   20000 FCFA / mois : bornée par la marge visée sauf garantie Gratuit (745 messages)
+  OK   20000 FCFA / trimestre : bornée par la marge visée sauf garantie Gratuit (245 messages)
+  OK   20000 FCFA / semestre : bornée par la marge visée sauf garantie Gratuit (120 messages)
+  OK   20000 FCFA / an : bornée par la marge visée sauf garantie Gratuit (60 messages)
+  OK   même somme : une semaine donne plus de messages par jour qu'un mois
+  OK   somme maximale d'une durée = Illimité de cette durée : même quota et même nom lisible
+  OK   offres historiques toujours rentables au pire cas (Pro, Pro Max, Méga Pro)
+Pièces jointes
+  OK   une image compte 1 message en plus, un PDF 8, un fichier texte 1
+  OK   sans pièce jointe : aucun supplément
+Le garde-fou suit le coût du modèle (autres hypothèses, nouvelle exécution du script d'audit)
+  OK   coût d'un message 6 FCFA : aucune marge sous le plancher (0 cas)
+  OK   coût d'un message 13 FCFA : aucune marge sous le plancher (0 cas)
+  OK   coût d'un message 25 FCFA : aucune marge sous le plancher (0 cas)
+
+31 réussis, 0 échecs
+
+===== npm run test:custom =====
+
+> manager-ia-backend@1.0.0 test:custom
+> node scripts/test-custom-plan.js
+
+Calcul du forfait
+  OK   10000 FCFA : « members » ne monte jamais quand la durée s'allonge
+  OK   10000 FCFA : « orgs » ne monte jamais quand la durée s'allonge
+  OK   10000 FCFA : « branches » ne monte jamais quand la durée s'allonge
+  OK   10000 FCFA : « emailDay » ne monte jamais quand la durée s'allonge
+  OK   10000 FCFA : messages IA par jour décroissants (semaine > mois > trimestre > semestre > an)
+  OK   10000 FCFA : le niveau de fonctions ne monte jamais avec la durée
+  OK   15000 FCFA : « members » ne monte jamais quand la durée s'allonge
+  OK   15000 FCFA : « orgs » ne monte jamais quand la durée s'allonge
+  OK   15000 FCFA : « branches » ne monte jamais quand la durée s'allonge
+  OK   15000 FCFA : « emailDay » ne monte jamais quand la durée s'allonge
+  OK   15000 FCFA : messages IA par jour décroissants (semaine > mois > trimestre > semestre > an)
+  OK   15000 FCFA : le niveau de fonctions ne monte jamais avec la durée
+  OK   20000 FCFA : « members » ne monte jamais quand la durée s'allonge
+  OK   20000 FCFA : « orgs » ne monte jamais quand la durée s'allonge
+  OK   20000 FCFA : « branches » ne monte jamais quand la durée s'allonge
+  OK   20000 FCFA : « emailDay » ne monte jamais quand la durée s'allonge
+  OK   20000 FCFA : messages IA par jour décroissants (semaine > mois > trimestre > semestre > an)
+  OK   20000 FCFA : le niveau de fonctions ne monte jamais avec la durée
+  OK   10 000 FCFA pour 7 jours : nettement plus que pour 1 mois (plus de personnes, d'antennes, d'e-mails)
+  OK   10 000 FCFA / mois : 370 messages IA, 7 personnes, 1 organisation, 2 antennes
+  OK   10 000 FCFA / an : ne descend jamais sous le niveau de l'offre Gratuite
+  OK   l'offre Illimité de chaque durée donne tout (au prix de la durée)
+  OK   prix Illimité : semaine 21 500, mois 80 000, trimestre 224 000, semestre 425 000, an 800 000
+  OK   le prix par mois baisse avec la durée (80 000, 74 667, 70 833, 66 667)
+  OK   40 000 FCFA / mois (la moitié d'Illimité) : capacités de Pro Max, messages IA bornés par la marge
+  OK   plus la somme est haute, plus le quota IA est grand (jamais à la baisse)
+  OK   une semaine : le quota IA est celui de la semaine (proportionnel au mois)
+  OK   refusé : sous le minimum (10 000, toutes durées)
+  OK   refusé : sous le minimum, un an
+  OK   refusé : pas un multiple de 500
+  OK   refusé : au-delà du prix Illimité du mois
+  OK   refusé : au-delà du prix Illimité de la semaine (21 500)
+  OK   refusé : durée inconnue
+  OK   refusé : pas un nombre
+  OK   refusé : négative
+  OK   10 000 FCFA est accepté pour toutes les durées
+  OK   accès : le forfait minimum ouvre les fonctions Pro, pas Pro Max ; Illimité ouvre tout
+  OK   nom lisible
+  OK   un nom falsifié n'est pas reconnu
+API publique
+2026-11-17T11:20:39.963Z [info] GET /plans/custom/quote -> 200 (11 ms) [10dc90c9]
+  OK   aperçu public
+2026-11-17T11:20:39.987Z [info] GET /api/plans/custom/quote -> 400 (3 ms) [ed7cc9d0]
+  OK   aperçu refusé sous le minimum, avec un message clair
+2026-11-17T11:20:39.992Z [info] GET /plans -> 200 (2 ms) [730acca7]
+  OK   /plans publie les 5 durées, le minimum et le prix Illimité de chaque durée
+Paiement et activation
+2026-11-17T11:20:40.714Z [info] [notification inscription] Nouvelle inscription : Awa Sur Mesure (client-1794914439994@exemple.com) - intérêts : aucun  (aucun canal configuré : affichée ici seulement)
+2026-11-17T11:20:40.718Z [info] POST /register -> 201 (717 ms) [577173a8]
+  OK   inscription
+2026-11-17T11:20:40.732Z [info] POST /api/payments/initiate -> 400 (10 ms) [bd2547ce]
+  OK   paiement refusé sous le minimum
+2026-11-17T11:20:40.770Z [info] POST /payments/initiate -> 200 (34 ms) [49d3891e]
+  OK   paiement d'un forfait sur mesure (15 000 FCFA, une semaine) démarré, montant fixé par le serveur
+  OK   le paiement enregistre la somme et la durée
+2026-11-17T11:20:40.785Z [info] POST /api/payments/initiate -> 400 (10 ms) [3f9ec147]
+  OK   une somme falsifiée est refusée par le serveur
+2026-11-17T11:20:40.797Z [info] POST /payments/confirm-manual -> 200 (9 ms) [bcdc9fca]
+2026-11-17T11:20:40.797Z [info] [notification paiement_a_valider] Paiement à valider : Awa Sur Mesure (client-1794914439994@exemple.com) - Sur mesure (15 000 FCFA / semaine) (7 jours) - 15000 FCFA - mtn 237670000010 - ID transaction MP240101.1234.A56789 - réf. MI-QTY3ZW. Ouvrez l'administration > Paiements pour valider ou refuser.  (aucun canal configuré : affichée ici seulement)
+2026-11-17T11:20:40.814Z [info] POST /login -> 200 (14 ms) [4b95633a]
+2026-11-17T11:20:40.823Z [info] GET /payments -> 200 (6 ms) [455efe0e]
+  OK   l'administrateur voit « Sur mesure (15 000 FCFA / semaine) »
+2026-11-17T11:20:40.854Z [info] POST /payments/1/validate -> 200 (27 ms) [9c06660e]
+2026-11-17T11:20:40.855Z [info] [notification paiement_confirme] Paiement confirmé : Awa Sur Mesure (client-1794914439994@exemple.com) - offre Sur mesure (15 000 FCFA / semaine) - 15000 FCFA - MI-QTY3ZW  (aucun canal configuré : affichée ici seulement)
+  OK   validation du paiement
+  OK   l'offre est activée pour 7 jours
+  OK   les limites réellement appliquées sont celles du forfait
+  OK   niveau de fonctions Pro ou plus
+2026-11-17T11:20:40.914Z [info] GET /billing -> 200 (15 ms) [03e0133d]
+  OK   la page Abonnement affiche le forfait et ses limites
+  OK   l'historique parle en clair
+2026-11-17T11:20:40.934Z [info] POST /orgs -> 201 (16 ms) [e1c530f8]
+  OK   une organisation peut être créée avec ce forfait
+Règles de changement
+2026-11-17T11:20:40.942Z [info] POST /api/payments/initiate -> 409 (6 ms) [f5aef987]
+  OK   un autre forfait est refusé tant que celui-ci est actif (message clair)
+2026-11-17T11:20:40.952Z [info] POST /api/payments/initiate -> 409 (7 ms) [d47e6a91]
+  OK   l'offre Illimité aussi (un forfait sur mesure est une autre offre)
+2026-11-17T11:20:40.957Z [info] POST /api/payments/initiate -> 400 (4 ms) [0169fd58]
+  OK   les anciennes offres ne se vendent plus
+2026-11-17T11:20:40.969Z [info] POST /payments/initiate -> 200 (10 ms) [369a110f]
+  OK   le même forfait peut être renouvelé à tout moment
+2026-11-17T11:20:40.985Z [info] POST /payments/2/validate -> 200 (13 ms) [18865325]
+2026-11-17T11:20:40.986Z [info] [notification paiement_confirme] Paiement confirmé : Awa Sur Mesure (client-1794914439994@exemple.com) - offre Sur mesure (15 000 FCFA / semaine) - 15000 FCFA - MI-7E37SB  (aucun canal configuré : affichée ici seulement)
+  OK   le renouvellement prolonge de 7 jours à partir de l'échéance
+Quota IA d'une semaine
+  OK   la période du quota est de 7 jours (pas 30)
+  OK   à l'échéance, retour à Gratuit
+Offres Illimité par durée
+2026-11-17T11:20:41.004Z [info] POST /payments/initiate -> 200 (7 ms) [aaf82652]
+  OK   Illimité (unl_week) : montant fixé à 21500 FCFA
+2026-11-17T11:20:41.019Z [info] POST /payments/3/validate -> 200 (13 ms) [db1d4e57]
+2026-11-17T11:20:41.020Z [info] [notification paiement_confirme] Paiement confirmé : Awa Sur Mesure (client-1794914439994@exemple.com) - offre Illimité (semaine) - 21500 FCFA - MI-ZB8Y4J  (aucun canal configuré : affichée ici seulement)
+  OK   Illimité (unl_week) : activé pour 7 jours, limites Illimité, quota IA propre à la durée
+2026-11-17T11:20:41.032Z [info] POST /payments/initiate -> 200 (8 ms) [bad12a43]
+  OK   Illimité (unl_quarter) : montant fixé à 224000 FCFA
+2026-11-17T11:20:41.047Z [info] POST /payments/4/validate -> 200 (12 ms) [ab27b00b]
+2026-11-17T11:20:41.048Z [info] [notification paiement_confirme] Paiement confirmé : Awa Sur Mesure (client-1794914439994@exemple.com) - offre Illimité (trimestre) - 224000 FCFA - MI-WHV98W  (aucun canal configuré : affichée ici seulement)
+  OK   Illimité (unl_quarter) : activé pour 91 jours, limites Illimité, quota IA propre à la durée
+2026-11-17T11:20:41.059Z [info] POST /payments/initiate -> 200 (6 ms) [b3e344a4]
+  OK   Illimité (unl_year) : montant fixé à 800000 FCFA
+2026-11-17T11:20:41.074Z [info] POST /payments/5/validate -> 200 (11 ms) [637ffa53]
+2026-11-17T11:20:41.074Z [info] [notification paiement_confirme] Paiement confirmé : Awa Sur Mesure (client-1794914439994@exemple.com) - offre Illimité (an) - 800000 FCFA - MI-DXUK8R  (aucun canal configuré : affichée ici seulement)
+  OK   Illimité (unl_year) : activé pour 365 jours, limites Illimité, quota IA propre à la durée
+
+68 réussis, 0 échecs
+
+===== npm run test:attach =====

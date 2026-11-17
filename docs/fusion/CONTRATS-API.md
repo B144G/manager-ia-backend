@@ -4,7 +4,7 @@ Principe : les formes de réponse de la ligne A (en production) sont conservées
 `contrats/achats.md`, `contrats/bibliotheque.md`, `contrats/entrepot.md` (reproduits ci-dessous).
 
 ## Transversal (sécurité, ligne B)
-- Nouvelles routes : `/api/privacy/*` (consentements `GET|POST /consents`, export personnel `GET /export`, suppression avec délai `POST|DELETE /erasure`, aperçu `GET /overview`), par organisation `/api/privacy/orgs/:orgId/{export,retention,security,require-2fa,access-log}`, `POST /privacy/run` (administration).
+- Nouvelles routes : `/api/privacy/*` (consentements `GET|POST /consents`, export personnel `GET /export`, suppression avec délai `POST|DELETE /erasure`, aperçu `GET /overview`), par organisation `/api/privacy/orgs/:orgId/{export,retention,security,require-2fa,access-log}`, `POST /api/admin/privacy/run` (administration, exécution des suppressions échues).
 - Toutes les réponses `/api/**` portent `Cache-Control: no-store` et une CSP `default-src 'none'; frame-ancestors 'none'` ; les routes de fichiers (aperçu bibliothèque, PDF, pièces) fixent leur propre CSP. Un PDF/aperçu affiché dans une iframe doit venir d'une route qui l'autorise (bibliothèque : `frame-ancestors 'self'`) ; à vérifier côté site pour les PDF d'Achats.
 - Connexion : verrouillage progressif (429), alerte d'appareil inconnu, sessions actives listables et révocables ; une organisation peut exiger la 2FA des administrateurs (403 avec message explicite sinon).
 - Un gros corps JSON (assistant avec pièces, imports) n'est lu qu'après vérification de la connexion (401 pour un anonyme). Pièces jointes de l'assistant : contenu réel vérifié (signature), sinon refus.
