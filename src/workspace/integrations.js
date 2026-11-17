@@ -42,7 +42,7 @@ router.post('/webhooks', async (req, res) => {
   if (!events.length) throw new HttpError(400, 'Choisissez au moins un événement.');
   if ((await db.prepare('SELECT COUNT(*) c FROM webhooks_out WHERE org_id = ?').get(req.org.id)).c >= MAX_HOOKS) throw new HttpError(403, `Vous pouvez avoir ${MAX_HOOKS} webhooks au plus.`);
   const secret = crypto.randomBytes(24).toString('hex');
-  const id = (await db.prepare('INSERT INTO webhooks_out (org_id, url, events, secret, created_at) VALUES (?, ?, ?, ?, ?)').run(req.org.id, String(b.url).trim(), JSON.stringify(events), secret, nowISO())).lastInsertRowid;
+  const id = (await db.prepare('INSERT INTO webhooks_out (org_id, url, events, secret, created_at) VALUES (?, ?, ?, ?, ?)').run(req.org.id, String(b.url).trim(), JSON.stringify(events), require('../services/vault').encrypt(secret), nowISO())).lastInsertRowid;
   await A.logActivity(req.org.id, req.user.id, 'integrations', 'Webhook ajouté');
   res.status(201).json({ id: Number(id), secret, note: "Conservez ce secret : il sert à vérifier que les messages viennent bien de Brij-IA (en-tête X-MIA-Signature). Il ne sera plus affiché." });
 });

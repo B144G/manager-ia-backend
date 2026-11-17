@@ -3,3 +3,10 @@ node_modules
 data/*.db*
 *.log
 .git
+
+docs
+.claude
+.github
+scripts/test-*.js
+scripts/lib
+scripts/demo*

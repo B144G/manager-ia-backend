@@ -65,7 +65,9 @@
     "test:purchasingb": "node scripts/test-purchasing-b.js",
     "test:purchasingwms": "node scripts/test-purchasing-wms.js",
     "test:libraryb": "node scripts/test-library-b.js",
-    "test:stockwms": "node scripts/test-stock-wms.js"
+    "test:stockwms": "node scripts/test-stock-wms.js",
+    "test:security": "node scripts/test-security-routes.js && node scripts/test-security-auth.js && node scripts/test-security-data.js && node scripts/test-security-idor.js && node scripts/test-security-privacy.js && node scripts/test-security-fuzz.js",
+    "security:rotate-keys": "node scripts/rotate-keys.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc14",

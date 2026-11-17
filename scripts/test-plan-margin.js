@@ -63,7 +63,9 @@ check('offres historiques toujours rentables au pire cas (Pro, Pro Max, Méga Pr
 console.log('Pièces jointes');
 const { attachmentParts } = require('../src/workspace/ai');
 const b64 = Buffer.from('x'.repeat(100)).toString('base64');
-check('une image compte 1 message en plus, un PDF 8, un fichier texte 1', attachmentParts([{ name: 'a.png', mime: 'image/png', data: b64 }]).extra === 1 && attachmentParts([{ name: 'a.pdf', mime: 'application/pdf', data: b64 }]).extra === 8 && attachmentParts([{ name: 'a.txt', mime: 'text/plain', data: b64 }]).extra === 1);
+const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(40)]).toString('base64'); // signature réelle : le contenu est vérifié
+const PDF = Buffer.from('%PDF-1.4 ' + 'x'.repeat(60)).toString('base64');
+check('une image compte 1 message en plus, un PDF 8, un fichier texte 1', attachmentParts([{ name: 'a.png', mime: 'image/png', data: PNG }]).extra === 1 && attachmentParts([{ name: 'a.pdf', mime: 'application/pdf', data: PDF }]).extra === 8 && attachmentParts([{ name: 'a.txt', mime: 'text/plain', data: b64 }]).extra === 1);
 check('sans pièce jointe : aucun supplément', attachmentParts(undefined).extra === 0);
 
 console.log('Le garde-fou suit le coût du modèle (autres hypothèses, nouvelle exécution du script d\'audit)');

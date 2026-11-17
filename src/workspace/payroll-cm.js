@@ -124,7 +124,9 @@ const lineOf = (lines, code) => lines.find((l) => l.code === code) || { amount: 
 const parse = (s) => { try { return JSON.parse(s); } catch { return []; } };
 
 async function slipsOf(orgId, month) {
-  return await db.prepare(`SELECT s.*, e.cnps_no, e.niu, e.pay_channel, e.pay_account, e.phone FROM payroll_slips s LEFT JOIN employees e ON e.id = s.employee_id WHERE s.org_id = ? AND s.month = ? ORDER BY s.employee_name, s.id`).all(orgId, month);
+  const vault = require('../services/vault');
+  return (await db.prepare(`SELECT s.*, e.cnps_no, e.niu, e.pay_channel, e.pay_account, e.phone FROM payroll_slips s LEFT JOIN employees e ON e.id = s.employee_id WHERE s.org_id = ? AND s.month = ? ORDER BY s.employee_name, s.id`).all(orgId, month))
+    .map((r) => ({ ...r, cnps_no: vault.decryptField(r.cnps_no), niu: vault.decryptField(r.niu), pay_account: vault.decryptField(r.pay_account) }));
 }
 const STATUS_FR = { draft: 'brouillon', validated: 'validé', paid: 'payé' };
 

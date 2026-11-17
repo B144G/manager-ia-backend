@@ -120,7 +120,10 @@ function extractJSON(text) {
   try { return JSON.parse(a.slice(i, j + 1)); } catch { return null; }
 }
 
-module.exports = { amap, afilter,
+/** Chemin sans secrets pour les journaux : un segment qui ressemble à un jeton (20+ caractères alphanumériques) ou à une adresse e-mail est masqué. */
+const safePath = (p) => String(p || '').slice(0, 200).split('/').map((seg) => (/^[A-Za-z0-9_-]{20,}(\.[a-z]{2,4})?$/.test(seg) || /@/.test(seg) ? ':masque' : seg)).join('/');
+
+module.exports = { safePath, amap, afilter,
   log, HttpError, asyncHandler, normalizeContact, isEmail, digitsOf, safeEqual, cleanText, oneLine,
   extractJSON, stripAccents, genReference, addDays, parseJSON, fetchJson, makeSeen,
 };

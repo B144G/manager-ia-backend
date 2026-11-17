@@ -56,7 +56,7 @@ function post(hook, body) {
   return new Promise((resolve) => {
     let u; try { u = new URL(hook.url); } catch { return resolve({ ok: false, status: 'adresse invalide' }); }
     const lib = u.protocol === 'http:' ? http : https;
-    const req = lib.request({ method: 'POST', hostname: u.hostname.replace(/^\[|\]$/g, ''), port: u.port || undefined, path: u.pathname + u.search, lookup: safeLookup, timeout: 8000, headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), 'user-agent': 'MANAGER-IA-Webhook/1', 'x-mia-signature': sign(hook.secret, body) } }, (res) => {
+    const req = lib.request({ method: 'POST', hostname: u.hostname.replace(/^\[|\]$/g, ''), port: u.port || undefined, path: u.pathname + u.search, lookup: safeLookup, timeout: 8000, headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body), 'user-agent': 'MANAGER-IA-Webhook/1', 'x-mia-signature': sign(String(hook.secret).startsWith('v1:') ? require('./vault').decrypt(hook.secret) : hook.secret, body) } }, (res) => {
       res.resume();
       resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: String(res.statusCode) }); // une redirection (3xx) est un échec : jamais suivie
     });

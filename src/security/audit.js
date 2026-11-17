@@ -55,18 +55,37 @@ function alert(row) {
   } catch { /* notification impossible */ }
 }
 
-/** Relit toute la chaîne et vérifie chaque lien. Renvoie { ok, checked, brokenAt? }. */
+// Points d'ancrage : toutes les heures (et à chaque vérification), l'empreinte de la dernière ligne est signée (HMAC avec une clé du serveur) dans une table à part.
+// Une chaîne seule ne détecte pas la suppression des DERNIÈRES lignes ni une chaîne entièrement recalculée ; l'ancrage, si.
+const macOf = (id, hash, at) => crypto.createHmac('sha256', require('../config').dataKey || require('../config').jwtSecret).update(`audit-checkpoint|${id}|${hash}|${at}`).digest('hex');
+async function checkpoint() {
+  const last = await db.prepare('SELECT id, hash FROM audit_trail ORDER BY id DESC LIMIT 1').get();
+  if (!last) return null;
+  const cp = await db.prepare('SELECT upto_id FROM audit_checkpoints ORDER BY id DESC LIMIT 1').get();
+  if (cp && Number(cp.upto_id) >= Number(last.id)) return null;
+  const at = nowISO();
+  await db.prepare('INSERT INTO audit_checkpoints (upto_id, hash, at, mac) VALUES (?, ?, ?, ?)').run(last.id, last.hash, at, macOf(last.id, last.hash, at));
+  return { uptoId: Number(last.id) };
+}
+
+/** Relit toute la chaîne, vérifie chaque lien, puis chaque point d'ancrage. Renvoie { ok, checked, checkpoints, brokenAt?, reason? }. */
 async function verify() {
   let prev = GENESIS; let checked = 0; let after = 0;
   for (;;) {
     const rows = await db.prepare('SELECT * FROM audit_trail WHERE id > ? ORDER BY id LIMIT 1000').all(after);
     if (!rows.length) break;
     for (const r of rows) {
-      if (r.prev_hash !== prev || hashOf(r) !== r.hash) return { ok: false, checked, brokenAt: r.id };
+      if (r.prev_hash !== prev || hashOf(r) !== r.hash) return { ok: false, checked, brokenAt: r.id, reason: 'chaîne rompue' };
       prev = r.hash; checked++; after = r.id;
     }
   }
-  return { ok: true, checked };
+  const cps = await db.prepare('SELECT * FROM audit_checkpoints ORDER BY id').all();
+  for (const c of cps) {
+    if (macOf(c.upto_id, c.hash, c.at) !== c.mac) return { ok: false, checked, checkpoints: cps.length, brokenAt: Number(c.upto_id), reason: "point d'ancrage falsifié" };
+    const row = await db.prepare('SELECT hash FROM audit_trail WHERE id = ?').get(c.upto_id);
+    if (!row || row.hash !== c.hash) return { ok: false, checked, checkpoints: cps.length, brokenAt: Number(c.upto_id), reason: 'lignes supprimées ou modifiées avant un point d\'ancrage' };
+  }
+  return { ok: true, checked, checkpoints: cps.length };
 }
 
 /** Liste filtrée pour l'écran d'administration. */
@@ -81,4 +100,4 @@ async function list({ limit = 100, severity, action, q, orgId, beforeId } = {}) 
   return await db.prepare(`SELECT id, at, actor_type AS "actorType", actor_id AS "actorId", org_id AS "orgId", action, severity, target, ip, ua, request_id AS "requestId", detail FROM audit_trail${w.length ? ' WHERE ' + w.join(' AND ') : ''} ORDER BY id DESC LIMIT ${n}`).all(...a);
 }
 
-module.exports = { record, verify, list, GENESIS, hashOf };
+module.exports = { record, verify, list, checkpoint, GENESIS, hashOf };

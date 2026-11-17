@@ -26,7 +26,8 @@ async function needPassword(req) {
 router.get('/overview', asyncHandler(async (req, res) => {
   const u = await db.prepare('SELECT totp_enabled, recovery_codes FROM users WHERE id = ?').get(req.user.id);
   res.json({
-    twofa: { enabled: Boolean(Number(u.totp_enabled)), recoveryLeft: central.totp.recoveryLeft(u.recovery_codes) },
+    // Proposée à tous, fortement recommandée aux propriétaires et administrateurs d'organisation (accès aux données de paie, de clients, de comptabilité).
+    twofa: { enabled: Boolean(Number(u.totp_enabled)), recoveryLeft: central.totp.recoveryLeft(u.recovery_codes), recommended: !Number(u.totp_enabled) && Boolean(await db.prepare("SELECT 1 FROM org_members WHERE user_id = ? AND role IN ('owner', 'admin')").get(req.user.id)) },
     sessions: await central.sessions.listForUser(req.user.id, req.sessionId),
   });
 }));

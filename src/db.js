@@ -3726,6 +3726,61 @@ const MIGRATIONS = [
   `
   ALTER TABLE logistics_deliveries ADD COLUMN time_declared INTEGER NOT NULL DEFAULT 0;
   `,
+  /* SÉCURITÉ ET CONFIDENTIALITÉ : verrouillage progressif, appareils connus, consentements, droits des personnes, budget IA, ancrage du journal d'audit, double authentification exigée par organisation, durées de conservation */ `
+  ALTER TABLE login_fails ADD COLUMN IF NOT EXISTS lock_level BIGINT NOT NULL DEFAULT 0;
+  CREATE TABLE IF NOT EXISTS login_devices (
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    fp TEXT NOT NULL,
+    ip TEXT NOT NULL DEFAULT '',
+    device TEXT NOT NULL DEFAULT '',
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    PRIMARY KEY (user_id, fp)
+  );
+  CREATE TABLE IF NOT EXISTS consents (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    version TEXT NOT NULL,
+    accepted BIGINT NOT NULL DEFAULT 1,
+    ip TEXT NOT NULL DEFAULT '',
+    at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_consents_user ON consents(user_id, kind, id);
+  CREATE TABLE IF NOT EXISTS data_requests (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    detail TEXT NOT NULL DEFAULT '',
+    requested_at TEXT NOT NULL,
+    due_at TEXT NOT NULL,
+    done_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_data_requests_user ON data_requests(user_id, kind, status);
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS erase_after TEXT;
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS anonymized_at TEXT;
+  CREATE TABLE IF NOT EXISTS ai_budget (
+    day TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    calls BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, scope)
+  );
+  CREATE TABLE IF NOT EXISTS audit_checkpoints (
+    id BIGSERIAL PRIMARY KEY,
+    upto_id BIGINT NOT NULL,
+    hash TEXT NOT NULL,
+    at TEXT NOT NULL,
+    mac TEXT NOT NULL
+  );
+  ALTER TABLE orgs ADD COLUMN IF NOT EXISTS require_2fa BIGINT NOT NULL DEFAULT 0;
+  CREATE TABLE IF NOT EXISTS retention_rules (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    days BIGINT NOT NULL,
+    PRIMARY KEY (org_id, kind)
+  );
+  `,
 ];
 
 

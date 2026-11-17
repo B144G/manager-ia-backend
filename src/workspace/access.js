@@ -55,6 +55,8 @@ async function loadOrg(req, res, next) {
   if (!org || !member) throw new HttpError(404, 'Organisation introuvable.'); // même message : on ne révèle pas son existence
   req.org = org;
   req.member = member;
+  // Organisation qui exige la double authentification de ses administrateurs : sans elle, plus d'accès aux données (le compte reste libre d'activer la double authentification).
+  if (Number(org.require_2fa) && RANK[member.role] >= RANK.admin && !Number(req.user.totp_enabled)) throw Object.assign(new HttpError(403, "Cette organisation exige la double authentification pour les administrateurs : activez-la dans Sécurité du compte."), { errorCode: 'twofa_required' });
   next();
 }
 

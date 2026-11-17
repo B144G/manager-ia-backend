@@ -6,6 +6,7 @@ const { db, nowISO } = require('../db');
 const A = require('./access');
 const W = require('./w3');
 const wh = require('../services/webhooks');
+const vault = require('../services/vault');
 const { HttpError } = require('../util');
 
 const router = express.Router({ mergeParams: true });
@@ -23,7 +24,7 @@ const time = (v) => { if (typeof v !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.
 const days = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000) + 1;
 
 const empView = (req, e) => ({ id: e.id, name: e.name, job: e.job, phone: e.phone, hiredAt: e.hired_at, status: e.status, branchId: e.branch_id, salary: A.can(req, 'admin') ? e.salary : undefined,
-  cnpsNo: A.can(req, 'admin') ? e.cnps_no : undefined, niu: A.can(req, 'admin') ? e.niu : undefined, payChannel: A.can(req, 'admin') ? e.pay_channel : undefined, payAccount: A.can(req, 'admin') ? e.pay_account : undefined });
+  cnpsNo: A.can(req, 'admin') ? vault.decryptField(e.cnps_no) : undefined, niu: A.can(req, 'admin') ? vault.decryptField(e.niu) : undefined, payChannel: A.can(req, 'admin') ? e.pay_channel : undefined, payAccount: A.can(req, 'admin') ? vault.decryptField(e.pay_account) : undefined });
 
 async function employees(req) {
   const sc = A.scope(req);
@@ -52,10 +53,10 @@ async function payInfo(req, id, b, cur) {
   const has = ['cnpsNo', 'niu', 'payChannel', 'payAccount'].some((k) => b[k] !== undefined);
   if (!has) return;
   const ch = b.payChannel === undefined ? cur.pay_channel || '' : A.oneOf(b.payChannel, ['', 'bank', 'mobile'], '', 'Canal de paiement : banque ou mobile money.');
-  const acc = b.payAccount === undefined ? cur.pay_account || '' : A.text(b.payAccount, 60);
+  const acc = b.payAccount === undefined ? vault.decryptField(cur.pay_account) : A.text(b.payAccount, 60);
   if (acc && !/^[A-Za-z0-9 +().\-/]{4,60}$/.test(acc)) throw new HttpError(400, 'Compte bancaire ou numéro de mobile money invalide.');
   await db.prepare('UPDATE employees SET cnps_no = ?, niu = ?, pay_channel = ?, pay_account = ? WHERE id = ? AND org_id = ?').run(
-    b.cnpsNo === undefined ? cur.cnps_no || '' : A.text(b.cnpsNo, 30), b.niu === undefined ? cur.niu || '' : A.text(b.niu, 30), ch, acc, id, req.org.id);
+    vault.encryptField(b.cnpsNo === undefined ? vault.decryptField(cur.cnps_no) : A.text(b.cnpsNo, 30)), vault.encryptField(b.niu === undefined ? vault.decryptField(cur.niu) : A.text(b.niu, 30)), ch, vault.encryptField(acc), id, req.org.id);
 }
 
 router.post('/employees', async (req, res) => {
