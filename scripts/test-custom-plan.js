@@ -85,7 +85,7 @@ async function main() {
     check('le paiement enregistre la somme et la durée', row && Number(row.amount_xaf) === 15000 && row.plan === 'Sur mesure|15000|7', row);
     r = await web('POST', '/api/payments/initiate', { custom: { amount: 1000, period: 'week' }, plan: 'inconnu', operator: 'mtn', phone: '670000010' });
     check('une somme falsifiée est refusée par le serveur', r.status === 400, r.json);
-    await web('POST', '/api/payments/confirm-manual', { reference: ref, transactionId: 'MP240101.1234.A56789' });
+    await web('POST', '/api/payments/confirm-manual', { reference: ref, transactionId: 'MP240101.1234.A56789', payerName: 'Test Payeur' });
     const adm = client(base);
     await adm('POST', '/api/admin/login', { username: 'admin-test', password: 'mot-de-passe-admin-test' });
     r = await adm('GET', '/api/admin/payments?status=awaiting_validation');

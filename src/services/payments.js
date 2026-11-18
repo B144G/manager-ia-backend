@@ -20,11 +20,11 @@ const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&':
 function receiptOf(p, user) {
   const when = p.paid_at || nowISO();
   return { number: `R-${when.slice(0, 4)}-${String(p.id).padStart(5, '0')}`, reference: p.reference, plan: custom.label((planOf(p.plan) || {}).name || p.plan), amountXAF: Number(p.amount_xaf), operator: p.operator || '', mode: p.mode, paidAt: when,
-    customer: { name: user.name, contact: user.contact }, durationDays: (planOf(p.plan) || {}).days || config.durationDays, issuer: config.payment.holder || 'Brij-IA', note: "Reçu de paiement d'abonnement Brij-IA. Document de travail : il ne tient pas lieu de facture fiscale." };
+    customer: { name: user.name, contact: user.contact }, durationDays: (planOf(p.plan) || {}).days || config.durationDays, issuer: config.payment.holder || 'Brij-IA', test: Boolean(Number(p.test_mode)), note: Number(p.test_mode) ? "REÇU DE TEST (mode démonstration) : aucun argent réel n'a été débité. Ce document n'a aucune valeur comptable." : "Reçu de paiement d'abonnement Brij-IA. Document de travail : il ne tient pas lieu de facture fiscale." };
 }
 function receiptHtml(r) {
   return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Reçu ${esc(r.number)}</title><style>body{font-family:Arial,sans-serif;max-width:640px;margin:32px auto;color:#111}h1{font-size:22px}table{width:100%;border-collapse:collapse}td{padding:8px 0;border-bottom:1px solid #ddd}td:last-child{text-align:right}.n{color:#555;font-size:12px;margin-top:24px}</style></head><body>
-<h1>Reçu de paiement ${esc(r.number)}</h1><p>${esc(r.issuer)}</p><table><tr><td>Client</td><td>${esc(r.customer.name)} (${esc(r.customer.contact)})</td></tr><tr><td>Offre</td><td>${esc(r.plan)} (${r.durationDays} jours)</td></tr><tr><td>Référence</td><td>${esc(r.reference)}</td></tr><tr><td>Date de paiement</td><td>${esc(r.paidAt.slice(0, 10))}</td></tr><tr><td>Montant</td><td><b>${r.amountXAF.toLocaleString('fr-FR')} FCFA</b></td></tr></table><p class="n">${esc(r.note)}</p></body></html>`;
+${r.test ? '<p style="background:#b91c1c;color:#fff;padding:10px;font-weight:bold;text-align:center">MODE TEST : aucun argent réel</p>' : ''}<h1>Reçu de paiement ${esc(r.number)}</h1><p>${esc(r.issuer)}</p><table><tr><td>Client</td><td>${esc(r.customer.name)} (${esc(r.customer.contact)})</td></tr><tr><td>Offre</td><td>${esc(r.plan)} (${r.durationDays} jours)</td></tr><tr><td>Référence</td><td>${esc(r.reference)}</td></tr><tr><td>Date de paiement</td><td>${esc(r.paidAt.slice(0, 10))}</td></tr><tr><td>Montant</td><td><b>${r.amountXAF.toLocaleString('fr-FR')} FCFA</b></td></tr></table><p class="n">${esc(r.note)}</p></body></html>`;
 }
 const fmtDate = (iso) => new Date(iso).toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' });
 
@@ -40,7 +40,7 @@ function planConflict(user, planName) {
   return null;
 }
 
-const activate = db.transaction(async (paymentId) => {
+const activate = db.transaction(async (paymentId, via) => {
   const p = await db.prepare('SELECT * FROM payments WHERE id = ?').get(paymentId);
   if (!p || p.status === 'paid') return null; // déjà fait : on ne recommence pas
   const plan = planOf(p.plan);
@@ -55,7 +55,7 @@ const activate = db.transaction(async (paymentId) => {
 
   // Le paiement est marqué « payé » EN PREMIER et le résultat est vérifié : deux validations simultanées (double clic, deux onglets) n'ajoutent jamais la durée deux fois.
   const t = nowISO();
-  const upd = await db.prepare("UPDATE payments SET status = 'paid', paid_at = ?, decided_at = ?, reject_reason = '' WHERE id = ? AND status != 'paid'").run(t, t, p.id);
+  const upd = await db.prepare("UPDATE payments SET status = 'paid', paid_at = ?, decided_at = ?, reject_reason = '', last_error = '', paid_via = ? WHERE id = ? AND status != 'paid'").run(t, t, via || '', p.id);
   if (!upd.changes) return null;
   await db.prepare('UPDATE users SET plan = ?, plan_expires = ?, reminded_for = NULL WHERE id = ?').run(plan.name, expires, user.id);
   return { payment: p, user, planName: plan.name, planLabel: custom.label(plan.name), expires };
@@ -65,8 +65,8 @@ const activate = db.transaction(async (paymentId) => {
  * Marque un paiement comme payé et active l'offre. Renvoie null s'il était déjà payé.
  * Prévient l'utilisateur : notice dans l'application (toujours) + e-mail avec reçu (s'il a une adresse e-mail), puis la notification admin.
  */
-async function markPaid(paymentId) {
-  const r = await activate(paymentId);
+async function markPaid(paymentId, opts = {}) {
+  const r = await activate(paymentId, opts.via || '');
   if (!r) return null;
   const receipt = receiptOf({ ...r.payment, paid_at: nowISO() }, r.user);
   const accounts = require('./accounts');
@@ -79,7 +79,7 @@ async function markPaid(paymentId) {
   });
   if (isEmail(r.user.contact)) setImmediate(async () => {
     try {
-      await sendMail({ to: r.user.contact, subject: `Votre offre ${r.planLabel} est active - Brij-IA`, text: `Bonjour ${r.user.name},\n\nVotre paiement ${r.payment.reference} (${r.payment.amount_xaf} FCFA) est confirmé.\n` +
+      await sendMail({ to: r.user.contact, subject: `${Number(r.payment.test_mode) ? '[TEST] ' : ''}Votre offre ${r.planLabel} est active - Brij-IA`, text: `Bonjour ${r.user.name},\n\nVotre paiement ${r.payment.reference} (${r.payment.amount_xaf} FCFA) est confirmé.\n` +
       `Votre offre ${r.planLabel} est active jusqu'au ${fmtDate(r.expires)}.\n\nMerci pour votre confiance.\nL'équipe Brij-IA\n\nVotre reçu ${receipt.number} est joint à ce message (vous pouvez aussi le retrouver dans « Abonnement »).`,
         attachments: [{ filename: `recu-${receipt.number}.html`, content: Buffer.from(receiptHtml(receipt), 'utf8'), contentType: 'text/html' }] });
     } catch (e) { log.warn('Reçu non envoyé :', oneLine(e.message, 160)); }
@@ -96,7 +96,7 @@ async function rejectPayment(paymentId, reason) {
   const why = String(reason == null ? '' : reason).replace(/[\r\n\t]+/g, ' ').trim().slice(0, 300);
   const p = await db.prepare('SELECT * FROM payments WHERE id = ?').get(paymentId);
   if (!p) return null;
-  const upd = await db.prepare("UPDATE payments SET status = 'failed', reject_reason = ?, decided_at = ? WHERE id = ? AND status IN ('pending', 'awaiting_validation')").run(why, nowISO(), p.id);
+  const upd = await db.prepare("UPDATE payments SET status = 'failed', reject_reason = ?, decided_at = ? WHERE id = ? AND status IN ('pending', 'awaiting_validation', 'needs_review', 'expired')").run(why, nowISO(), p.id);
   if (!upd.changes) return null;
   const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(p.user_id);
   if (!user) return { payment: p, user: null };

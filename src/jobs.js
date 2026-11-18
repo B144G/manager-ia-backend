@@ -29,6 +29,9 @@ async function runOnce() {
     notify('rappel', `Offre ${require('./services/custom-plan').label(u.plan)} de ${u.name} (${u.contact}) expire le ${fmtDate(u.plan_expires)}.`);
   }
 
+  // 2 bis) Commandes de paiement manuel jamais soumises, au-delà du délai : « expiré » (les commandes soumises attendent l'administrateur)
+  await db.prepare("UPDATE payments SET status = 'expired', last_error = 'commande non soumise dans le délai', decided_at = ? WHERE mode = 'manual' AND status = 'pending' AND expires_at IS NOT NULL AND expires_at <= ?").run(now, now);
+
   // 3) Nettoyage des vieilles données techniques
   await db.prepare('DELETE FROM conversations WHERE created_at < ?').run(addDays(new Date(), -90).toISOString());
   await require('./services/security').sweep();
@@ -80,11 +83,23 @@ function startAlerts() {
   setInterval(run, every).unref();
 }
 
+// Paiement automatique Campay : réconciliation toutes les minutes (CAMPAY_RECONCILE_TICK_MS en dehors de la production). Sans identifiants Campay, ne fait rien.
+function startCampay() {
+  const every = (process.env.NODE_ENV !== 'production' && Number(process.env.CAMPAY_RECONCILE_TICK_MS)) || 60 * 1000;
+  const run = () => {
+    if (!require('./config').campay.enabled) return;
+    require('./services/campay-pay').reconcile().catch((e) => log.warn('Réconciliation Campay :', oneLine(e.message, 160)));
+  };
+  setTimeout(run, 40 * 1000).unref();
+  setInterval(run, every).unref();
+}
+
 function start() {
   setTimeout(safeRun, 20 * 1000).unref();
   setInterval(safeRun, 3600 * 1000).unref();
   startAlerts();
   startDigest();
+  startCampay();
 }
 
-module.exports = { start, runOnce, startAlerts };
+module.exports = { start, runOnce, startAlerts, startCampay };

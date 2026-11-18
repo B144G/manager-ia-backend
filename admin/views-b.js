@@ -5,9 +5,14 @@
   const S = A.S;
 
   // ---------- Paiements ----------
-  const PAY_TABS = [['awaiting_validation', 'À valider'], ['pending', 'En attente'], ['paid', 'Validés'], ['failed', 'Refusés'], ['', 'Tous']];
+  const PAY_TABS = [['needs_review', 'Bloqués (encaissés)'], ['awaiting_validation', 'À vérifier'], ['pending', 'En attente'], ['paid', 'Validés'], ['failed', 'Refusés / échoués'], ['expired', 'Expirés'], ['', 'Tous']];
   async function paymentsView(main, ctx) {
-    main.append(phead('Paiements', 'Mobile Money et paiements automatiques. Validez ou refusez chaque paiement ; le client est prévenu dans les deux cas.'));
+    main.append(phead('Paiements', 'Mobile Money (validation à la main) et paiements automatiques Campay. Les paiements « à vérifier » ou bloqués en attente passent en premier.'));
+    const hookNote = h('div', { class: 'note' });
+    main.append(hookNote);
+    api('/campay').then((c) => { S.campay = c; A.drawModeBar && A.drawModeBar(); if (!c.enabled) hookNote.replaceChildren(h('b', {}, 'Paiement automatique Campay inactif'), ' : renseignez CAMPAY_APP_USERNAME, CAMPAY_APP_PASSWORD et CAMPAY_WEBHOOK_KEY (voir docs/paiement-campay.md).'); else hookNote.replaceChildren(h('b', {}, 'Campay : ' + (c.test ? 'MODE TEST (démonstration)' : 'MODE RÉEL')), ' · clé du webhook ' + (c.hasWebhookKey ? 'présente' : 'ABSENTE') + ' · URL du webhook à déclarer chez Campay : ', h('span', { class: 'mono' }, c.webhookUrl)); }).catch(() => hookNote.remove());
+    const statBox = h('div', { class: 'grid g-kpi' });
+    const filt = h('div', { class: 'pay-filters' });
     const tabs = h('div', { class: 'tabs', role: 'tablist' });
     const q = A.searchBox('Rechercher : nom, contact, référence, ID de transaction…', (v) => { S.payQ = v; run(); }, S.payQ);
     const tbl = table({
@@ -18,22 +23,33 @@
         { key: 'planName', label: 'Offre et durée', render: (p) => h('div', {}, p.planName, p.durationDays ? h('small', { class: 'muted' }, ' · ' + p.durationDays + ' jours') : null) },
         { key: 'amountXAF', label: 'Montant', cls: 'nw', render: (p) => h('b', { class: 'tnum' }, fmtXAF(p.amountXAF)) },
         { key: 'operator', label: 'Opérateur et numéro', cls: 'mu', render: (p) => (A.OPERATOR[p.operator] || p.operator || '—') + (p.phone ? ' · ' + p.phone : '') },
-        { key: 'reference', label: 'Référence et ID', render: (p) => h('div', {}, h('b', { class: 'mono' }, p.reference), h('small', { class: 'muted' }, ' ' + (p.transactionId ? 'ID : ' + p.transactionId : p.mode === 'push' ? 'Paiement automatique' : 'ID pas encore saisi'))) },
-        { key: 'status', label: 'Statut', render: (p) => h('div', {}, A.payBadge(p.status), p.status === 'failed' && p.rejectReason ? h('small', { class: 'muted' }, ' Motif : ' + p.rejectReason) : null, p.decidedAt ? h('small', { class: 'muted' }, ' ' + fmtDateTime(p.decidedAt)) : null) },
+        { key: 'reference', label: 'Référence et ID', render: (p) => h('div', {}, h('b', { class: 'mono' }, p.reference), p.testMode ? h('span', { class: 'badge warn' }, ' TEST') : null, h('small', { class: 'muted' }, ' ' + (p.transactionId ? 'ID : ' + p.transactionId + (p.payerName ? ' · payeur : ' + p.payerName : '') : p.mode === 'push' ? 'Paiement automatique' + (p.operatorRef ? ' · ' + p.operatorRef : '') : 'ID pas encore saisi')), p.paidVia ? h('small', { class: 'muted' }, ' confirmé par ' + ({ webhook: 'webhook', reconciliation: 'réconciliation', admin: 'administrateur', poll: 'suivi', suivi: 'suivi' }[p.paidVia] || p.paidVia)) : null) },
+        { key: 'status', label: 'Statut', render: (p) => h('div', {}, A.payBadge(p.status), p.status === 'failed' && p.rejectReason ? h('small', { class: 'muted' }, ' Motif : ' + p.rejectReason) : null, p.decidedAt ? h('small', { class: 'muted' }, ' ' + fmtDateTime(p.decidedAt)) : null, p.stuck ? h('small', { class: 'muted' }, ' bloqué : en attente depuis plus de ' + 'quelques minutes') : null, p.lastError && p.status !== 'paid' ? h('small', { class: 'muted' }, ' ' + p.lastError) : null, p.adminNote ? h('small', { class: 'muted' }, ' Motif admin : ' + p.adminNote) : null, p.decidedBy ? h('small', { class: 'muted' }, ' par ' + p.decidedBy) : null) },
         { key: 'act', label: '', act: true, cls: 'r', render: (p) => h('div', { class: 'row' }, A.payButtons(p)) },
       ],
       empty: empty('payments', S.payFilter === 'awaiting_validation' ? 'Aucun paiement à valider' : 'Aucun paiement', S.payFilter === 'awaiting_validation' ? 'Tout est à jour.' : ''),
     });
-    const box = h('section', { class: 'card' }, h('div', { class: 'toolbar' }, q.el), h('div', { class: 'cb flush' }, A.skRows(5)));
-    main.append(tabs, box);
+    const box = h('section', { class: 'card' }, h('div', { class: 'toolbar' }, q.el), filt, h('div', { class: 'cb flush' }, A.skRows(5)));
+    main.append(statBox, tabs, box);
+    const opSel = h('select', { class: 'select', 'aria-label': 'Opérateur', onchange: (e) => { S.payOp = e.target.value; run(); } }, [['', 'Tous les opérateurs'], ['mtn', 'MTN Mobile Money'], ['orange', 'Orange Money']].map(([v, l]) => h('option', { value: v, selected: (S.payOp || '') === v ? '' : null }, l)));
+    const dFrom = h('input', { class: 'input', type: 'date', value: S.payFrom || '', 'aria-label': 'Du', onchange: (e) => { S.payFrom = e.target.value; run(); } });
+    const dTo = h('input', { class: 'input', type: 'date', value: S.payTo || '', 'aria-label': 'Au', onchange: (e) => { S.payTo = e.target.value; run(); } });
+    filt.append(opSel, h('label', {}, 'Du', dFrom), h('label', {}, 'au', dTo));
     let seq = 0;
     async function run() {
       const my = ++seq;
       try {
-        const { payments, counts } = await api('/payments?status=' + encodeURIComponent(S.payFilter) + '&q=' + encodeURIComponent(S.payQ || ''));
+        const { payments, counts, stats, campay } = await api('/payments?status=' + encodeURIComponent(S.payFilter) + '&q=' + encodeURIComponent(S.payQ || '') + '&operator=' + encodeURIComponent(S.payOp || '') + '&from=' + encodeURIComponent(S.payFrom || '') + '&to=' + encodeURIComponent(S.payTo || ''));
         if (my !== seq || ctx.stale()) return;
-        tabs.replaceChildren(...PAY_TABS.map(([k, l]) => h('button', { type: 'button', role: 'tab', 'aria-selected': S.payFilter === k ? 'true' : 'false', onclick: () => { S.payFilter = k; A.refresh(); } }, l, k === '' ? null : h('span', { class: 'cnt' + (k === 'awaiting_validation' && counts[k] ? ' hot' : '') }, String(counts[k] || 0)))));
-        tbl.set(payments); box.children[1].replaceChildren(tbl.el);
+        tabs.replaceChildren(...PAY_TABS.map(([k, l]) => h('button', { type: 'button', role: 'tab', 'aria-selected': S.payFilter === k ? 'true' : 'false', onclick: () => { S.payFilter = k; A.refresh(); } }, l, k === '' ? null : h('span', { class: 'cnt' + ((k === 'awaiting_validation' || k === 'needs_review') && counts[k] ? ' hot' : '') }, String(counts[k] || 0)))));
+        if (campay) { S.campay = campay; A.drawModeBar && A.drawModeBar(); }
+        if (stats) statBox.replaceChildren(
+          h('div', { class: 'card kpi' }, h('div', { class: 'l' }, 'Encaissé (réel)'), h('div', { class: 'v tnum' }, fmtXAF(stats.paidXAF)), h('small', { class: 'muted' }, 'ce mois : ' + fmtXAF(stats.paidMonthXAF) + (stats.paidTestXAF ? ' · test (sans argent) : ' + fmtXAF(stats.paidTestXAF) : ''))),
+          h('div', { class: 'card kpi' }, h('div', { class: 'l' }, 'Payés'), h('div', { class: 'v tnum' }, String(stats.paidCount))),
+          h('div', { class: 'card kpi' }, h('div', { class: 'l' }, 'Échoués ou expirés'), h('div', { class: 'v tnum' }, String(stats.failedCount))),
+          h('div', { class: 'card kpi' }, h('div', { class: 'l' }, 'En attente'), h('div', { class: 'v tnum' }, String(stats.pendingCount)), stats.stuckCount ? h('small', { class: 'muted' }, stats.stuckCount + ' bloqué(s) : revérifiez chez Campay') : null),
+          stats.reviewCount ? h('div', { class: 'card kpi' }, h('div', { class: 'l' }, 'Encaissés à vérifier'), h('div', { class: 'v tnum' }, String(stats.reviewCount)), h('small', { class: 'muted' }, 'argent reçu, offre non activée')) : null);
+        tbl.set(payments); box.children[2].replaceChildren(tbl.el);
       } catch (e) { fail(e); }
     }
     run();

@@ -42,7 +42,7 @@ async function main() {
   const child = spawn(process.execPath, [path.join(__dirname, '..', 'src', 'server.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = ''; child.stdout.on('data', (d) => { out += d; }); child.stderr.on('data', (d) => { out += d; });
   let up = false;
-  for (let i = 0; i < 60 && !up; i++) { await sleep(250); try { up = (await fetch(base + '/api/health')).ok; } catch { /* pas prêt */ } }
+  for (let i = 0; i < Number(process.env.TEST_START_TRIES || 60) && !up; i++) { await sleep(250); try { up = (await fetch(base + '/api/health')).ok; } catch { /* pas prêt */ } }
   if (!up) { console.log("Le serveur n'a pas démarré.\n" + out); process.exit(1); }
   const call = async (m, u, b) => { const r = await fetch(base + u, { method: m, headers: b ? { 'content-type': 'application/json' } : {}, body: b ? JSON.stringify(b) : undefined }); let j = null; try { j = await r.json(); } catch { /* vide */ } return { status: r.status, json: j, cookie: r.headers.getSetCookie().join(';') }; };
   try {

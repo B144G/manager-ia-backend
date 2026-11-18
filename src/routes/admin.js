@@ -29,7 +29,8 @@ function planCatalog() {
     free: { name: 'Gratuit', priceXAF: 0 },
   };
 }
-const STATUSES = ['pending', 'awaiting_validation', 'paid', 'failed'];
+const STATUSES = ['pending', 'awaiting_validation', 'paid', 'failed', 'expired', 'needs_review'];
+const cpay = require('../services/campay-pay');
 
 router.post('/login', limits.adminLogin, async (req, res) => {
   if (!config.admin.username || !config.admin.password) {
@@ -163,26 +164,52 @@ const mapPayment = (r) => ({
   decidedAt: r.decided_at || null,
   rejectReason: r.reject_reason || '',
   durationDays: (planOf(r.plan) || {}).days || null,
+  currency: r.currency || 'XAF',
+  lastError: r.last_error || '',
+  expiresAt: r.expires_at || null,
+  lastCheckedAt: r.last_checked_at || null,
+  checks: Number(r.check_count || 0),
+  paidVia: r.paid_via || '',
+  adminNote: r.admin_note || '',
+  payerName: r.payer_name || '',
+  attempts: Number(r.attempts || 0),
+  submittedAt: r.submitted_at || null,
+  decidedBy: r.decided_by || '',
+  testMode: Boolean(Number(r.test_mode)),
+  operatorRef: r.operator_ref || '',
+  stuck: r.mode === 'push' && r.status === 'pending' && Date.now() - Date.parse(r.created_at) > config.campay.pendingTtlMin * 60000,
 });
 
 router.get('/payments', async (req, res) => {
   const status = String(req.query.status || '');
   const q = cleanText(String(req.query.q || ''), 80);
+  const operator = String(req.query.operator || '');
+  const day = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : '');
+  const from = day(req.query.from); const to = day(req.query.to);
   const w = []; const params = [];
   if (status) {
     if (!STATUSES.includes(status)) throw new HttpError(400, 'Statut inconnu.');
     w.push('p.status = ?'); params.push(status);
   }
+  if (operator) { if (operator !== 'mtn' && operator !== 'orange') throw new HttpError(400, 'Opérateur inconnu.'); w.push('p.operator = ?'); params.push(operator); }
+  if (from) { w.push('p.created_at >= ?'); params.push(from); }
+  if (to) { w.push('p.created_at < ?'); params.push(new Date(Date.parse(to) + 86400000).toISOString().slice(0, 10)); }
   if (q) {
     const like = '%' + q.replace(/[\\%_]/g, '\\$&') + '%';
-    w.push("(p.reference ILIKE ? ESCAPE '\\' OR u.name ILIKE ? ESCAPE '\\' OR u.contact ILIKE ? ESCAPE '\\' OR p.transaction_id ILIKE ? ESCAPE '\\' OR p.phone ILIKE ? ESCAPE '\\')");
-    params.push(like, like, like, like, like);
+    w.push("(p.reference ILIKE ? ESCAPE '\\' OR u.name ILIKE ? ESCAPE '\\' OR u.contact ILIKE ? ESCAPE '\\' OR p.transaction_id ILIKE ? ESCAPE '\\' OR p.phone ILIKE ? ESCAPE '\\' OR p.provider_ref ILIKE ? ESCAPE '\\')");
+    params.push(like, like, like, like, like, like);
   }
   const sql = `SELECT p.*, u.name AS user_name, u.contact AS user_contact FROM payments p JOIN users u ON u.id = p.user_id${w.length ? ' WHERE ' + w.join(' AND ') : ''}
-             ORDER BY (CASE WHEN p.status = 'awaiting_validation' THEN 0 ELSE 1 END), p.id DESC LIMIT 500`;
+             ORDER BY (CASE WHEN p.status = 'needs_review' THEN 0 WHEN p.status = 'awaiting_validation' THEN 1 ELSE 2 END), p.id DESC LIMIT 500`;
   const counts = Object.fromEntries(STATUSES.map((k) => [k, 0]));
   for (const r of await db.prepare('SELECT status, COUNT(*) AS n FROM payments GROUP BY status').all()) counts[r.status] = Number(r.n);
-  res.json({ payments: (await db.prepare(sql).all(...params)).map(mapPayment), counts });
+  res.json({ payments: (await db.prepare(sql).all(...params)).map(mapPayment), counts, campay: cpay.modeInfo(), stats: await cpay.adminStats() });
+});
+
+// Mode du paiement automatique (bandeau « MODE TEST » de l'administration) : jamais de clé, seulement leur présence.
+router.get('/campay', async (req, res) => {
+  const base = (req.protocol + '://' + req.get('host')).replace(/^http:/, config.isProd ? 'https:' : 'http:');
+  res.json({ ...cpay.modeInfo(), webhookUrl: `${config.apiPublicUrl || base}/api/payments/webhook/campay`, stats: await cpay.adminStats() });
 });
 
 async function findPayment(req) {
@@ -195,13 +222,32 @@ async function findPayment(req) {
 router.post('/payments/:id/validate', async (req, res) => {
   const p = await findPayment(req);
   if (p.status === 'paid') throw new HttpError(409, 'Ce paiement est déjà validé.');
+  if (p.mode === 'push') throw new HttpError(409, 'Paiement automatique : utilisez « Revérifier chez Campay », ou « Activer manuellement » (motif obligatoire) si le webhook est perdu.');
   const owner = await db.prepare('SELECT * FROM users WHERE id = ?').get(p.user_id);
   const plan = planOf(p.plan);
   const conflict = owner && plan ? planConflict(owner, plan.name) : null;
   if (conflict) throw new HttpError(409, `${conflict} Refusez ce paiement (remboursement) ou changez l'offre à la main depuis la fiche de l'abonné.`);
-  const r = await markPaid(p.id);
+  const r = await markPaid(p.id, { via: 'admin' });
   if (!r) throw new HttpError(409, 'Ce paiement ne peut pas être validé.');
+  await db.prepare('UPDATE payments SET decided_by = ? WHERE id = ?').run(config.admin.username || 'admin', p.id);
+  await require('../security/audit').record(req, 'payment.manual_confirmed', { userId: p.user_id, target: p.reference, severity: 'high', detail: `confirmé par ${config.admin.username || 'admin'} : ${p.amount_xaf} FCFA, ID ${p.transaction_id || '-'}, payeur ${p.payer_name || '-'}` });
   res.json({ ok: true, status: 'paid', plan: r.planName, planExpires: r.expires });
+});
+
+// Paiement automatique : relire l'état chez Campay (webhook perdu, attente anormale).
+router.post('/payments/:id/recheck', async (req, res) => {
+  const p = await findPayment(req);
+  if (p.mode !== 'push' || !p.provider_ref) throw new HttpError(400, 'Seuls les paiements automatiques peuvent être revérifiés chez Campay.');
+  const status = await cpay.recheck(p, { via: 'admin', req });
+  const fresh = await db.prepare('SELECT * FROM payments WHERE id = ?').get(p.id);
+  await require('../security/audit').record(req, 'payment.admin_recheck', { userId: p.user_id, target: p.reference, detail: `statut après revérification : ${status}` });
+  res.json({ ok: true, status, payment: mapPayment({ ...fresh, user_name: '', user_contact: '' }) });
+});
+// Activation manuelle d'un paiement automatique (webhook perdu, cas litigieux) : motif obligatoire, journal d'audit.
+router.post('/payments/:id/activate', async (req, res) => {
+  const p = await findPayment(req);
+  const cur = await cpay.adminActivate(req, p, (req.body || {}).reason);
+  res.json({ ok: true, status: cur.status });
 });
 
 // Refus : le motif est obligatoire ; l'utilisateur le reçoit dans l'application (et par e-mail s'il a une adresse).
@@ -213,6 +259,8 @@ router.post('/payments/:id/reject', async (req, res) => {
   if (reason.length < 3) throw new HttpError(400, 'Indiquez le motif du refus : il sera communiqué au client.');
   const r = await rejectPayment(p.id, reason);
   if (!r) throw new HttpError(409, 'Ce paiement ne peut plus être refusé.');
+  await db.prepare('UPDATE payments SET decided_by = ? WHERE id = ?').run(config.admin.username || 'admin', p.id);
+  await require('../security/audit').record(req, 'payment.manual_rejected', { userId: p.user_id, target: p.reference, severity: 'warn', detail: `refusé par ${config.admin.username || 'admin'} : ${reason}` });
   res.json({ ok: true, status: 'failed' });
 });
 

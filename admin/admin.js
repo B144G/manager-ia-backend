@@ -83,6 +83,21 @@
   mq.addEventListener('change', () => { $('app').classList.remove('open'); syncInert(); drawTop(); });
   $('scrim').addEventListener('click', closeDrawer);
 
+  // ---------- Bandeau très visible « MODE TEST » (paiement automatique Campay en démonstration : aucun argent réel) ----------
+  let modeLoaded = false;
+  function drawModeBar() {
+    const col = document.querySelector('#app .col'); if (!col) return;
+    let bar = $('modeBar');
+    const c = S.campay;
+    if (!c || !c.enabled || !c.test) { if (bar) bar.remove(); }
+    else {
+      if (!bar) { bar = h('div', { id: 'modeBar', class: 'modebar', role: 'status' }); col.prepend(bar); }
+      bar.replaceChildren(h('b', {}, 'MODE TEST : aucun argent réel'), h('span', {}, ' Paiements Mobile Money en démonstration (' + (c.baseHost || 'Campay') + '). Les offres s’activent, mais rien n’est encaissé.'));
+    }
+    if (!modeLoaded) { modeLoaded = true; api('/campay').then((d) => { S.campay = d; drawModeBar(); }).catch(() => { modeLoaded = false; }); }
+  }
+  A.drawModeBar = drawModeBar;
+
   // ---------- Routage et rendu ----------
   async function render(opts) {
     const keepScroll = opts && opts.keep;
@@ -90,7 +105,7 @@
     for (const f of leaves.splice(0)) { try { f(); } catch (e) { /* nettoyage */ } }
     crumbDetail = '';
     route = parseHash();
-    drawSide(); drawTop();
+    drawSide(); drawTop(); drawModeBar();
     const main = $('main'), y = window.scrollY;
     const page = h('div', {}); main.replaceChildren(page);
     const ctx = { arg: route.arg, stale: () => my !== gen };

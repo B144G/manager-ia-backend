@@ -34,6 +34,8 @@ module.exports = {
   visit: make(MIN, 40, 'Trop de requêtes.'),
   unsubscribe: make(10 * MIN, 30, 'Trop de requêtes. Réessayez dans quelques minutes.'),
   assistantMinute: make(MIN, AI_PER_MINUTE, 'Vous écrivez trop vite. Patientez une minute puis réessayez.'),
-  paymentsInit: make(10 * MIN, 10, 'Trop de demandes de paiement. Réessayez dans quelques minutes.', { shared: true, prefix: 'payinit' }),
+  paymentsInit: make(10 * MIN, Math.max(parseInt(process.env.PAYMENTS_INIT_RATE, 10) || 10, 1), 'Trop de demandes de paiement. Réessayez dans quelques minutes.', { shared: true, prefix: 'payinit' }),
+  paymentsConfirm: make(10 * MIN, Math.max(parseInt(process.env.PAYMENTS_CONFIRM_RATE, 10) || 20, 1), 'Trop de tentatives. Réessayez dans quelques minutes.', { shared: true, prefix: 'payconfirm' }),
+  campayWebhook: make(MIN, Math.max(parseInt(process.env.CAMPAY_WEBHOOK_RATE, 10) || 120, 5), 'Trop de requêtes.', { shared: true, prefix: 'campayhook' }),
   adminLogin: make(15 * MIN, 10, 'Trop de tentatives. Réessayez dans 15 minutes.', { shared: true, prefix: 'adminlogin' }),
 };

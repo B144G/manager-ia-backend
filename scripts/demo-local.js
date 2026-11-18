@@ -16,6 +16,12 @@ const PEOPLE = [
 
 async function main() {
   const pgt = await startTestPg();
+  // DEMO_CAMPAY=1 : démarre aussi le FAUX serveur Campay (scripts/mock-campay.js) et branche le paiement automatique dessus (mode test, aucun argent réel).
+  let mock = null;
+  if (process.env.DEMO_CAMPAY) {
+    mock = await require('./mock-campay').start({ confirmMs: Number(process.env.MOCK_CONFIRM_MS) || 8000 });
+    Object.assign(process.env, { CAMPAY_MODE: 'test', CAMPAY_BASE_URL: mock.url, CAMPAY_APP_USERNAME: mock.creds.username, CAMPAY_APP_PASSWORD: mock.creds.password, CAMPAY_WEBHOOK_KEY: mock.creds.webhookKey, PAYMENTS_INIT_RATE: '500' });
+  }
   for (const k of ['ALLOWED_ORIGINS', 'COOKIE_SAMESITE', 'COOKIE_SECURE', 'WHATSAPP_PHONE_ID', 'WHATSAPP_TOKEN', 'CAMPAY_USERNAME', 'CAMPAY_PASSWORD', 'BUSINESS_FILE', 'KNOWLEDGE_DIR', 'META_APP_ID', 'META_APP_SECRET', 'BREVO_API_KEY', 'SMTP_HOST']) process.env[k] = process.env[k] || '';
   Object.assign(process.env, { NODE_ENV: 'test', JWT_SECRET: 'secret-de-demo-assez-long-123456', DATABASE_URL: pgt.url, SIGNUP_VERIFY: 'off', TRUST_PROXY: '0', ADMIN_USERNAME: process.env.ADMIN_USERNAME || 'admin-demo', ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || 'mot-de-passe-admin-demo', WS_AI_FREE: '500', AI_PER_MINUTE: '500' });
   const { app } = require('../src/server');
@@ -24,6 +30,7 @@ async function main() {
   const port = Number(process.env.PORT) || 3000;
   await new Promise((resolve, reject) => { const s = app.listen(port, '127.0.0.1', resolve); s.on('error', reject); });
   const base = `http://127.0.0.1:${port}`;
+  if (mock) mock.setWebhookUrl(`${base}/api/payments/webhook/campay`);
   const client = () => {
     const jar = {};
     return async (method, url, body) => {
@@ -55,6 +62,12 @@ async function main() {
   console.log('Mot de passe de tous les comptes d\'essai : ' + PASS);
   for (const p of PEOPLE) console.log(`  ${p.role.padEnd(8)} ${p.contact.padEnd(28)} ${p.name}`);
   console.log(`Administration de la plateforme : ${base}/admin  (${process.env.ADMIN_USERNAME} / ${process.env.ADMIN_PASSWORD})`);
+  if (mock) {
+    const c = client(); const email = 'client.paiement@exemple.com';
+    await c('POST', '/api/register', { name: 'Client Paiement (sans abonnement)', contact: email, pass: PASS });
+    console.log(`PAIEMENT CAMPAY (FAUX serveur, MODE TEST) : connectez-vous avec ${email} puis « Abonnement ». Numéros : 677777777 (MTN réussit) · 677777770 (MTN échoue) · 699999999 (Orange réussit) · 699999990 (Orange échoue) · tout autre 6XXXXXXXX reste en attente (expire).`);
+    console.log(`Confirmation simulée après ${Number(process.env.MOCK_CONFIRM_MS) || 8000} ms. Forcer un résultat : curl -X POST ${mock.origin}/__mock/resolve -d '{"reference":"<réf. Campay>","status":"SUCCESSFUL"}'`);
+  }
   if (report.failed.length) { console.log('\nSections en échec :'); for (const f of report.failed) console.log('  - ' + f); }
   console.log('Laissez cette fenêtre ouverte. Ctrl+C pour arrêter (les données disparaissent).');
   console.log('==============================================================');
