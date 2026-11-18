@@ -111,6 +111,48 @@ async function ensureDefaults(org) {
     }
   })();
 }
+// ---------- Un bloc par module de l'espace de travail ----------
+// Les blocs sont déduits de la liste des modules (modules.js) : un module ajouté plus tard (Réunions, etc.) reçoit son bloc au prochain passage, sans autre travail.
+// Droits de départ d'après le niveau minimal du module : un module réservé aux administrateurs donne un bloc que seuls les administrateurs voient.
+const MODULE_LOOK = {
+  dashboard: ['#475569', 'star'], support: ['#0e7490', 'mail'], projects: ['#2563eb', 'target'], budget: ['#0f766e', 'wallet'], stock: ['#3d7a3d', 'box'],
+  crm: ['#c2410c', 'users'], sales: ['#b45309', 'cart'], aifollow: ['#6d28d9', 'chip'], hr: ['#a21caf', 'users'], payroll: ['#9d174d', 'wallet'],
+  fiscal: ['#155e75', 'scale'], marketing: ['#db2777', 'image'], logistics: ['#4d7c0f', 'box'], production: ['#a8641a', 'factory'], construction: ['#b5483a', 'hardhat'],
+  maintenance: ['#52525b', 'ruler'], legal: ['#9f1239', 'scale'], memory: ['#7c3aed', 'book'], agents: ['#4338ca', 'chip'], accounting: ['#1f6f8b', 'wallet'],
+  structure: ['#0369a1', 'building'], processes: ['#2f6f5e', 'shield'], team: ['#0d9488', 'users'], alerts: ['#b91c1c', 'lock'], integrations: ['#37474f', 'chip'],
+  billing: ['#854d0e', 'wallet'], meetings: ['#7c2d12', 'users'],
+};
+const LOOK_FALLBACK = ['#2f6f5e', 'folder'];
+const MODULE_RIGHTS = { member: ['vra', 'vraed', 'vraed'], manager: ['', 'vra', 'vraed'], admin: ['', '', 'vraed'], owner: ['', '', 'vraed'] };
+const moduleSlug = (id) => `mod-${id}`;
+const synced = new Set();
+const pending = new Map();
+/** Un seul balayage à la fois par organisation (deux requêtes simultanées ne créent pas les blocs en double). */
+function ensureModuleBlocks(org) {
+  const key = String(org.id);
+  if (!pending.has(key)) pending.set(key, syncModuleBlocks(org).finally(() => pending.delete(key)));
+  return pending.get(key);
+}
+async function syncModuleBlocks(org) {
+  const { modules } = require('./modules');
+  const key = `${org.id}:${modules.length}`;
+  if (synced.has(key)) return;
+  const have = new Set((await db.prepare("SELECT slug FROM lib_blocks WHERE org_id = ? AND slug LIKE 'mod-%'").all(org.id)).map((b) => b.slug));
+  const missing = modules.filter((m) => m.id !== 'library' && !have.has(moduleSlug(m.id)));
+  if (missing.length) {
+    const now = nowISO();
+    await db.transaction(async () => {
+      let pos = Number((await db.prepare('SELECT COALESCE(MAX(position), 0) AS p FROM lib_blocks WHERE org_id = ?').get(org.id)).p);
+      for (const m of missing) {
+        const [color, icon] = MODULE_LOOK[m.id] || LOOK_FALLBACK;
+        const [mem, mgr, adm] = MODULE_RIGHTS[m.min] || MODULE_RIGHTS.admin;
+        const id = Number((await db.prepare('INSERT INTO lib_blocks (org_id, slug, name, color, icon, personal, builtin, position, created_at) VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?) ON CONFLICT DO NOTHING').run(org.id, moduleSlug(m.id), m.title, color, icon, ++pos, now)).lastInsertRowid);
+        if (id) for (const [role, s] of [['member', mem], ['manager', mgr], ['admin', adm]]) await saveRolePerms(id, role, letters(s));
+      }
+    })();
+  }
+  synced.add(key);
+}
 async function saveRolePerms(blockId, role, p) {
   const v = normPerms(p);
   await db.prepare(`INSERT INTO lib_role_perms (block_id, role, p_view, p_read, p_add, p_edit, p_delete) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -324,7 +366,7 @@ async function checkSpace(req, size) {
 const bodyBuf = (req) => (Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0));
 
 // ---------- Toutes les routes : blocs de départ créés au premier passage ----------
-router.use(async (req, res, next) => { await ensureDefaults(req.org); next(); });
+router.use(async (req, res, next) => { await ensureDefaults(req.org); await ensureModuleBlocks(req.org); next(); });
 
 // ---------- Accueil ----------
 router.get('/overview', async (req, res) => {

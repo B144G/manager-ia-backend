@@ -27,14 +27,14 @@ run('Bibliothèque : blocs protégés, droits, documents, corbeille, journal', a
   await owner('PUT', `${L}/blocks/${formationId}/perms`, { roles: { member: { view: true, read: true }, manager: { view: true, read: true, add: true, edit: true } } });
   r = await owner('GET', `${L}/overview`);
   const ids = Object.fromEntries((r.json.blocks || []).map((b) => [b.slug, b.id]));
-  check('blocs de départ de A (7) + 2 blocs ajoutés, tous avec un slug', r.status === 200 && r.json.blocks.length === 9 && ids.comptabilite && ids.personnel && ids.achats && ids.formation && r.json.blocks.every((b) => b.slug), r.json.blocks && r.json.blocks.map((b) => b.slug));
+  check('blocs de départ de A (7) + 2 blocs ajoutés, tous avec un slug', r.status === 200 && r.json.blocks.length === 9 + require('../src/workspace/modules').modules.filter((m) => m.id !== 'library').length && ids.comptabilite && ids.personnel && ids.achats && ids.formation && r.json.blocks.every((b) => b.slug), r.json.blocks && r.json.blocks.map((b) => b.slug));
   check('bandeau de statistiques présent', ['documents', 'modulesUsed', 'activeProjects', 'volume'].every((k) => typeof r.json.stats[k] === 'number'), r.json.stats);
   check('toutes les cartes démarrent verrouillées', r.json.blocks.every((b) => b.unlocked === false));
   r = await mem('GET', `${L}/overview`);
   const slugsMem = r.json.blocks.map((b) => b.slug);
   check('membre : les blocs sensibles n\'apparaissent pas', !slugsMem.includes('comptabilite') && !slugsMem.includes('rh') && !slugsMem.includes('juridique') && slugsMem.includes('commercial') && slugsMem.includes('personnel'), slugsMem);
   r = await mgr('GET', `${L}/overview`);
-  check('responsable : voit aussi les blocs sensibles', r.json.blocks.length === 9);
+  check('responsable : voit aussi les blocs sensibles', ['comptabilite', 'rh', 'juridique'].every((sl) => r.json.blocks.some((b) => b.slug === sl)), r.json.blocks.map((b) => b.slug));
 
   // ADAPTATION : « Commercial » de A laisse les membres ajouter (vra) ; B : lire seulement. On aligne le réglage de départ sur B avant les contrôles.
   r = await owner('PUT', `${L}/blocks/${ids.commercial}/perms`, { roles: { member: { view: true, read: true, add: false }, manager: { view: true, read: true, add: true, edit: true } } });
