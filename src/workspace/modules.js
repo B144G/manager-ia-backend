@@ -28,6 +28,7 @@ const modules = [
   { id: 'structure', title: 'Organisation', min: 'member', ai: true },
   { id: 'processes', title: 'Fonctionnement', min: 'member', ai: true },
   { id: 'team', title: 'Équipe et antennes', min: 'member', ai: true },
+  { id: 'history', title: "Histoire de l'entreprise", min: 'member', ai: false },
   { id: 'alerts', title: 'Alertes', min: 'member', ai: true },
   { id: 'integrations', title: 'Intégrations', min: 'admin', ai: false },
   { id: 'billing', title: 'Abonnement', min: 'owner', ai: false },

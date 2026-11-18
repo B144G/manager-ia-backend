@@ -256,6 +256,7 @@ orgRouter.use('/aifollow', require('./ai-follow').router);
 orgRouter.use('/hr', require('./hr'));
 orgRouter.use('/accounting', require('./accounting'));
 orgRouter.use('/library', require('./library').router);
+orgRouter.use('/history', require('./history'));
 orgRouter.use('/purchasing', require('./purchasing').router);
 orgRouter.use('/meetings', require('./meetings').router);
 orgRouter.use('/integrations', require('./integrations'));
