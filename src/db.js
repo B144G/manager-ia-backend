@@ -3788,6 +3788,8 @@ const MIGRATIONS = [
 MIGRATIONS.push(...require('./migrations/fusion-achats'), ...require('./migrations/fusion-bibliotheque'), ...require('./migrations/fusion-entrepot'));
 // Projets & Production : PERT, dépendances, recherche opérationnelle, circuits de production (à la fin, append-only).
 MIGRATIONS.push(...require('./migrations/projets-ro'));
+// Production avancée : documents MRP / MPS / capacités / ordonnancement / lean / kanban / 5S / Six Sigma / TPM / qualité.
+MIGRATIONS.push(...require('./migrations/projets-production-avancee'));
 
 db.ready = db.migrate(MIGRATIONS);
 
