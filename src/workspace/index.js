@@ -53,6 +53,7 @@ pub.use('/', require('./digest').pub);
 pub.use('/', require('./followups').pub);
 // Suivi de livraison par lien secret (Transport) : /api/ws/public/track/:token
 pub.use('/', require('./tms').pub);
+pub.use('/', require('./commercial').pub);
 pub.use('/whatsapp', require('./whatsapp'));
 pub.use('/meta', require('./meta-channels'));
 

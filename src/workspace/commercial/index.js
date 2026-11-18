@@ -4,8 +4,9 @@
 const express = require('express');
 const router = express.Router({ mergeParams: true });
 const pub = express.Router();
+pub.use('/', require('./quotes').pub);
 
-for (const f of ['crm360', 'prospect', 'pipeline', 'segments', 'bant']) router.use('/', require('./' + f).router);
+for (const f of ['crm360', 'prospect', 'pipeline', 'segments', 'bant', 'spin', 'forecast', 'quotes']) router.use('/', require('./' + f).router);
 
 const tickAll = async () => { await require('./prospect').tickAll(); };
 module.exports = { router, pub, tickAll };
