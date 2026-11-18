@@ -72,7 +72,7 @@ module.exports = function register(router, h) {
   });
 
   // ---------- Réglages du catalogue et des prêts ----------
-  const SETTING_KEYS = { loanDays: ['loan_days', 1, 365], maxRenewals: ['max_renewals', 0, 20], maxLoans: ['max_loans', 1, 100], finePerDay: ['fine_per_day', 0, 1000000], blockAfterDays: ['block_after_days', 0, 365], blockDays: ['block_days', 1, 365], holdDays: ['hold_days', 1, 60], remindBeforeDays: ['remind_before_days', 0, 30], remindEveryDays: ['remind_every_days', 1, 60] };
+  const SETTING_KEYS = { loanDays: ['loan_days', 1, 365], maxRenewals: ['max_renewals', 0, 20], maxLoans: ['max_loans', 1, 100], finePerDay: ['fine_per_day', 0, 1000000], blockAfterDays: ['block_after_days', 0, 365], blockDays: ['block_days', 1, 365], holdDays: ['hold_days', 1, 60], remindBeforeDays: ['remind_before_days', 0, 30], remindEveryDays: ['remind_every_days', 1, 60], activeMonths: ['active_months', 1, 240] };
   async function catSettings(orgId) {
     await db.prepare('INSERT INTO lib_cat_settings (org_id, updated_at) VALUES (?, ?) ON CONFLICT (org_id) DO NOTHING').run(orgId, nowISO());
     const r = await db.prepare('SELECT * FROM lib_cat_settings WHERE org_id = ?').get(orgId);
@@ -144,7 +144,7 @@ module.exports = function register(router, h) {
     callNumber: r.call_number, inventoryNo: r.inventory_no, location: r.location, condition: r.condition, status: r.status,
     classId: r.class_id ? Number(r.class_id) : null, classCode: r.class_id && cls.get(Number(r.class_id)) ? cls.get(Number(r.class_id)).code : '', classPath: r.class_id ? classPath(cls, r.class_id) : '',
     confidentiality: r.confidentiality, loanable: Boolean(Number(r.loanable)), acquiredAt: r.acquired_at || null, acquiredPrice: Number(r.acquired_price || 0),
-    createdAt: r.created_at, updatedAt: r.updated_at, ...extra,
+    createdAt: r.created_at, updatedAt: r.updated_at, lifecycle: r.lifecycle || 'active', retUntil: r.ret_until || null, sealed: Boolean(r.sealed_hash), ...extra,
   });
   h.recordHelpers = { visibility, visibleRecords, loadRecord, classMap, classPath, subtree, recordView, RECORD_SQL, catSettings, CONF_MIN, parseKeywords };
 
@@ -157,7 +157,7 @@ module.exports = function register(router, h) {
     const classes = [...map.values()].map((c) => {
       const ids = subtree(map, c.id);
       let total = 0; for (const i of ids) total += own.get(i) || 0;
-      return { id: Number(c.id), code: c.code, name: c.name, parentId: c.parent_id ? Number(c.parent_id) : null, position: Number(c.position), retentionMonths: c.retention_months === null ? null : Number(c.retention_months), confidentiality: c.confidentiality || null, own: own.get(Number(c.id)) || 0, total, path: classPath(map, c.id) };
+      return { id: Number(c.id), code: c.code, name: c.name, parentId: c.parent_id ? Number(c.parent_id) : null, position: Number(c.position), retentionMonths: c.retention_months === null ? null : Number(c.retention_months), confidentiality: c.confidentiality || null, finalFate: c.final_fate || 'destroy', own: own.get(Number(c.id)) || 0, total, path: classPath(map, c.id) };
     });
     return { classes, unclassified: recs.filter((r) => !r.class_id).length, templates: Object.entries(TEMPLATES).map(([key, t]) => ({ key, name: t.name, count: t.rows.length })) };
   }
@@ -181,14 +181,16 @@ module.exports = function register(router, h) {
     }
     let conf = cur ? cur.confidentiality : null;
     if (b.confidentiality !== undefined) conf = b.confidentiality === null || b.confidentiality === '' ? null : A.oneOf(b.confidentiality, CONF, undefined, 'Niveau de confidentialité inconnu.');
+    let fate = cur ? (cur.final_fate || 'destroy') : 'destroy';
+    if (b.finalFate !== undefined) fate = A.oneOf(b.finalFate, ['destroy', 'keep'], undefined, 'Sort final inconnu (destruction ou conservation définitive).');
     const position = b.position !== undefined ? Math.max(0, Math.min(100000, Number(b.position) || 0)) : (cur ? Number(cur.position) : map.size * 10);
-    return { code, name, parentId, ret, conf, position };
+    return { code, name, parentId, ret, conf, position, fate };
   }
   router.post('/classes', A.need('admin'), async (req, res) => {
     if ((await classMap(req.org.id)).size >= MAX_CLASSES) throw new HttpError(403, 'Nombre maximal de classes atteint.');
     const v = await readClass(req, req.body, null);
     if (await db.prepare('SELECT 1 FROM lib_classes WHERE org_id = ? AND code = ?').get(req.org.id, v.code)) throw new HttpError(400, 'Ce code de classe existe déjà.');
-    const id = Number((await db.prepare('INSERT INTO lib_classes (org_id, code, name, parent_id, position, retention_months, confidentiality, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, v.code, v.name, v.parentId, v.position, v.ret, v.conf, nowISO())).lastInsertRowid);
+    const id = Number((await db.prepare('INSERT INTO lib_classes (org_id, code, name, parent_id, position, retention_months, confidentiality, final_fate, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, v.code, v.name, v.parentId, v.position, v.ret, v.conf, v.fate, nowISO())).lastInsertRowid);
     await audit(req, 'class_add', null, `${v.code} ${v.name}`);
     res.status(201).json({ id });
   });
@@ -197,7 +199,7 @@ module.exports = function register(router, h) {
     if (!cur) throw new HttpError(404, 'Classe introuvable.');
     const v = await readClass(req, req.body, cur);
     if (v.code !== cur.code && await db.prepare('SELECT 1 FROM lib_classes WHERE org_id = ? AND code = ?').get(req.org.id, v.code)) throw new HttpError(400, 'Ce code de classe existe déjà.');
-    await db.prepare('UPDATE lib_classes SET code = ?, name = ?, parent_id = ?, position = ?, retention_months = ?, confidentiality = ? WHERE id = ?').run(v.code, v.name, v.parentId, v.position, v.ret, v.conf, cur.id);
+    await db.prepare('UPDATE lib_classes SET code = ?, name = ?, parent_id = ?, position = ?, retention_months = ?, confidentiality = ?, final_fate = ? WHERE id = ?').run(v.code, v.name, v.parentId, v.position, v.ret, v.conf, v.fate, cur.id);
     await audit(req, 'class_edit', null, `${v.code} ${v.name}`);
     res.json({ ok: true });
   });
@@ -373,8 +375,10 @@ module.exports = function register(router, h) {
     await audit(req, 'record_add', null, v.title);
     res.status(201).json({ id });
   });
-  router.put('/records/:id', A.need('manager'), async (req, res) => {
+  router.put('/records/:id', async (req, res) => {
     const vis = await visibility(req); const cur = await loadRecord(req, req.params.id, vis);
+    if (!(await h.can(req, cur, 'edit'))) throw new HttpError(403, 'Votre accès ne permet pas cette action.');
+    if (h.recordFrozen) await h.recordFrozen(cur);
     const v = await readRecord(req, req.body, cur);
     if (v.inventoryNo !== cur.inventory_no && await db.prepare('SELECT 1 FROM lib_records WHERE org_id = ? AND inventory_no = ? AND id <> ?').get(req.org.id, v.inventoryNo, cur.id)) throw new HttpError(400, 'Ce numéro d’inventaire existe déjà.');
     const status = (req.body || {}).status !== undefined ? A.oneOf(req.body.status, ['available', 'lost', 'withdrawn'], undefined, 'Statut modifiable : disponible, perdu ou retiré (les prêts et réservations changent le reste).') : cur.status;
@@ -385,10 +389,11 @@ module.exports = function register(router, h) {
     await audit(req, 'record_edit', null, v.title);
     res.json({ ok: true });
   });
-  router.delete('/records/:id', A.need('manager'), async (req, res) => {
+  router.delete('/records/:id', async (req, res) => {
     const cur = await loadRecord(req, req.params.id);
+    if (!(await h.can(req, cur, 'edit')) || !A.can(req, 'manager')) throw new HttpError(403, 'Votre accès ne permet pas cette action.');
     if (['loaned', 'reserved'].includes(cur.status)) throw new HttpError(400, 'Cette ressource est empruntée ou réservée : enregistrez d’abord le retour.');
-    if (h.recordLocked && await h.recordLocked(cur)) throw new HttpError(403, h.recordLocked.msg || 'Cette notice est sous scellé ou gel légal : elle ne se supprime pas.');
+    if (h.recordFrozen) await h.recordFrozen(cur);
     await db.prepare('UPDATE lib_records SET deleted_at = ?, updated_at = ? WHERE id = ?').run(nowISO(), nowISO(), cur.id);
     await audit(req, 'record_delete', null, cur.title);
     res.json({ ok: true });
@@ -439,13 +444,16 @@ module.exports = function register(router, h) {
       for (const q of await db.prepare(`SELECT record_id, COUNT(*) AS c FROM lib_reservations WHERE state IN ('waiting','ready') AND record_id IN (${ph}) GROUP BY record_id`).all(...ids)) queue.set(Number(q.record_id), Number(q.c));
     }
     const names = await h.namesOf([...loans.values()].map((l) => l.user_id));
+    const held = new Set();
+    if (ids.length) for (const x of await db.prepare(`SELECT DISTINCT i.record_id FROM lib_hold_items i JOIN lib_holds hd ON hd.id = i.hold_id WHERE hd.released_at IS NULL AND i.record_id IN (${ids.map(() => '?').join(',')})`).all(...ids)) held.add(Number(x.record_id));
     const now = nowISO();
     return rows.map((r) => {
       const l = loans.get(Number(r.id));
       const mine = l && Number(l.user_id) === Number(req.user.id);
-      return recordView(r, cls, { loan: l ? { due: l.due_at, overdue: l.due_at < now, mine, by: A.can(req, 'manager') || mine ? names[Number(l.user_id)] || '' : '' } : null, queue: queue.get(Number(r.id)) || 0 });
+      return recordView(r, cls, { held: held.has(Number(r.id)), loan: l ? { due: l.due_at, overdue: l.due_at < now, mine, by: A.can(req, 'manager') || mine ? names[Number(l.user_id)] || '' : '' } : null, queue: queue.get(Number(r.id)) || 0 });
     });
   };
+  h.decorateRecords = decorate;
   const FACETS = { type: (r) => r.rtype, class: (r) => (r.class_id ? String(r.class_id) : ''), year: (r) => (r.year ? String(r.year) : ''), language: (r) => r.language || '', status: (r) => r.status, conf: (r) => r.confidentiality };
   router.get('/catalog', async (req, res) => {
     const q = req.query || {}; const vis = await visibility(req); const cls = await classMap(req.org.id);

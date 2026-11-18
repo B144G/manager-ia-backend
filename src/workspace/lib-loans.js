@@ -45,6 +45,7 @@ module.exports = function register(router, h) {
   // ---------- Emprunter ----------
   router.post('/records/:id/loan', async (req, res) => {
     const b = req.body || {}; const rec = await R().loadRecord(req, req.params.id); const st = await R().catSettings(req.org.id);
+    if (!(await h.can(req, rec, 'loan'))) throw new HttpError(403, 'Votre accès ne permet pas cette action.');
     const target = b.userId !== undefined && b.userId !== null && b.userId !== '' ? await A.memberOf(req, b.userId) : req.user.id;
     if (Number(target) !== Number(req.user.id) && !isManager(req)) throw new HttpError(403, 'Seul un responsable peut enregistrer un prêt au nom d’une autre personne.');
     if (!Number(rec.loanable)) throw new HttpError(400, 'Cette ressource ne se prête pas.');
@@ -69,6 +70,7 @@ module.exports = function register(router, h) {
       return lid;
     })();
     await audit(req, 'loan', null, rec.title);
+    await h.consult(req, rec.id, rec.doc_id, 'loan');
     const loan = await db.prepare('SELECT due_at FROM lib_loans WHERE id = ?').get(id);
     res.status(201).json({ id, dueAt: loan.due_at });
   });
@@ -127,6 +129,7 @@ module.exports = function register(router, h) {
   // ---------- Réservations ----------
   router.post('/records/:id/reserve', async (req, res) => {
     const rec = await R().loadRecord(req, req.params.id); const b = req.body || {};
+    if (!(await h.can(req, rec, 'loan'))) throw new HttpError(403, 'Votre accès ne permet pas cette action.');
     const target = b.userId !== undefined && b.userId !== null && b.userId !== '' ? await A.memberOf(req, b.userId) : req.user.id;
     if (Number(target) !== Number(req.user.id) && !isManager(req)) throw new HttpError(403, 'Seul un responsable peut réserver au nom d’une autre personne.');
     if (!Number(rec.loanable) || ['lost', 'withdrawn'].includes(rec.status)) throw new HttpError(400, 'Cette ressource ne peut pas être réservée.');

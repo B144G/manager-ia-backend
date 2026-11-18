@@ -718,6 +718,7 @@ router.post('/blocks/:id/docs', upLimit, rawBody, async (req, res) => {
 
 router.get('/docs/:id', async (req, res) => {
   const { d, b, perms } = await openDoc(req, req.params.id, 'read');
+  await h.docAccess(req, d, 'view');
   const versions = await db.prepare('SELECT n, name, size, note, created_by, created_at, label, bump FROM lib_versions WHERE doc_id = ? ORDER BY n DESC').all(d.id);
   const names = await namesOf([d.created_by, d.updated_by, ...versions.map((v) => v.created_by)]);
   const [view] = await docViews(req, [d]);
@@ -732,6 +733,7 @@ router.get('/docs/:id', async (req, res) => {
 });
 router.put('/docs/:id', async (req, res) => {
   const { d, b } = await openDoc(req, req.params.id, 'edit');
+  await h.checkDocFrozen(req, d);
   const body = req.body || {};
   const ext = extOf(d.name);
   let name = d.name;
@@ -751,6 +753,7 @@ router.put('/docs/:id', async (req, res) => {
 });
 router.delete('/docs/:id', async (req, res) => {
   const { d, b } = await openDoc(req, req.params.id, 'delete');
+  await h.checkDocFrozen(req, d);
   await db.prepare('UPDATE lib_docs SET deleted_at = ?, deleted_by = ? WHERE id = ?').run(nowISO(), req.user.id, d.id);
   await audit(req, 'trash', b, d.name);
   res.json({ ok: true });
@@ -765,6 +768,7 @@ router.post('/docs/:id/restore', async (req, res) => {
 });
 router.delete('/docs/:id/purge', async (req, res) => {
   const { d, b } = await openDoc(req, req.params.id, 'delete', { deleted: true });
+  await h.checkDocFrozen(req, d);
   await db.prepare('DELETE FROM lib_docs WHERE id = ?').run(d.id);
   await audit(req, 'purge', b, d.name);
   res.json({ ok: true });
@@ -788,6 +792,7 @@ async function versionOf(d, v) {
 const dispo = (kind, name) => `${kind}; filename="${name.replace(/[^A-Za-z0-9._ -]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 router.get('/docs/:id/download', dlLimit, async (req, res) => {
   const { d, b } = await openDoc(req, req.params.id, 'read');
+  await h.docAccess(req, d, 'download');
   const v = await versionOf(d, req.query.version);
   const data = X.unseal(v.data);
   if (!data) throw new HttpError(500, 'Fichier illisible.');
@@ -797,6 +802,7 @@ router.get('/docs/:id/download', dlLimit, async (req, res) => {
 });
 router.get('/docs/:id/preview', dlLimit, async (req, res) => {
   const { d, b } = await openDoc(req, req.params.id, 'read');
+  await h.docAccess(req, d, 'preview');
   const v = await versionOf(d, req.query.version);
   const pdf = v.mime === 'application/pdf';
   if (!pdf && !/^image\/(jpeg|png|webp|gif)$/.test(v.mime)) throw new HttpError(400, 'Aperçu indisponible pour ce type de fichier : téléchargez-le.');
@@ -814,6 +820,7 @@ router.get('/docs/:id/preview', dlLimit, async (req, res) => {
 // ---------- Versions ----------
 router.post('/docs/:id/versions', upLimit, rawBody, async (req, res) => {
   const { d, b } = await openDoc(req, req.params.id, 'edit');
+  await h.checkDocFrozen(req, d);
   const buf = bodyBuf(req);
   if (!buf.length) throw new HttpError(400, 'Fichier non reconnu : formats acceptés : PDF, images, documents Office ou OpenDocument, texte, audio et vidéo courants.');
   const t = detect(buf, req.query.name || d.name);
@@ -850,6 +857,7 @@ async function addVersion(req, d, v) {
 }
 router.post('/docs/:id/versions/:n/restore', async (req, res) => {
   const { d, b } = await openDoc(req, req.params.id, 'edit');
+  await h.checkDocFrozen(req, d);
   const v = await versionOf(d, req.params.n);
   if (Number(v.n) === Number(d.version)) return res.json({ ok: true, version: Number(d.version) });
   await h.checkLock(req, d);
@@ -862,6 +870,7 @@ router.post('/docs/:id/versions/:n/restore', async (req, res) => {
 });
 router.delete('/docs/:id/versions/:n', async (req, res) => {
   const { d, b } = await openDoc(req, req.params.id, 'delete');
+  await h.checkDocFrozen(req, d);
   const v = await versionOf(d, req.params.n);
   if (Number(v.n) === Number(d.version)) throw new HttpError(400, 'La version actuelle ne se supprime pas : supprimez le document, ou rétablissez une autre version.');
   await db.prepare('DELETE FROM lib_versions WHERE id = ?').run(v.id);
@@ -956,6 +965,7 @@ async function cleanup(orgId) {
     await db.prepare('DELETE FROM lib_attempts WHERE window_start < ? AND (locked_until IS NULL OR locked_until < ?)').run(new Date(Date.now() - 86400000).toISOString(), now);
   }
   if (!orgId && h.loanMaintenance) await h.loanMaintenance().catch(() => {}); // rappels de retour, réservations expirées
+  if (!orgId && h.archiveMaintenance) await h.archiveMaintenance().catch(() => {}); // cycle de vie des notices, échéances de conservation
   const cut = new Date(Date.now() - TRASH_DAYS * 86400000).toISOString();
   const old = await db.prepare('SELECT d.id, d.org_id, d.name, d.block_id, b.name AS bname FROM lib_docs d JOIN lib_blocks b ON b.id = d.block_id WHERE d.deleted_at IS NOT NULL AND d.deleted_at <= ?' + (orgId ? ' AND d.org_id = ?' : '') + ' LIMIT 1000').all(...(orgId ? [cut, orgId] : [cut]));
   for (const d of old) {
@@ -970,5 +980,9 @@ const h = { audit, openDoc, openBlock, unlockedBlocks, namesOf, versionOf, label
 require('./lib-catalog')(router, h);
 require('./lib-loans')(router, h);
 require('./lib-versions')(router, h);
+require('./lib-access')(router, h);
+require('./lib-archive')(router, h);
+require('./lib-search')(router, h);
+require('./lib-inventory')(router, h);
 
 module.exports = { router, cleanup, detect, normPerms, lockedFor, recordFail, helpers: h };

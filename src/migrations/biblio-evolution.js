@@ -135,4 +135,138 @@ module.exports = [
   ALTER TABLE lib_versions ADD COLUMN IF NOT EXISTS bump TEXT NOT NULL DEFAULT 'minor';
   UPDATE lib_versions SET label = '1.' || (n - 1) WHERE label = '';
   `,
+
+  // ----- Étape 2 : droits d'accès (par classe / par notice), délégations, journal de consultation -----
+  `
+  CREATE TABLE IF NOT EXISTS lib_acl (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    scope TEXT NOT NULL,
+    scope_id BIGINT NOT NULL,
+    subject_type TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    effect TEXT NOT NULL DEFAULT 'allow',
+    p_read BIGINT NOT NULL DEFAULT 0,
+    p_download BIGINT NOT NULL DEFAULT 0,
+    p_edit BIGINT NOT NULL DEFAULT 0,
+    p_loan BIGINT NOT NULL DEFAULT 0,
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_lib_acl_scope ON lib_acl(org_id, scope, scope_id);
+  CREATE TABLE IF NOT EXISTS lib_delegations (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    from_user BIGINT NOT NULL,
+    to_user BIGINT NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'record',
+    scope_id BIGINT,
+    p_read BIGINT NOT NULL DEFAULT 1,
+    p_download BIGINT NOT NULL DEFAULT 0,
+    p_edit BIGINT NOT NULL DEFAULT 0,
+    p_loan BIGINT NOT NULL DEFAULT 0,
+    until TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    revoked_at TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_lib_deleg ON lib_delegations(org_id, to_user);
+  CREATE TABLE IF NOT EXISTS lib_consult (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    record_id BIGINT,
+    doc_id BIGINT,
+    user_id BIGINT NOT NULL,
+    action TEXT NOT NULL,
+    at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_lib_consult_rec ON lib_consult(org_id, record_id);
+  CREATE INDEX IF NOT EXISTS idx_lib_consult_at ON lib_consult(org_id, at);
+  `,
+  // ----- Étape 2 : archivage (cycle de vie, conservation, scellés, gels légaux, certificats de destruction) -----
+  `
+  ALTER TABLE lib_classes ADD COLUMN IF NOT EXISTS final_fate TEXT NOT NULL DEFAULT 'destroy';
+  ALTER TABLE lib_cat_settings ADD COLUMN IF NOT EXISTS active_months BIGINT NOT NULL DEFAULT 12;
+  ALTER TABLE lib_records ADD COLUMN IF NOT EXISTS lifecycle TEXT NOT NULL DEFAULT 'active';
+  ALTER TABLE lib_records ADD COLUMN IF NOT EXISTS lifecycle_at TEXT;
+  ALTER TABLE lib_records ADD COLUMN IF NOT EXISTS ret_start TEXT;
+  ALTER TABLE lib_records ADD COLUMN IF NOT EXISTS ret_months BIGINT;
+  ALTER TABLE lib_records ADD COLUMN IF NOT EXISTS ret_until TEXT;
+  ALTER TABLE lib_records ADD COLUMN IF NOT EXISTS sealed_hash TEXT;
+  ALTER TABLE lib_records ADD COLUMN IF NOT EXISTS sealed_at TEXT;
+  ALTER TABLE lib_records ADD COLUMN IF NOT EXISTS sealed_by BIGINT;
+  ALTER TABLE lib_records ADD COLUMN IF NOT EXISTS destroy_ok_by BIGINT;
+  ALTER TABLE lib_records ADD COLUMN IF NOT EXISTS destroy_ok_at TEXT;
+  ALTER TABLE lib_records ADD COLUMN IF NOT EXISTS lost_at TEXT;
+  CREATE TABLE IF NOT EXISTS lib_holds (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    released_at TEXT,
+    released_by BIGINT
+  );
+  CREATE TABLE IF NOT EXISTS lib_hold_items (
+    hold_id BIGINT NOT NULL REFERENCES lib_holds(id) ON DELETE CASCADE,
+    record_id BIGINT NOT NULL REFERENCES lib_records(id) ON DELETE CASCADE,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    PRIMARY KEY (hold_id, record_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_lib_hold_items_rec ON lib_hold_items(record_id);
+  CREATE TABLE IF NOT EXISTS lib_destructions (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    cert_no TEXT NOT NULL,
+    record_id BIGINT,
+    title TEXT NOT NULL,
+    snapshot TEXT NOT NULL,
+    method TEXT NOT NULL DEFAULT '',
+    validated_by BIGINT,
+    destroyed_by BIGINT,
+    destroyed_at TEXT NOT NULL,
+    prev_hash TEXT NOT NULL DEFAULT '',
+    hash TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_lib_destr_no ON lib_destructions(org_id, cert_no);
+  `,
+  // ----- Étape 2 : texte intégral des documents (recherche) et inventaires (récolements) -----
+  `
+  CREATE TABLE IF NOT EXISTS lib_doc_text (
+    doc_id BIGINT PRIMARY KEY REFERENCES lib_docs(id) ON DELETE CASCADE,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    n BIGINT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    indexed_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS lib_inventories (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    scope_type TEXT NOT NULL DEFAULT 'all',
+    scope_value TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    started_by BIGINT,
+    started_at TEXT NOT NULL,
+    closed_by BIGINT,
+    closed_at TEXT,
+    note TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX IF NOT EXISTS idx_lib_inv_org ON lib_inventories(org_id, status);
+  CREATE TABLE IF NOT EXISTS lib_inventory_lines (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    inventory_id BIGINT NOT NULL REFERENCES lib_inventories(id) ON DELETE CASCADE,
+    record_id BIGINT REFERENCES lib_records(id) ON DELETE CASCADE,
+    unknown_code TEXT NOT NULL DEFAULT '',
+    expected BIGINT NOT NULL DEFAULT 1,
+    expected_location TEXT NOT NULL DEFAULT '',
+    found_location TEXT,
+    scanned_at TEXT,
+    scanned_by BIGINT
+  );
+  CREATE INDEX IF NOT EXISTS idx_lib_invl_inv ON lib_inventory_lines(inventory_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_lib_invl_rec ON lib_inventory_lines(inventory_id, record_id) WHERE record_id IS NOT NULL;
+  `,
 ];
