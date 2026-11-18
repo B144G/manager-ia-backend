@@ -8,7 +8,7 @@ const addMonths = (d, n) => { const x = new Date(d + 'T00:00:00Z'); const day = 
 
 const day = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
 
-run('Administration', async ({ check, owner, mgr, mem, other, org2, O, ws, dbx }) => {
+run('Administration', async ({ check, owner, mgr, mem, other, org, org2, O, ws, dbx }) => {
   const ADM = `${O}/administration`; let r;
   const members = (await owner('GET', `${O}/members`)).json.members;
   const uid = (name) => members.find((m) => m.name === name).userId;
@@ -393,4 +393,189 @@ run('Administration', async ({ check, owner, mgr, mem, other, org2, O, ws, dbx }
   r = await owner('GET', `${ADM}/control/maturity`);
   check('la maturité progresse avec la mise en place', r.json.score > m0.score && r.json.components.find((c) => c.key === 'coverage').score === 50 && r.json.components.find((c) => c.key === 'execution').score === 100, [m0.score, r.json.score]);
   check('niveau de maturité nommé', ['Initial', 'Répétable', 'Défini', 'Maîtrisé', 'Optimisé'].includes(r.json.levelLabel), r.json.levelLabel);
+
+  // ---------- 6. Moyens généraux ----------
+  const MG = `${ADM}/means`;
+  r = await mem('POST', `${MG}/assets`, { name: 'Ordinateur' });
+  check('un membre ne crée pas de bien', r.status === 403, r.status);
+  const pc = (await mgr('POST', `${MG}/assets`, { name: 'Ordinateur portable', category: 'it', cost: 600000, purchaseDate: day(-100), serial: 'SN-123' })).json.id;
+  const car = (await mgr('POST', `${MG}/assets`, { name: 'Pick-up Toyota', category: 'vehicle', plate: 'LT-123-AB', mileage: 45000, cost: 9000000 })).json.id;
+  r = await mem('GET', `${MG}/assets`);
+  check('inventaire : 2 biens, valeur 9 600 000, codes automatiques', r.json.summary.total === 2 && r.json.summary.value === 9600000 && r.json.assets.some((a) => a.code === 'BIEN-0001'), r.json.summary);
+  r = await mem('GET', `${MG}/assets?category=vehicle`);
+  check('filtre par catégorie : le véhicule et sa plaque', r.json.assets.length === 1 && r.json.assets[0].plate === 'LT-123-AB', r.json.assets);
+  await mgr('POST', `${MG}/assets/${pc}/assign`, { userId: paul, note: 'Poste de travail' });
+  await mgr('POST', `${MG}/assets/${pc}/assign`, { userId: marc });
+  r = await mem('GET', `${MG}/assets/${pc}`);
+  check('attribution : historique de 2 attributions, la première est close', r.json.history.length === 2 && r.json.history[0].user === 'Marc' && r.json.history[0].to === null && r.json.history[1].to !== null && r.json.asset.assignee === 'Marc', r.json.history);
+  r = await mgr('POST', `${MG}/assets/${pc}/assign`, {});
+  check('attribution sans personne ni service refusée', r.status === 400, r.json);
+  r = await mgr('PUT', `${MG}/assets/${car}`, { status: 'retired' });
+  r = await mgr('POST', `${MG}/assets/${car}/assign`, { userId: paul });
+  check('un bien réformé ne s’attribue pas', r.status === 409, r.status);
+  await mgr('PUT', `${MG}/assets/${car}`, { status: 'in_use' });
+  // lien avec les immobilisations de la comptabilité
+  r = await mgr('PUT', `${MG}/assets/${pc}`, { fixedAssetId: 1 });
+  check('le lien comptable est réservé aux administrateurs', r.status === 403, r.status);
+  const fa = (await dbx.prepare("INSERT INTO fixed_assets (org_id, label, category, acquired_on, start_month, cost, life_months, asset_account, amort_account, created_at) VALUES (?, 'Ordinateur portable', 'equipment', ?, ?, 600000, 36, '2444', '2844', ?) RETURNING id").get(org, day(-100), day(-100).slice(0, 7), new Date().toISOString())).id;
+  r = await owner('GET', `${MG}/assets/linkable`);
+  check('immobilisations disponibles à relier : 1', r.json.available === true && r.json.assets.length === 1 && Number(r.json.assets[0].id) === Number(fa), r.json);
+  r = await owner('PUT', `${MG}/assets/${pc}`, { fixedAssetId: Number(fa) });
+  check('bien relié à l’immobilisation comptable', r.status === 200, r.json);
+  r = await owner('PUT', `${MG}/assets/${car}`, { fixedAssetId: Number(fa) });
+  check('une immobilisation ne se relie qu’à un bien', r.status === 409, r.status);
+  r = await owner('PUT', `${MG}/assets/${car}`, { fixedAssetId: 987654 });
+  check('immobilisation inconnue refusée', r.status === 400, r.status);
+  check('une fois reliée, elle n’est plus proposée', (await owner('GET', `${MG}/assets/linkable`)).json.assets.length === 0, 'x');
+  // échéances
+  const dl1 = (await mgr('POST', `${MG}/deadlines`, { assetId: car, kind: 'insurance', title: 'Assurance du pick-up', dueDate: day(10), recurrenceMonths: 12, cost: 450000 })).json.id;
+  await mgr('POST', `${MG}/deadlines`, { assetId: car, kind: 'inspection', title: 'Contrôle technique', dueDate: day(-5) });
+  await mgr('POST', `${MG}/deadlines`, { assetId: pc, kind: 'maintenance', title: 'Nettoyage', dueDate: day(200) });
+  r = await mem('GET', `${MG}/deadlines`);
+  check('échéances : 3 ouvertes, 1 dépassée, 1 proche (30 jours)', r.json.summary.open === 3 && r.json.summary.overdue === 1 && r.json.summary.soon === 1, r.json.summary);
+  r = await mgr('POST', `${MG}/deadlines/${dl1}/done`, { vendor: 'Assureur', cost: 460000 });
+  check('échéance récurrente accomplie : la suivante est recalculée à +12 mois', r.status === 200 && r.json.next === addMonths(day(10), 12), r.json);
+  r = await mgr('GET', `${MG}/costs`);
+  check('coût de l’assurance enregistré (achat 600 000 + 460 000 + 9 000 000 non daté)', r.json.total === 1060000 && r.json.byKind.some((k) => k.key === 'insurance' && k.amount === 460000), r.json);
+  r = await mem('GET', `${MG}/costs`);
+  check('les coûts sont réservés aux gestionnaires', r.status === 403, r.status);
+  // salles
+  const room = (await mgr('POST', `${MG}/places`, { name: 'Salle de réunion', kind: 'room', capacity: 12 })).json.id;
+  await mgr('POST', `${MG}/places`, { name: 'Siège', kind: 'premises', monthlyRent: 350000, surface: 120 });
+  r = await mem('POST', `${MG}/bookings`, { placeId: room, title: 'Point équipe', startAt: `${day(2)}T09:00`, endAt: `${day(2)}T10:00` });
+  check('réservation de salle', r.status === 201, r.json);
+  const bk = r.json.id;
+  r = await mgr('POST', `${MG}/bookings`, { placeId: room, title: 'Client', startAt: `${day(2)}T09:30`, endAt: `${day(2)}T10:30` });
+  check('chevauchement refusé (409) avec le créneau déjà pris', r.status === 409 && /Point équipe/.test(r.json.error), r.json);
+  r = await mgr('POST', `${MG}/bookings`, { placeId: room, title: 'Client', startAt: `${day(2)}T10:00`, endAt: `${day(2)}T11:00` });
+  check('créneau qui suit immédiatement accepté', r.status === 201, r.json);
+  r = await mgr('POST', `${MG}/bookings`, { placeId: room, title: 'Erreur', startAt: `${day(2)}T12:00`, endAt: `${day(2)}T11:00` });
+  check('fin avant début refusée', r.status === 400, r.json);
+  r = await mgr('DELETE', `${MG}/bookings/${bk}`);
+  check('un gestionnaire peut annuler la réservation d’un autre', r.status === 200, r.status);
+  r = await mem('GET', `${MG}/places`);
+  check('locaux : loyer mensuel total 350 000', r.json.totalRent === 350000 && r.json.places.length === 2, r.json.totalRent);
+  // fournitures et demandes
+  const papier = (await mgr('POST', `${MG}/supplies`, { name: 'Ramettes de papier', unit: 'ramette', quantity: 10, minQuantity: 5, unitCost: 3000 })).json.id;
+  r = await mgr('POST', `${MG}/supplies/${papier}/move`, { delta: -6 });
+  check('sortie de 6 : reste 4, sous le seuil d’alerte', r.json.quantity === 4 && r.json.low === true, r.json);
+  r = await mgr('POST', `${MG}/supplies/${papier}/move`, { delta: -10 });
+  check('sortie supérieure au stock refusée', r.status === 400, r.json);
+  r = await mem('POST', `${MG}/requests`, { kind: 'supply', title: 'Papier pour le bureau', quantity: 3 });
+  const mr = r.json.id;
+  check('demande de moyens déposée par un membre', r.status === 201, r.json);
+  check('le membre ne voit que ses demandes, le gestionnaire toutes', (await mem('GET', `${MG}/requests`)).json.requests.length === 1 && (await mgr('GET', `${MG}/requests`)).json.summary.new === 1, 'x');
+  r = await mem('POST', `${MG}/requests/${mr}/decide`, { status: 'approved' });
+  check('un membre ne traite pas les demandes', r.status === 403, r.status);
+  r = await mgr('POST', `${MG}/requests/${mr}/decide`, { status: 'rejected' });
+  check('un refus exige un motif', r.status === 400, r.json);
+  r = await mgr('POST', `${MG}/requests/${mr}/decide`, { status: 'fulfilled', supplyId: papier });
+  check('demande satisfaite : le stock de papier passe de 4 à 1', r.status === 200 && (await mgr('GET', `${MG}/supplies`)).json.supplies[0].quantity === 1, r.json);
+  r = await mgr('POST', `${MG}/requests/${mr}/decide`, { status: 'approved' });
+  check('une demande close ne se rouvre pas', r.status === 409, r.status);
+  r = await other('GET', `${ws(org2)}/administration/means/assets/${pc}`);
+  check('isolation : l’autre organisation ne voit pas le bien', r.status === 404, r.status);
+
+  // ---------- 7. Contrats et conformité ----------
+  const CT = `${ADM}/contracts`;
+  r = await mem('GET', `${CT}/contracts`);
+  check('le registre des contrats est réservé aux responsables et plus', r.status === 403, r.status);
+  r = await mem('POST', `${CT}/contracts`, { title: 'X' });
+  check('un membre ne crée pas de contrat', r.status === 403, r.status);
+  r = await mgr('POST', `${CT}/contracts`, { title: 'Daté à l’envers', startDate: day(10), endDate: day(1) });
+  check('fin avant début refusée', r.status === 400, r.json);
+  const cA = (await mgr('POST', `${CT}/contracts`, { kind: 'client', title: 'Contrat client Kamga', counterparty: 'Kamga SARL', startDate: day(-325), endDate: day(40), noticeDays: 30, tacitRenewal: true, renewalMonths: 12, amount: 2400000, periodicity: 'yearly' })).json;
+  const cB = (await mgr('POST', `${CT}/contracts`, { kind: 'supplier', title: 'Fournisseur ancien', endDate: day(-400), tacitRenewal: true, renewalMonths: 12, noticeDays: 30, amount: 100000, periodicity: 'monthly' })).json;
+  const cC = (await mgr('POST', `${CT}/contracts`, { kind: 'service', title: 'Maintenance expirée', endDate: day(-10) })).json;
+  const cD = (await mgr('POST', `${CT}/contracts`, { kind: 'lease', title: 'Bail du dépôt', endDate: day(20), tacitRenewal: true, noticeDays: 60, amount: 150000, periodicity: 'monthly' })).json;
+  await mgr('POST', `${CT}/contracts`, { kind: 'insurance', title: 'Assurance locaux', endDate: day(200), noticeDays: 30 });
+  check('références automatiques CTR-0001…', cA.ref === 'CTR-0001' && cD.ref === 'CTR-0004', [cA.ref, cD.ref]);
+  r = await mgr('GET', `${CT}/contracts/alerts`);
+  const by = (t) => r.json.alerts.find((a) => a.title === t);
+  check('alertes : préavis proche, expiré, préavis dépassé (3 sur 5 contrats)', r.json.count === 3 && by('Contrat client Kamga').alert === 'notice_soon' && by('Maintenance expirée').alert === 'expired' && by('Bail du dépôt').alert === 'notice_missed', r.json.alerts.map((a) => [a.title, a.alert]));
+  check('préavis : dernier jour de résiliation = fin − 30 jours (dans 10 jours)', by('Contrat client Kamga').noticeDeadline === day(10) && by('Contrat client Kamga').daysToNotice === 10, by('Contrat client Kamga'));
+  r = await mgr('GET', `${CT}/contracts`);
+  const old = r.json.contracts.find((c) => c.title === 'Fournisseur ancien');
+  check('reconduction tacite : un contrat échu il y a 400 jours est prolongé de 2 périodes de 12 mois', old.renewals === 2 && old.effectiveEnd > day(300) && old.state === 'ok', [old.renewals, old.effectiveEnd, old.state]);
+  check('valeur annuelle des contrats actifs : 2 400 000 + 1 200 000 + 1 800 000 = 5 400 000', r.json.summary.annualValue === 5400000 && r.json.summary.active === 5 && r.json.summary.alerts === 3, r.json.summary);
+  check('échéances par mois : 12 mois sur 12', r.json.byMonth.length === 12, r.json.byMonth.length);
+  const gedDoc = (await mgr('POST', `${ADM}/docs`, { title: 'Contrat Kamga signé' })).json.id;
+  r = await mgr('PUT', `${CT}/contracts/${cA.id}`, { docIds: [gedDoc] });
+  r = await mgr('GET', `${CT}/contracts/${cA.id}`);
+  check('pièce jointe reliée à la GED', r.json.contract.docs.length === 1 && r.json.contract.docs[0].title === 'Contrat Kamga signé', r.json.contract.docs);
+  r = await mgr('PUT', `${CT}/contracts/${cA.id}`, { docIds: [gedDoc, 99999] });
+  check('pièce inconnue refusée', r.status === 400, r.json);
+  r = await mgr('POST', `${CT}/contracts/${cC.id}/renew`, {});
+  check('renouvellement explicite : fin à +12 mois et l’alerte « expiré » disparaît', r.status === 200 && (await mgr('GET', `${CT}/contracts/alerts`)).json.count === 2, r.json);
+  r = await mgr('POST', `${CT}/contracts/${cC.id}/renew`, { endDate: day(-100) });
+  check('renouveler vers une date antérieure refusé', r.status === 400, r.json);
+  await mgr('POST', `${CT}/contracts/${cD.id}/terminate`, { reason: 'Déménagement' });
+  check('contrat résilié : plus d’alerte', (await mgr('GET', `${CT}/contracts/alerts`)).json.count === 1, 'x');
+  await dbx.prepare("INSERT INTO legal_contracts (org_id, type, title, parties, amount, end_date, tacit, notice_days, status, created_by, created_at) VALUES (?, 'lease', 'Bail repris du Juridique', 'A / B', 500000, ?, 0, 0, 'active', ?, ?)").run(org, day(300), awa, new Date().toISOString());
+  r = await mgr('POST', `${CT}/contracts/import-legal`);
+  check('reprise des contrats du module Juridique : 1', r.json.imported === 1, r.json);
+  r = await mgr('POST', `${CT}/contracts/import-legal`);
+  check('…sans doublon à la seconde reprise', r.json.imported === 0, r.json);
+  r = await other('GET', `${ws(org2)}/administration/contracts/contracts/${cA.id}`);
+  check('isolation : l’autre organisation ne voit pas le contrat', r.status === 404 || r.status === 403, r.status);
+  // alertes envoyées une seule fois
+  const nbNotices = async () => Number((await dbx.prepare("SELECT COUNT(*) c FROM notices WHERE org_id = ? AND kind = 'administration'").get(org)).c);
+  await mgr('POST', `${ADM}/report/sweep`); const n1 = await nbNotices();
+  await mgr('POST', `${ADM}/report/sweep`); const n2 = await nbNotices();
+  check('les alertes d’échéance sont envoyées une seule fois', n1 > 0 && n1 === n2, [n1, n2]);
+  // conformité
+  r = await mgr('GET', `${CT}/compliance/suggestions`);
+  check('12 suggestions génériques de conformité (aucune référence de loi)', r.json.suggestions.length === 12 && !r.json.suggestions.some((x) => /article|loi n|décret/i.test(x.title + x.note)), r.json.suggestions.length);
+  r = await mgr('POST', `${CT}/compliance/suggestions/add`, { indexes: [0, 3, 4] });
+  check('3 suggestions ajoutées au registre', r.json.added === 3, r.json);
+  r = await mgr('POST', `${CT}/compliance/suggestions/add`, { indexes: [0, 3, 4] });
+  check('…sans doublon', r.json.added === 0, r.json);
+  r = await mgr('GET', `${CT}/compliance`);
+  check('suggestions sans date : signalées « date à renseigner »', r.json.summary.noDate === 3 && r.json.summary.overdue === 0, r.json.summary);
+  const co = (await mgr('POST', `${CT}/compliance`, { title: 'Déclaration trimestrielle', category: 'declaration', authority: 'Administration X', referenceText: 'Réf. à remplir par l’entreprise', frequencyMonths: 3, dueDate: day(-5), responsibleId: paul })).json.id;
+  const co2 = (await mgr('POST', `${CT}/compliance`, { title: 'Registre à jour', category: 'register', dueDate: day(12) })).json.id;
+  r = await mgr('GET', `${CT}/compliance`);
+  check('conformité : 1 en retard, 1 à venir (30 jours)', r.json.summary.overdue === 1 && r.json.summary.soon === 1 && r.json.items.find((i) => i.id === co).overdue === true, r.json.summary);
+  r = await mgr('POST', `${CT}/compliance/${co}/done`, {});
+  check('accomplir exige une preuve', r.status === 400, r.json);
+  r = await mem('POST', `${CT}/compliance/${co2}/done`, { proof: 'ok' });
+  check('seul le responsable (ou un gestionnaire) déclare accompli', r.status === 403, r.status);
+  r = await mem('POST', `${CT}/compliance/${co}/done`, { proof: 'Récépissé n° 123', doneOn: day(1) });
+  check('une date d’accomplissement future est refusée', r.status === 400, r.json);
+  r = await mem('POST', `${CT}/compliance/${co}/done`, { proof: 'Récépissé n° 123' });
+  check('le responsable (membre) l’accomplit : prochaine échéance +3 mois depuis la date prévue', r.status === 200 && r.json.next === addMonths(day(-5), 3), r.json);
+  r = await mgr('GET', `${CT}/compliance/${co}/history`);
+  check('historique : accomplie en retard, avec sa preuve', r.json.history.length === 1 && r.json.history[0].late === true && r.json.history[0].proof === 'Récépissé n° 123', r.json);
+  r = await mgr('POST', `${CT}/compliance/${co2}/done`, { proof: 'Registre signé' });
+  check('obligation ponctuelle accomplie : statut « done »', r.json.next === null && (await mgr('GET', `${CT}/compliance?status=done`)).json.items.length === 1, r.json);
+
+  // ---------- 8. Reporting ----------
+  r = await mem('GET', `${ADM}/report/dashboard`);
+  check('le tableau de bord est réservé aux responsables et plus', r.status === 403, r.status);
+  r = await mgr('GET', `${ADM}/report/dashboard`);
+  const kp = r.json.kpis;
+  const confl = (await mgr('GET', `${ADM}/control/sod/conflicts`)).json.summary.open;
+  const alerts = (await mgr('GET', `${CT}/contracts/alerts`)).json.count;
+  check('tableau de bord : 16 indicateurs, cohérents avec les modules', Object.keys(kp).length === 16 && kp.sodConflicts === confl && kp.contractAlerts === alerts && kp.meansRequests === 0 && kp.complianceLate === 0, kp);
+  check('à traiter : trié par gravité décroissante', r.json.todo.length > 0 && r.json.todo.every((t, i, a) => !i || a[i - 1].severity >= t.severity), r.json.todo);
+  check('procédure à réviser, document à archiver, conflits listés', r.json.lists.conflicts.length === confl && r.json.charts.maturity.length === 6 && r.json.charts.sopsByStatus.length === 4, r.json.lists.conflicts);
+  const hasMtg = !!(await dbx.prepare("SELECT to_regclass('public.mtg_meetings') AS t").get()).t;
+  const hasRh = !!(await dbx.prepare("SELECT to_regclass('public.rh_goals') AS t").get()).t;
+  check('lien Réunions : lu seulement si le module est présent (sinon lien vide)', r.json.links.meetings.available === hasMtg && Array.isArray(r.json.links.meetings.upcoming), r.json.links.meetings);
+  check('objectifs : source RH talents si présent, sinon suivi administratif', r.json.links.objectives.source === (hasRh ? 'rh' : 'adm'), r.json.links.objectives);
+  r = await owner('POST', `${ADM}/report/goals`, { title: 'Archiver 100 % des pièces 2025', target: 100, current: 40, area: 'GED' });
+  check(hasRh ? 'RH talents présent : le tableau d’objectifs administratifs est inutilisé (409)' : 'objectif administratif créé', hasRh ? r.status === 409 : r.status === 201, r.json);
+  if (!hasRh) { r = await mgr('GET', `${ADM}/report/goals`); check('progression de l’objectif : 40 %', r.json.goals[0].progress === 40, r.json.goals); }
+  r = await mgr('GET', `${ADM}/report/monthly`);
+  const sec = (k) => r.json.sections.find((x) => x.key === k).rows;
+  check('rapport mensuel : 6 sections, 7 demandes et 8 documents ajoutés ce mois', r.json.sections.length === 6 && sec('flow')[0][1] === 7 && sec('docs')[0][1] === 8, [sec('flow')[0], sec('docs')[0]]);
+  check('rapport mensuel : 1 document archivé, 1 détruit, 1 accomplissement de conformité ce mois-ci → 2', sec('docs')[1][1] === 1 && sec('docs')[2][1] === 1 && sec('contracts')[4][1] === 2, [sec('docs'), sec('contracts')]);
+  r = await mgr('GET', `${ADM}/report/monthly.pdf`);
+  check('rapport mensuel en PDF', r.status === 200 && r.buf.toString('latin1', 0, 5) === '%PDF-', r.status);
+  r = await mgr('GET', `${ADM}/report/monthly.xlsx`);
+  check('rapport mensuel en Excel (archive valide, feuilles nommées)', r.status === 200 && r.buf[0] === 0x50 && r.buf[1] === 0x4b && r.buf.includes(Buffer.from('Synthèse')) && r.buf.includes(Buffer.from('Contrôle interne')), r.status);
+  r = await mgr('GET', `${ADM}/report/monthly?month=2026-13`);
+  check('mois invalide refusé', r.status === 400, r.status);
+  r = await other('GET', `${ws(org2)}/administration/report/dashboard`);
+  check('isolation : le tableau de bord de l’autre organisation est vide', r.status === 200 && r.json.kpis.sodConflicts === 0 && r.json.kpis.contractAlerts === 0 && r.json.figures.units === 0, r.json.kpis);
 }, { });

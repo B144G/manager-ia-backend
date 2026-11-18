@@ -354,4 +354,11 @@ async function maturity(orgId) {
 }
 router.get('/maturity', async (req, res) => res.json(await maturity(req.org.id)));
 
-module.exports = { router, conflicts, maturity, functionsByUser };
+/** Nombre de contrôles actifs en retard. */
+async function overdueCount(orgId) {
+  const runs = await db.prepare('SELECT id, control_id, done_on, result FROM adm_control_runs WHERE org_id = ?').all(orgId);
+  const names = new Map();
+  return (await db.prepare('SELECT * FROM adm_controls WHERE org_id = ? AND active = 1').all(orgId)).filter((c) => controlView(c, runs, names).overdue).length;
+}
+
+module.exports = { router, conflicts, maturity, functionsByUser, overdueCount };

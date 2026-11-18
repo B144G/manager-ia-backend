@@ -25,6 +25,9 @@ router.use('/sops', require('./adm-sop').router);
 router.use('/docs', require('./adm-docs').router);
 router.use('/flow', require('./adm-flow').router);
 router.use('/control', require('./adm-control').router);
+router.use('/means', require('./adm-assets').router);
+router.use('/contracts', require('./adm-contracts').router);
+router.use('/report', require('./adm-report').router);
 
 router.use((req, res) => { throw new HttpError(404, 'Page introuvable.'); });
 module.exports = { router };
