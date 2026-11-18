@@ -1,6 +1,6 @@
 # Fusion des modules construits en parallèle — rapport
 
-Branche `fusion-modules` des deux côtés (serveur : `a4915fa`, site : `06d462a`), construite à partir de `fusion-stock-serveur` (4a6c1e4) et `fusion-stock-site` (45810ca).
+Branche `fusion-modules` des deux côtés (serveur : `4fddd7b`, site : `06d462a`), construite à partir de `fusion-stock-serveur` (4a6c1e4) et `fusion-stock-site` (45810ca).
 **Rien n'a été poussé.** Aucun jeton ni secret dans les fichiers.
 
 ## 1. Ce qui est fusionné (9 branches sur 9, aucune mise de côté)
