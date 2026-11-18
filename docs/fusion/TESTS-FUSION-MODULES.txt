@@ -10016,3 +10016,8 @@ OK     npm run test:wave5  (22 s)
 OK     npm run test:migrations  (23 s)
 
 67/69 étapes réussies en 2377 s — 2 ÉCHEC(S)
+
+
+### NOTE (ajoutée après la passe) : cette passe a donné 67/69. Les deux échecs (smoke:ws, test:security) étaient des tests à adapter
+### (numéros de paiement manuel absents ; devis publics du Commercial hors liste blanche ; limite globale de débit atteinte par le balayage de 1 900 routes).
+### Corrigés, puis relancés seuls : test:security 6 fichiers verts, smoke:ws 517 réussis. Voir docs/fusion/RAPPORT-FUSION-MODULES.md.
