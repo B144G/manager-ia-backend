@@ -29,6 +29,13 @@ const DEFAULTS = {
   discountCaps: { sales_manager: 30, sales_assistant: 5, sales_field: 8 },
   quoteValidityDays: 30,
   marginMinPct: 10,
+  loyaltyPointsPer1000: 1,
+  loyaltyTiers: { silver: 500, gold: 2000, platinum: 5000 },
+  clvYears: 3,
+  churnHigh: 70,
+  churnMedium: 40,
+  defaultIntervalDays: 90,
+  elasticity: -1,
 };
 const mergeSettings = (stored) => {
   const s = stored && typeof stored === 'object' ? stored : {};
@@ -238,7 +245,86 @@ function discountPct(lines) {
 /** Plafond de remise (en %) d'un rôle ; le responsable du compte n'a pas de plafond. */
 const discountCap = (role, boss, caps = DEFAULTS.discountCaps) => (boss ? 100 : num(caps[role], 0));
 
+// ---------- Marges ----------
+/** Chiffre d'affaires HT d'une ligne (les prix saisis sont TTC si pricesIncl) puis marge. cost : coût unitaire connu, ou null (marge inconnue). */
+function lineMargin(line, { vatRate = 0, pricesIncl = true } = {}, cost) {
+  const q = num(line.quantity); const gross = q * num(line.price);
+  const ht = pricesIncl && vatRate > 0 ? gross / (1 + vatRate / 100) : gross;
+  if (cost === null || cost === undefined) return { revenue: Math.round(ht), cost: null, margin: null, pct: null };
+  const c = Math.round(q * num(cost));
+  return { revenue: Math.round(ht), cost: c, margin: Math.round(ht) - c, pct: ht > 0 ? round(((ht - c) * 100) / ht, 1) : null };
+}
+/** Marge d'un ensemble de lignes déjà calculées ; les lignes sans coût sont exclues et la couverture (part du CA dont le coût est connu) est donnée. */
+function sumMargins(list) {
+  const known = list.filter((m) => m.margin !== null);
+  const revAll = list.reduce((a, m) => a + m.revenue, 0); const rev = known.reduce((a, m) => a + m.revenue, 0);
+  const margin = known.reduce((a, m) => a + m.margin, 0);
+  return { revenue: revAll, knownRevenue: rev, cost: known.reduce((a, m) => a + m.cost, 0), margin, pct: rev > 0 ? round((margin * 100) / rev, 1) : null, coverage: revAll > 0 ? round((rev * 100) / revAll, 1) : 0 };
+}
+/** Simulation d'un changement de prix : volume = base × (1 + élasticité × variation du prix en %). */
+function simulatePrice({ qty, price, cost = 0, newPrice, elasticity = -1 }) {
+  const pctPrice = price > 0 ? ((newPrice - price) * 100) / price : 0;
+  const volPct = elasticity * pctPrice;
+  const q1 = Math.max(0, qty * (1 + volPct / 100));
+  const base = { qty, revenue: Math.round(qty * price), margin: Math.round(qty * (price - cost)) };
+  const sim = { qty: round(q1, 1), revenue: Math.round(q1 * newPrice), margin: Math.round(q1 * (newPrice - cost)) };
+  const be = newPrice - cost > 0 ? (qty * (price - cost)) / (newPrice - cost) : null;
+  return { priceChangePct: round(pctPrice, 1), volumeChangePct: round(volPct, 1), base, simulated: sim, deltaRevenue: sim.revenue - base.revenue, deltaMargin: sim.margin - base.margin, breakEvenQty: be === null ? null : round(be, 1), breakEvenVolumePct: be === null || !qty ? null : round(((be - qty) * 100) / qty, 1) };
+}
+
+// ---------- Commissions et objectifs ----------
+/** Commission progressive : tiers [{ upTo (null = sans limite), rate % }] appliqués par tranche ; prime = la plus haute prime dont le seuil d'atteinte (%) est atteint. */
+function commission(basis, tiers, bonuses = [], attainmentPct = null) {
+  let prev = 0; let total = 0; const detail = [];
+  for (const t of tiers) {
+    const top = t.upTo === null || t.upTo === undefined ? Infinity : num(t.upTo);
+    const slice = Math.max(0, Math.min(basis, top) - prev);
+    const amount = (slice * num(t.rate)) / 100;
+    detail.push({ upTo: t.upTo ?? null, rate: num(t.rate), base: Math.round(slice), amount: Math.round(amount) });
+    total += amount; prev = top;
+    if (basis <= top) break;
+  }
+  const hit = attainmentPct === null ? [] : bonuses.filter((b) => attainmentPct >= num(b.attainmentPct));
+  const bonus = hit.length ? Math.max(...hit.map((b) => num(b.bonus))) : 0;
+  return { commission: Math.round(total), bonus, total: Math.round(total) + bonus, detail };
+}
+/** Répartition d'un total entier selon des poids, sans perte (méthode du plus fort reste). */
+function decompose(total, weights) {
+  const sum = weights.reduce((a, b) => a + b, 0);
+  if (!weights.length || sum <= 0) return weights.map(() => 0);
+  const raw = weights.map((w) => (total * w) / sum);
+  const out = raw.map(Math.floor);
+  let left = Math.round(total) - out.reduce((a, b) => a + b, 0);
+  const order = raw.map((v, i) => [v - Math.floor(v), i]).sort((a, b) => b[0] - a[0] || a[1] - b[1]);
+  for (let k = 0; left > 0 && k < order.length; k++, left--) out[order[k][1]]++;
+  return out;
+}
+
+// ---------- Fidélisation ----------
+/** Score de risque de départ (0-100) : retard sur le rythme d'achat habituel (jusqu'à 70), réclamation ouverte (+15), note NPS ≤ 6 (+15), achats récents en baisse de plus de moitié (+10). */
+function churnScore({ daysSinceLast, intervalDays, openComplaints = 0, lastNps = null, recent = 0, previous = 0 }) {
+  const ratio = intervalDays > 0 ? daysSinceLast / intervalDays : 0;
+  const parts = { delay: Math.min(70, Math.round(ratio * 35)), complaint: openComplaints > 0 ? 15 : 0, nps: lastNps !== null && lastNps <= 6 ? 15 : 0, decline: previous > 0 && recent < previous * 0.5 ? 10 : 0 };
+  return { score: clamp(Object.values(parts).reduce((a, b) => a + b, 0)), parts };
+}
+const churnLevel = (score, high = 70, med = 40) => (score >= high ? 'high' : score >= med ? 'medium' : 'low');
+/** Rythme d'achat : écart moyen entre premier et dernier achat (jours) divisé par (achats − 1) ; un seul achat → valeur par défaut. */
+const purchaseInterval = (dates, def = 90) => { const d = [...dates].sort(); return d.length >= 2 ? Math.max(1, daysBetween(d[0], d[d.length - 1]) / (d.length - 1)) : def; };
+/** Valeur vie client prévue = panier moyen × achats par an × durée de vie (années) × taux de marge (1 si inconnu). */
+function clv({ avgBasket, purchases, tenureDays, years = 3, marginRate = 1 }) {
+  const perYear = purchases / Math.max(tenureDays / 365, 0.25);
+  return Math.round(avgBasket * perYear * years * marginRate);
+}
+/** NPS = % de promoteurs (9-10) − % de détracteurs (0-6). */
+function nps(scores) {
+  if (!scores.length) return { nps: null, promoters: 0, passives: 0, detractors: 0, total: 0 };
+  const p = scores.filter((s) => s >= 9).length; const d = scores.filter((s) => s <= 6).length;
+  return { nps: Math.round(((p - d) * 100) / scores.length), promoters: p, passives: scores.length - p - d, detractors: d, total: scores.length };
+}
+const loyaltyTier = (lifetime, tiers = DEFAULTS.loyaltyTiers) => (lifetime >= tiers.platinum ? 'platinum' : lifetime >= tiers.gold ? 'gold' : lifetime >= tiers.silver ? 'silver' : 'base');
+
 module.exports = {
+  lineMargin, sumMargins, simulatePrice, commission, decompose, churnScore, churnLevel, purchaseInterval, clv, nps, loyaltyTier,
   SPIN_KEYS, SPIN_NEEDED, spinSynthesis, movingAverage, ses, backtest, landing, discountPct, discountCap,
   clamp, round, num, dayMs, toDay, daysBetween, addDays, monthOf, addMonths, monthsBetween,
   DEFAULTS, mergeSettings, BANT_KEYS, bantScore, scoreLead, pickAssignee,

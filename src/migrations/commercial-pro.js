@@ -335,4 +335,123 @@ module.exports = [
   CREATE UNIQUE INDEX IF NOT EXISTS cp_quote_token ON cp_quote_meta (accept_token) WHERE accept_token IS NOT NULL;
   CREATE INDEX IF NOT EXISTS cp_quote_group ON cp_quote_meta (org_id, group_id);
   `,
+
+  // ---------- Étape 3 : tarifs et marges, fidélisation, force de vente ----------
+  `
+  ALTER TABLE catalog ADD COLUMN IF NOT EXISTS cost BIGINT NOT NULL DEFAULT 0;
+  CREATE TABLE IF NOT EXISTS cp_pricelists (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    segment TEXT NOT NULL DEFAULT '',
+    channel TEXT NOT NULL DEFAULT 'all',
+    discount_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+    valid_from TEXT,
+    valid_until TEXT,
+    priority BIGINT NOT NULL DEFAULT 100,
+    active BIGINT NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS cp_pricelist_items (
+    pricelist_id BIGINT NOT NULL REFERENCES cp_pricelists(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES catalog(id) ON DELETE CASCADE,
+    price BIGINT NOT NULL,
+    PRIMARY KEY (pricelist_id, item_id)
+  );
+  CREATE TABLE IF NOT EXISTS cp_price_history (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    item_id BIGINT NOT NULL REFERENCES catalog(id) ON DELETE CASCADE,
+    old_price BIGINT NOT NULL,
+    new_price BIGINT NOT NULL,
+    user_id BIGINT,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS cp_loyalty_ledger (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    points BIGINT NOT NULL,
+    kind TEXT NOT NULL,
+    doc_id BIGINT,
+    note TEXT NOT NULL DEFAULT '',
+    user_id BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS cp_loyalty_doc ON cp_loyalty_ledger (org_id, doc_id, kind) WHERE doc_id IS NOT NULL;
+  CREATE TABLE IF NOT EXISTS cp_nps (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    score BIGINT NOT NULL,
+    comment TEXT NOT NULL DEFAULT '',
+    user_id BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS cp_complaints (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    subject TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'normal',
+    status TEXT NOT NULL DEFAULT 'open',
+    owner_id BIGINT,
+    resolution TEXT NOT NULL DEFAULT '',
+    opened_at TEXT NOT NULL,
+    resolved_at TEXT
+  );
+  CREATE TABLE IF NOT EXISTS cp_tours (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL,
+    date TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    zone_id BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS cp_visits (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL,
+    customer_id BIGINT REFERENCES customers(id) ON DELETE CASCADE,
+    lead_id BIGINT REFERENCES cp_leads(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    time TEXT NOT NULL DEFAULT '',
+    purpose TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'planned',
+    outcome TEXT NOT NULL DEFAULT '',
+    tour_id BIGINT REFERENCES cp_tours(id) ON DELETE SET NULL,
+    order_idx BIGINT NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS cp_commission_rules (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    basis TEXT NOT NULL DEFAULT 'revenue',
+    tiers TEXT NOT NULL DEFAULT '[]',
+    bonuses TEXT NOT NULL DEFAULT '[]',
+    roles TEXT NOT NULL DEFAULT '[]',
+    active BIGINT NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS cp_commission_statements (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    period TEXT NOT NULL,
+    user_id BIGINT NOT NULL,
+    rule_id BIGINT,
+    basis_amount BIGINT NOT NULL DEFAULT 0,
+    commission BIGINT NOT NULL DEFAULT 0,
+    bonus BIGINT NOT NULL DEFAULT 0,
+    total BIGINT NOT NULL DEFAULT 0,
+    attainment_pct DOUBLE PRECISION,
+    status TEXT NOT NULL DEFAULT 'draft',
+    detail TEXT NOT NULL DEFAULT '{}',
+    approved_by BIGINT,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, period, user_id)
+  );
+  `,
 ];
