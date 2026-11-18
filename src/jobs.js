@@ -56,6 +56,7 @@ async function safeRun() {
     require('./services/prospects').sendDueFollowups().catch((e) => log.warn('Relances de prospects :', oneLine(e.message, 160)));
     require('./workspace/followups').tickAll().catch((e) => log.warn('Relances :', oneLine(e.message, 160)));
     require('./workspace/wa-out').runAllAuto().catch(() => {});
+    require('./workspace/commercial').tickAll().catch((e) => log.warn('Commercial :', oneLine(e.message, 160)));
   } catch (e) {
     log.error('Tâches automatiques en erreur :', oneLine(e.message, 200));
   }

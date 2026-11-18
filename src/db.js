@@ -3786,6 +3786,8 @@ const MIGRATIONS = [
 
 // Fusion des lignes A et B : migrations ajoutées à la fin du tableau, un fichier par module (ordre figé).
 MIGRATIONS.push(...require('./migrations/fusion-achats'), ...require('./migrations/fusion-bibliotheque'), ...require('./migrations/fusion-entrepot'));
+// Module Commercial (CRM, prospection, pipeline, segmentation…) : tables cp_*, ajoutées en fin de tableau.
+MIGRATIONS.push(...require('./migrations/commercial-pro'));
 
 db.ready = db.migrate(MIGRATIONS);
 
