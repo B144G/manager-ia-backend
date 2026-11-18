@@ -55,6 +55,7 @@ async function main() {
     const cookie = await clients[owner.contact].cookie();
     await require('./lib/demo-history').seedHistory({ base, cookie, orgId: report.org });
   } catch (e) { report.failed.push('Histoire de l\'entreprise : ' + e.message); }
+  if (report.org) { const { seedTalents } = require('./lib/demo-seed-talents'); const rt = await seedTalents(ownerCall, report.org, team); report.failed.push(...rt.failed); }
   console.log('\n==============================================================');
   console.log('ENTREPRISE DE TEST PRÊTE : « Atelier Nkoulou (TEST) »');
   console.log('Serveur local : ' + base + '   (ouvrez le site avec « npm run dev » : http://localhost:5173)');

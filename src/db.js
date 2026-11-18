@@ -3795,6 +3795,7 @@ MIGRATIONS.push(...require('./migrations/reunions')); // module Réunions (table
 // Module « Histoire de l'entreprise » (organigramme, frise, moments forts et durs, médias).
 MIGRATIONS.push(...require('./migrations/histoire'));
 MIGRATIONS.push(...require('./migrations/fusion-achats'), ...require('./migrations/fusion-bibliotheque'), ...require('./migrations/fusion-entrepot'), ...require('./migrations/tresorerie'));
+MIGRATIONS.push(...require('./migrations/fusion-achats'), ...require('./migrations/fusion-bibliotheque'), ...require('./migrations/fusion-entrepot'), ...require('./migrations/rh-talents'));
 
 db.ready = db.migrate(MIGRATIONS);
 
