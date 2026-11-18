@@ -3787,6 +3787,10 @@ const MIGRATIONS = [
 // Fusion des lignes A et B : migrations ajoutées à la fin du tableau, un fichier par module (ordre figé).
 MIGRATIONS.push(...require('./migrations/fusion-achats'), ...require('./migrations/fusion-bibliotheque'), ...require('./migrations/fusion-entrepot'));
 MIGRATIONS.push(...require('./migrations/fusion-stock-compta')); // échange stock / achats / comptabilité : avoirs fournisseur comptabilisés, frais d'arrivée rattachés à une facture d'achat
+// Projets & Production : PERT, dépendances, recherche opérationnelle, circuits de production (à la fin, append-only).
+MIGRATIONS.push(...require('./migrations/projets-ro'));
+// Production avancée : documents MRP / MPS / capacités / ordonnancement / lean / kanban / 5S / Six Sigma / TPM / qualité.
+MIGRATIONS.push(...require('./migrations/projets-production-avancee'));
 
 db.ready = db.migrate(MIGRATIONS);
 

@@ -11,7 +11,7 @@ const PSTATUS = ['active', 'paused', 'done'];
 const TSTATUS = ['todo', 'doing', 'done'];
 const PRIORITY = ['low', 'normal', 'high'];
 
-const projectRow = (p) => ({ id: p.id, name: p.name, description: p.description, status: p.status, due: p.due, branchId: p.branch_id, tasks: p.tasks, done: p.done, overdue: p.overdue });
+const projectRow = (p) => ({ id: p.id, name: p.name, description: p.description, status: p.status, due: p.due, kind: p.kind || 'general', branchId: p.branch_id, tasks: p.tasks, done: p.done, overdue: p.overdue });
 const taskRow = (t) => ({ id: t.id, projectId: t.project_id, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeId: t.assignee_id, assignee: t.assignee || null, due: t.due, branchId: t.branch_id, project: t.project || null, estimateHours: t.estimate_hours, dependsOn: t.depends_on, recurrence: t.recurrence, recurNext: t.recur_next, start: t.start_date || null });
 
 async function getProject(req, id) {
@@ -38,8 +38,8 @@ async function createProject(req, b) {
   const now = nowISO();
   const branch = await A.branchOf(req, b.branchId);
   return await db.transaction(async () => {
-    const pid = (await db.prepare('INSERT INTO projects (org_id, branch_id, name, description, due, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(req.org.id, branch, name, A.text(b.description, 2000), A.date(b.due), req.user.id, now)).lastInsertRowid;
+    const pid = (await db.prepare('INSERT INTO projects (org_id, branch_id, name, description, due, kind, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(req.org.id, branch, name, A.text(b.description, 2000), A.date(b.due), ['sale', 'production'].includes(b.kind) ? b.kind : 'general', req.user.id, now)).lastInsertRowid;
     for (const t of tasks) {
       const title = A.text(t && t.title, 160);
       if (!title) continue;
@@ -124,7 +124,7 @@ router.get('/:id', async (req, res) => {
   const p = await getProject(req, req.params.id);
   const tasks = await db.prepare(`SELECT t.*, u.name AS assignee FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id WHERE t.project_id = ?
     ORDER BY (t.status = 'done'), CASE t.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END, t.id`).all(p.id);
-  res.json({ project: { id: p.id, name: p.name, description: p.description, status: p.status, due: p.due, branchId: p.branch_id }, tasks: tasks.map(taskRow) });
+  res.json({ project: { id: p.id, name: p.name, description: p.description, status: p.status, due: p.due, kind: p.kind || 'general', branchId: p.branch_id }, tasks: tasks.map(taskRow) });
 });
 
 router.put('/:id', A.need('manager'), async (req, res) => {

@@ -17,6 +17,7 @@ const router = express.Router({ mergeParams: true });
 const mgr = A.need('manager');
 const KINDS = ['risk', 'issue'];
 const RSTATUS = ['open', 'mitigating', 'closed'];
+const RCATEGORY = ['delay', 'cost', 'resource', 'supplier', 'quality', 'other'];
 const MONEY_KEYS = ['bac', 'pv', 'ev', 'ac', 'sv', 'cv', 'cpi', 'eac', 'etc', 'vac', 'eacAtypical', 'eacComposite', 'tcpi', 'percentSpent', 'budgetExhausted'];
 
 async function projectOf(req, id) {
@@ -27,7 +28,7 @@ async function projectOf(req, id) {
 const maxD = (a) => a.filter(Boolean).reduce((x, y) => (x > y ? x : y), null);
 const minD = (a) => a.filter(Boolean).reduce((x, y) => (x < y ? x : y), null);
 const scoreOf = (r) => Number(r.probability) * Number(r.impact);
-const riskRow = (r) => ({ id: r.id, projectId: r.project_id, kind: r.kind, title: r.title, description: r.description, probability: Number(r.probability), impact: Number(r.impact), score: scoreOf(r), level: C.riskLevel(scoreOf(r)), status: r.status, ownerId: r.owner_id, owner: r.owner || null, mitigation: r.mitigation, due: r.due, createdBy: r.created_by, createdAt: r.created_at, updatedAt: r.updated_at });
+const riskRow = (r) => ({ id: r.id, projectId: r.project_id, kind: r.kind, category: r.category || 'other', title: r.title, description: r.description, probability: Number(r.probability), impact: Number(r.impact), score: scoreOf(r), level: C.riskLevel(scoreOf(r)), status: r.status, ownerId: r.owner_id, owner: r.owner || null, mitigation: r.mitigation, due: r.due, createdBy: r.created_by, createdAt: r.created_at, updatedAt: r.updated_at });
 
 /**
  * Analyse complète d'un projet (sans contrôle de droits : l'appelant a déjà vérifié l'accès au projet).
@@ -256,6 +257,7 @@ function readRisk(b, old) {
     description: b.description === undefined ? (o.description || '') : A.text(b.description, 2000),
     probability: num(b.probability, old ? Number(o.probability) : 3, 'Probabilité'),
     impact: num(b.impact, old ? Number(o.impact) : 3, 'Impact'),
+    category: b.category === undefined ? (o.category || 'other') : A.oneOf(b.category, RCATEGORY, undefined, 'Catégorie : délai, coût, ressource, fournisseur, qualité ou autre.'),
     status: b.status === undefined ? (o.status || 'open') : A.oneOf(b.status, RSTATUS, undefined, 'Statut : ouvert, en traitement ou clos.'),
     mitigation: b.mitigation === undefined ? (o.mitigation || '') : A.text(b.mitigation, 2000),
     due: b.due === undefined ? (o.due || null) : A.date(b.due),
@@ -273,8 +275,8 @@ router.post('/:id/risks', async (req, res) => {
   const v = readRisk(b);
   const owner = await A.memberOf(req, b.ownerId);
   const now = nowISO();
-  const id = Number((await db.prepare('INSERT INTO project_risks (org_id, project_id, kind, title, description, probability, impact, status, owner_id, mitigation, due, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(req.org.id, p.id, v.kind, v.title, v.description, v.probability, v.impact, v.status, owner, v.mitigation, v.due, req.user.id, now, now)).lastInsertRowid);
+  const id = Number((await db.prepare('INSERT INTO project_risks (org_id, project_id, kind, title, description, probability, impact, status, owner_id, mitigation, due, created_by, created_at, updated_at, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(req.org.id, p.id, v.kind, v.title, v.description, v.probability, v.impact, v.status, owner, v.mitigation, v.due, req.user.id, now, now, v.category)).lastInsertRowid);
   await W.audit(req, 'project_risk', id, 'create', null, { project: p.id, ...v });
   if (v.probability * v.impact >= 15 && v.status !== 'closed') await W.pushRole(req.org.id, 'manager', 'project', `Risque élevé signalé sur le projet « ${p.name} » : ${v.title}`, `projrisk:${id}`);
   res.status(201).json({ id, score: v.probability * v.impact, level: C.riskLevel(v.probability * v.impact) });
@@ -291,8 +293,8 @@ router.put('/risks/:rid', async (req, res) => {
   const b = req.body || {};
   const v = readRisk(b, r);
   const owner = b.ownerId === undefined ? r.owner_id : await A.memberOf(req, b.ownerId);
-  await db.prepare('UPDATE project_risks SET kind = ?, title = ?, description = ?, probability = ?, impact = ?, status = ?, owner_id = ?, mitigation = ?, due = ?, updated_at = ? WHERE id = ?')
-    .run(v.kind, v.title, v.description, v.probability, v.impact, v.status, owner, v.mitigation, v.due, nowISO(), r.id);
+  await db.prepare('UPDATE project_risks SET category = ?, kind = ?, title = ?, description = ?, probability = ?, impact = ?, status = ?, owner_id = ?, mitigation = ?, due = ?, updated_at = ? WHERE id = ?')
+    .run(v.category, v.kind, v.title, v.description, v.probability, v.impact, v.status, owner, v.mitigation, v.due, nowISO(), r.id);
   await W.audit(req, 'project_risk', r.id, 'update', { status: r.status, probability: r.probability, impact: r.impact }, { status: v.status, probability: v.probability, impact: v.impact });
   res.json({ ok: true, score: v.probability * v.impact, level: C.riskLevel(v.probability * v.impact) });
 });
