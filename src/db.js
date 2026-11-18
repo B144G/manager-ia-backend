@@ -3800,6 +3800,7 @@ MIGRATIONS.push(...require('./migrations/tresorerie'));
 MIGRATIONS.push(...require('./migrations/rh-talents'));
 
 MIGRATIONS.push(...require('./migrations/administration')); // module Administration (tables adm_)
+MIGRATIONS.push(...require('./migrations/biblio-evolution'));
 
 db.ready = db.migrate(MIGRATIONS);
 

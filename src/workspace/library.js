@@ -111,6 +111,48 @@ async function ensureDefaults(org) {
     }
   })();
 }
+// ---------- Un bloc par module de l'espace de travail ----------
+// Les blocs sont déduits de la liste des modules (modules.js) : un module ajouté plus tard (Réunions, etc.) reçoit son bloc au prochain passage, sans autre travail.
+// Droits de départ d'après le niveau minimal du module : un module réservé aux administrateurs donne un bloc que seuls les administrateurs voient.
+const MODULE_LOOK = {
+  dashboard: ['#475569', 'star'], support: ['#0e7490', 'mail'], projects: ['#2563eb', 'target'], budget: ['#0f766e', 'wallet'], stock: ['#3d7a3d', 'box'],
+  crm: ['#c2410c', 'users'], sales: ['#b45309', 'cart'], aifollow: ['#6d28d9', 'chip'], hr: ['#a21caf', 'users'], payroll: ['#9d174d', 'wallet'],
+  fiscal: ['#155e75', 'scale'], marketing: ['#db2777', 'image'], logistics: ['#4d7c0f', 'box'], production: ['#a8641a', 'factory'], construction: ['#b5483a', 'hardhat'],
+  maintenance: ['#52525b', 'ruler'], legal: ['#9f1239', 'scale'], memory: ['#7c3aed', 'book'], agents: ['#4338ca', 'chip'], accounting: ['#1f6f8b', 'wallet'],
+  structure: ['#0369a1', 'building'], processes: ['#2f6f5e', 'shield'], team: ['#0d9488', 'users'], alerts: ['#b91c1c', 'lock'], integrations: ['#37474f', 'chip'],
+  billing: ['#854d0e', 'wallet'], meetings: ['#7c2d12', 'users'],
+};
+const LOOK_FALLBACK = ['#2f6f5e', 'folder'];
+const MODULE_RIGHTS = { member: ['vra', 'vraed', 'vraed'], manager: ['', 'vra', 'vraed'], admin: ['', '', 'vraed'], owner: ['', '', 'vraed'] };
+const moduleSlug = (id) => `mod-${id}`;
+const synced = new Set();
+const pending = new Map();
+/** Un seul balayage à la fois par organisation (deux requêtes simultanées ne créent pas les blocs en double). */
+function ensureModuleBlocks(org) {
+  const key = String(org.id);
+  if (!pending.has(key)) pending.set(key, syncModuleBlocks(org).finally(() => pending.delete(key)));
+  return pending.get(key);
+}
+async function syncModuleBlocks(org) {
+  const { modules } = require('./modules');
+  const key = `${org.id}:${modules.length}`;
+  if (synced.has(key)) return;
+  const have = new Set((await db.prepare("SELECT slug FROM lib_blocks WHERE org_id = ? AND slug LIKE 'mod-%'").all(org.id)).map((b) => b.slug));
+  const missing = modules.filter((m) => m.id !== 'library' && !have.has(moduleSlug(m.id)));
+  if (missing.length) {
+    const now = nowISO();
+    await db.transaction(async () => {
+      let pos = Number((await db.prepare('SELECT COALESCE(MAX(position), 0) AS p FROM lib_blocks WHERE org_id = ?').get(org.id)).p);
+      for (const m of missing) {
+        const [color, icon] = MODULE_LOOK[m.id] || LOOK_FALLBACK;
+        const [mem, mgr, adm] = MODULE_RIGHTS[m.min] || MODULE_RIGHTS.admin;
+        const id = Number((await db.prepare('INSERT INTO lib_blocks (org_id, slug, name, color, icon, personal, builtin, position, created_at) VALUES (?, ?, ?, ?, ?, 0, 1, ?, ?) ON CONFLICT DO NOTHING').run(org.id, moduleSlug(m.id), m.title, color, icon, ++pos, now)).lastInsertRowid);
+        if (id) for (const [role, s] of [['member', mem], ['manager', mgr], ['admin', adm]]) await saveRolePerms(id, role, letters(s));
+      }
+    })();
+  }
+  synced.add(key);
+}
 async function saveRolePerms(blockId, role, p) {
   const v = normPerms(p);
   await db.prepare(`INSERT INTO lib_role_perms (block_id, role, p_view, p_read, p_add, p_edit, p_delete) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -242,6 +284,7 @@ async function docViews(req, rows, blocks) {
       id: Number(d.id), name: d.name, mime: d.mime, size: Number(d.size), version: Number(d.version), tags: parseTags(d.tags),
       favorite: fav.has(Number(d.id)), author: names[Number(d.created_by)] || '', updatedAt: d.updated_at,
       linkType: d.link_type || null, linkId: d.link_id ? Number(d.link_id) : null, folderId: d.folder_id ? Number(d.folder_id) : null,
+      status: d.doc_status || 'published', locked: Boolean(d.locked_by),
       block: b ? { id: Number(b.id), name: b.name, color: b.color } : undefined,
     };
   });
@@ -324,7 +367,7 @@ async function checkSpace(req, size) {
 const bodyBuf = (req) => (Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0));
 
 // ---------- Toutes les routes : blocs de départ créés au premier passage ----------
-router.use(async (req, res, next) => { await ensureDefaults(req.org); next(); });
+router.use(async (req, res, next) => { await ensureDefaults(req.org); await ensureModuleBlocks(req.org); next(); });
 
 // ---------- Accueil ----------
 router.get('/overview', async (req, res) => {
@@ -666,7 +709,7 @@ router.post('/blocks/:id/docs', upLimit, rawBody, async (req, res) => {
   const id = await db.transaction(async () => {
     const did = Number((await db.prepare('INSERT INTO lib_docs (org_id, block_id, folder_id, owner_id, name, mime, size, version, tags, link_type, link_id, created_by, updated_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)')
       .run(req.org.id, b.id, folder ? folder.id : null, Number(b.personal) ? req.user.id : null, name, t.mime, buf.length, JSON.stringify(tags), link.type, link.id, req.user.id, req.user.id, now, now)).lastInsertRowid);
-    await db.prepare('INSERT INTO lib_versions (org_id, doc_id, n, name, mime, size, data, note, created_by, created_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, did, name, t.mime, buf.length, X.seal(buf), '', req.user.id, now);
+    await db.prepare('INSERT INTO lib_versions (org_id, doc_id, n, name, mime, size, data, note, created_by, created_at, label, bump) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, did, name, t.mime, buf.length, X.seal(buf), '', req.user.id, now, '1.0', 'major');
     return did;
   })();
   await audit(req, 'upload', b, name);
@@ -675,7 +718,8 @@ router.post('/blocks/:id/docs', upLimit, rawBody, async (req, res) => {
 
 router.get('/docs/:id', async (req, res) => {
   const { d, b, perms } = await openDoc(req, req.params.id, 'read');
-  const versions = await db.prepare('SELECT n, name, size, note, created_by, created_at FROM lib_versions WHERE doc_id = ? ORDER BY n DESC').all(d.id);
+  await h.docAccess(req, d, 'view');
+  const versions = await db.prepare('SELECT n, name, size, note, created_by, created_at, label, bump FROM lib_versions WHERE doc_id = ? ORDER BY n DESC').all(d.id);
   const names = await namesOf([d.created_by, d.updated_by, ...versions.map((v) => v.created_by)]);
   const [view] = await docViews(req, [d]);
   await audit(req, 'view_doc', b, d.name);
@@ -683,11 +727,13 @@ router.get('/docs/:id', async (req, res) => {
   res.json({
     doc: { ...view, createdAt: d.created_at, editor: d.updated_by && Number(d.updated_by) !== Number(d.created_by) ? names[Number(d.updated_by)] || '' : '', linkType: d.link_type || null, linkId: d.link_id ? Number(d.link_id) : null },
     perms,
-    versions: versions.map((v) => ({ n: Number(v.n), name: v.name, size: Number(v.size), note: v.note, author: names[Number(v.created_by)] || '', createdAt: v.created_at })),
+    versions: versions.map((v) => ({ n: Number(v.n), label: labelOf(v), bump: v.bump, name: v.name, size: Number(v.size), note: v.note, author: names[Number(v.created_by)] || '', createdAt: v.created_at, current: Number(v.n) === Number(d.version) })),
+    status: d.doc_status || 'published', lock: d.locked_by ? { by: (await namesOf([d.locked_by]))[Number(d.locked_by)] || '', mine: Number(d.locked_by) === Number(req.user.id), at: d.locked_at } : null,
   });
 });
 router.put('/docs/:id', async (req, res) => {
   const { d, b } = await openDoc(req, req.params.id, 'edit');
+  await h.checkDocFrozen(req, d);
   const body = req.body || {};
   const ext = extOf(d.name);
   let name = d.name;
@@ -707,6 +753,7 @@ router.put('/docs/:id', async (req, res) => {
 });
 router.delete('/docs/:id', async (req, res) => {
   const { d, b } = await openDoc(req, req.params.id, 'delete');
+  await h.checkDocFrozen(req, d);
   await db.prepare('UPDATE lib_docs SET deleted_at = ?, deleted_by = ? WHERE id = ?').run(nowISO(), req.user.id, d.id);
   await audit(req, 'trash', b, d.name);
   res.json({ ok: true });
@@ -721,6 +768,7 @@ router.post('/docs/:id/restore', async (req, res) => {
 });
 router.delete('/docs/:id/purge', async (req, res) => {
   const { d, b } = await openDoc(req, req.params.id, 'delete', { deleted: true });
+  await h.checkDocFrozen(req, d);
   await db.prepare('DELETE FROM lib_docs WHERE id = ?').run(d.id);
   await audit(req, 'purge', b, d.name);
   res.json({ ok: true });
@@ -744,6 +792,7 @@ async function versionOf(d, v) {
 const dispo = (kind, name) => `${kind}; filename="${name.replace(/[^A-Za-z0-9._ -]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 router.get('/docs/:id/download', dlLimit, async (req, res) => {
   const { d, b } = await openDoc(req, req.params.id, 'read');
+  await h.docAccess(req, d, 'download');
   const v = await versionOf(d, req.query.version);
   const data = X.unseal(v.data);
   if (!data) throw new HttpError(500, 'Fichier illisible.');
@@ -753,6 +802,7 @@ router.get('/docs/:id/download', dlLimit, async (req, res) => {
 });
 router.get('/docs/:id/preview', dlLimit, async (req, res) => {
   const { d, b } = await openDoc(req, req.params.id, 'read');
+  await h.docAccess(req, d, 'preview');
   const v = await versionOf(d, req.query.version);
   const pdf = v.mime === 'application/pdf';
   if (!pdf && !/^image\/(jpeg|png|webp|gif)$/.test(v.mime)) throw new HttpError(400, 'Aperçu indisponible pour ce type de fichier : téléchargez-le.');
@@ -770,6 +820,7 @@ router.get('/docs/:id/preview', dlLimit, async (req, res) => {
 // ---------- Versions ----------
 router.post('/docs/:id/versions', upLimit, rawBody, async (req, res) => {
   const { d, b } = await openDoc(req, req.params.id, 'edit');
+  await h.checkDocFrozen(req, d);
   const buf = bodyBuf(req);
   if (!buf.length) throw new HttpError(400, 'Fichier non reconnu : formats acceptés : PDF, images, documents Office ou OpenDocument, texte, audio et vidéo courants.');
   const t = detect(buf, req.query.name || d.name);
@@ -779,32 +830,47 @@ router.post('/docs/:id/versions', upLimit, rawBody, async (req, res) => {
   await checkSpace(req, buf.length);
   const name = fileName(req.query.name || d.name, t.ext);
   const note = cleanText(String(req.query.note || ''), 200);
-  const n = await addVersion(req, d, { name, mime: t.mime, size: buf.length, data: X.seal(buf), note });
+  await h.checkLock(req, d);
+  const bump = req.query.bump === 'major' ? 'major' : 'minor';
+  const n = await addVersion(req, d, { name, mime: t.mime, size: buf.length, data: X.seal(buf), note, bump });
   await audit(req, 'version', b, `${name} (v${n})`);
   res.status(201).json({ ok: true, version: n });
 });
+/** Prochain numéro de version documentaire : « 1.0 » → mineure « 1.1 » ou majeure « 2.0 ». */
+function nextLabel(prev, bump) {
+  const m = /^(\d+)\.(\d+)$/.exec(String(prev || '')) || [null, '1', '0'];
+  const maj = Number(m[1]); const min = Number(m[2]);
+  return bump === 'major' ? `${maj + 1}.0` : `${maj}.${min + 1}`;
+}
+const labelOf = (v) => v.label || `1.${Math.max(0, Number(v.n) - 1)}`;
 async function addVersion(req, d, v) {
   const now = nowISO();
+  const bump = v.bump === 'major' ? 'major' : 'minor';
   return db.transaction(async () => {
-    const n = Number((await db.prepare('SELECT COALESCE(MAX(n), 0) AS m FROM lib_versions WHERE doc_id = ?').get(d.id)).m) + 1;
-    await db.prepare('INSERT INTO lib_versions (org_id, doc_id, n, name, mime, size, data, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, d.id, n, v.name, v.mime, v.size, v.data, v.note, req.user.id, now);
+    const last = await db.prepare('SELECT n, label FROM lib_versions WHERE doc_id = ? ORDER BY n DESC LIMIT 1').get(d.id);
+    const n = (last ? Number(last.n) : 0) + 1;
+    const label = nextLabel(last ? labelOf(last) : '1.0', bump);
+    await db.prepare('INSERT INTO lib_versions (org_id, doc_id, n, name, mime, size, data, note, created_by, created_at, label, bump) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, d.id, n, v.name, v.mime, v.size, v.data, v.note, req.user.id, now, label, bump);
     await db.prepare('UPDATE lib_docs SET name = ?, mime = ?, size = ?, version = ?, updated_by = ?, updated_at = ? WHERE id = ?').run(v.name, v.mime, v.size, n, req.user.id, now, d.id);
     return n;
   })();
 }
 router.post('/docs/:id/versions/:n/restore', async (req, res) => {
   const { d, b } = await openDoc(req, req.params.id, 'edit');
+  await h.checkDocFrozen(req, d);
   const v = await versionOf(d, req.params.n);
   if (Number(v.n) === Number(d.version)) return res.json({ ok: true, version: Number(d.version) });
+  await h.checkLock(req, d);
   const count = Number((await db.prepare('SELECT COUNT(*) AS c FROM lib_versions WHERE doc_id = ?').get(d.id)).c);
   if (count >= MAX_VERSIONS) throw new HttpError(403, 'Ce document a déjà 20 versions : supprimez-en d’anciennes pour en ajouter.');
   await checkSpace(req, Number(v.size));
-  const n = await addVersion(req, d, { name: v.name, mime: v.mime, size: Number(v.size), data: v.data, note: `Version ${v.n} rétablie` });
+  const n = await addVersion(req, d, { name: v.name, mime: v.mime, size: Number(v.size), data: v.data, note: `Version ${labelOf(v)} rétablie` });
   await audit(req, 'version_restore', b, `${d.name} : v${v.n} → v${n}`);
   res.json({ ok: true, version: n });
 });
 router.delete('/docs/:id/versions/:n', async (req, res) => {
   const { d, b } = await openDoc(req, req.params.id, 'delete');
+  await h.checkDocFrozen(req, d);
   const v = await versionOf(d, req.params.n);
   if (Number(v.n) === Number(d.version)) throw new HttpError(400, 'La version actuelle ne se supprime pas : supprimez le document, ou rétablissez une autre version.');
   await db.prepare('DELETE FROM lib_versions WHERE id = ?').run(v.id);
@@ -898,6 +964,8 @@ async function cleanup(orgId) {
     await db.prepare('DELETE FROM lib_grants WHERE hard_expires_at <= ? OR expires_at <= ?').run(now, now);
     await db.prepare('DELETE FROM lib_attempts WHERE window_start < ? AND (locked_until IS NULL OR locked_until < ?)').run(new Date(Date.now() - 86400000).toISOString(), now);
   }
+  if (!orgId && h.loanMaintenance) await h.loanMaintenance().catch(() => {}); // rappels de retour, réservations expirées
+  if (!orgId && h.archiveMaintenance) await h.archiveMaintenance().catch(() => {}); // cycle de vie des notices, échéances de conservation
   const cut = new Date(Date.now() - TRASH_DAYS * 86400000).toISOString();
   const old = await db.prepare('SELECT d.id, d.org_id, d.name, d.block_id, b.name AS bname FROM lib_docs d JOIN lib_blocks b ON b.id = d.block_id WHERE d.deleted_at IS NOT NULL AND d.deleted_at <= ?' + (orgId ? ' AND d.org_id = ?' : '') + ' LIMIT 1000').all(...(orgId ? [cut, orgId] : [cut]));
   for (const d of old) {
@@ -907,4 +975,14 @@ async function cleanup(orgId) {
   return old.length;
 }
 
-module.exports = { router, cleanup, detect, normPerms, lockedFor, recordFail };
+// ---------- Évolution : classification, catalogue, prêts, versions documentaires (fichiers lib-*.js) ----------
+const h = { audit, openDoc, openBlock, unlockedBlocks, namesOf, versionOf, labelOf, ACTIONS, likeEsc, liveGrants, permsFor };
+require('./lib-catalog')(router, h);
+require('./lib-loans')(router, h);
+require('./lib-versions')(router, h);
+require('./lib-access')(router, h);
+require('./lib-archive')(router, h);
+require('./lib-search')(router, h);
+require('./lib-inventory')(router, h);
+
+module.exports = { router, cleanup, detect, normPerms, lockedFor, recordFail, helpers: h };
