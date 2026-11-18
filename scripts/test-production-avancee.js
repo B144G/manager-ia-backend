@@ -4,6 +4,9 @@
 const http = require('http');
 const { startTestPg } = require('./lib/testdb');
 const Plan = require('../src/workspace/prod-plan-lib');
+const Lean = require('../src/workspace/prod-lean-lib');
+const Shop = require('../src/workspace/prod-shop-lib');
+const Flow = require('../src/workspace/prod-flow-lib');
 
 let passed = 0; let failed = 0;
 const check = (name, cond, extra) => { if (cond) { passed++; console.log('  OK   ' + name); } else { failed++; console.log('  ECHEC ' + name + (extra !== undefined ? ' -> ' + JSON.stringify(extra) : '')); } };
@@ -106,8 +109,100 @@ async function httpStage1(O, owner, mem) {
   check('suggestions du stock, des recettes et des achats en cours (lecture seule)', r.status === 200 && Array.isArray(r.json.stock) && Array.isArray(r.json.boms) && Array.isArray(r.json.openPurchases));
 }
 
+function stage2() {
+  console.log('Lean : cartographie de flux, takt time, 8 gaspillages');
+  const mk = (extra) => Flow.cleanSteps(Flow.template('food').map((s, i) => ({ ...s, ...(extra[i] || {}) })));
+  const set = { targetPerDay: 1, hoursPerDay: 8, extra: { unitPrice: 1000, materialCost: 400, opexPerDay: 200, inventoryValue: 5000 } };
+  const steps = mk({ 2: { waitHours: 6, batch: 9 }, 3: { stockBefore: 10, defectPct: 5 }, 0: { suppliers: 1 }, 5: { moveHours: 0.5, motionHours: 0.5 }, 4: { talentUnused: true } });
+  const L = Lean.lean(steps, set);
+  check('takt time = heures par jour / lots demandés (8 h)', L.takt === 8, L.takt);
+  check('délai de traversée = durées + attentes + transports', near(L.leadTime, steps.reduce((a, s) => a + s.hours + s.waitHours + s.moveHours + s.motionHours, 0)), L.leadTime);
+  check('taux de valeur ajoutée = temps de valeur ajoutée / délai total', near(L.vaRatio, L.valueAddedTime / L.leadTime * 100, 0.1), L);
+  const an = Flow.analyze(steps, set, { members: [] });
+  const codes = an.findings.map((f) => f.code);
+  for (const c of ['mudaTransport', 'mudaInventory', 'mudaMotion', 'mudaWaiting', 'mudaOverproduction', 'mudaDefects', 'mudaTalent']) check(`gaspillage repéré : ${c}`, codes.includes(c), codes);
+  check('un circuit sans données Lean ne déclenche aucun avis Lean', !Flow.analyze(Flow.template('food').map((s) => ({ ...s, ownerId: 1 })), set, { members: [] }).findings.some((f) => f.code.startsWith('muda') || f.code.startsWith('jit')));
+  const slow = Flow.analyze(Flow.cleanSteps([{ id: 'a', name: 'A', kind: 'make', hours: 12, slots: 1 }]), { targetPerDay: 1, hoursPerDay: 8 }, { members: [] });
+  check('étape plus lente que le takt time signalée', slow.findings.some((f) => f.code === 'overTakt'), slow.findings.map((f) => f.code));
+
+  console.log('TOC : contrainte et comptabilité de débit');
+  const T = Lean.toc(steps, set, set.extra);
+  check('la contrainte est l\'étape de plus faible capacité (fabrication)', T.constraint.id === 's3' && near(T.constraint.capacityPerDay, 1.33), T.constraint);
+  check('tampon devant la contrainte = moitié des durées et attentes en amont', T.bufferHours === (3 + 4 + 0) * 0.5, T.bufferHours);
+  check('débit par jour = lots vendus × (prix − coût matière) = 600', T.throughput.perDay === 600 && T.throughput.netProfitPerDay === 400, T.throughput);
+  check('élever la contrainte : la prochaine contrainte est nommée', Boolean(T.elevate.newConstraint) && T.elevate.gainLotsPerDay >= 0, T.elevate);
+  check('avis : pas de tampon devant la contrainte (charge ≥ 80 %)', Flow.analyze(mk({}), { targetPerDay: 1.2, hoursPerDay: 8 }, { members: [] }).findings.some((f) => f.code === 'tocNoBuffer'));
+
+  console.log('JIT');
+  const J = Lean.jit(steps, set);
+  check('en-cours total et en jours de demande', J.wipLots === 10 && J.wipDays === 10, J);
+  check('fournisseur unique signalé', codes.includes('jitSingleSupplier'));
+  const flowFindings = an.findings;
+  // Appliquer les solutions Lean une à une : la solution doit changer les données (et jamais boucler).
+  let cur = steps; let s2 = { ...set };
+  for (let k = 0; k < 20; k++) {
+    const a = Flow.analyze(cur, s2, { members: [] });
+    const f = a.findings.find((x) => /^(muda|jit|toc|overTakt)/.test(x.code) && x.solutions.some((y) => y.apply));
+    if (!f) break;
+    const o = Flow.applySolution(cur, s2, f, f.solutions.find((y) => y.apply).id, { members: [] });
+    cur = o.steps; s2 = o.settings;
+  }
+  check('les solutions Lean / JIT appliquées font disparaître ces avis', !Flow.analyze(cur, s2, { members: [] }).findings.some((f) => /^(muda|jit|tocNo|overTakt)/.test(f.code) && f.solutions.some((y) => y.apply)), Flow.analyze(cur, s2, { members: [] }).findings.map((f) => f.code));
+  check('les champs Lean sont conservés par le nettoyage des étapes', Flow.cleanSteps(steps)[2].waitHours === 6 && Flow.cleanSteps(steps)[0].suppliers === 1 && flowFindings.length > 0);
+
+  console.log('Kanban');
+  const kb = Shop.computeKanban(Shop.cleanKanban({ items: [{ id: 'k1', name: 'Sachets', demandPerDay: 100, leadTimeDays: 2, waitDays: 1, containerQty: 50, safetyPct: 10, onHand: 100, inProd: 1 }, { id: 'k2', name: 'Boîtes', demandPerDay: 10, leadTimeDays: 1, containerQty: 10, onHand: 100 }] }));
+  const k1 = kb.items[0];
+  check('nombre de cartes = 100 × 3 × 1,1 / 50 = 6,6 → 7', k1.cardsComputed === 7 && k1.cards === 7, k1);
+  check('cartes pleines / en production / vides (stock 100 = 2 bacs)', k1.full === 2 && k1.inProd === 1 && k1.empty === 4, k1);
+  check('signal de réapprovisionnement avec la quantité à produire (4 bacs de 50)', k1.signal === 'refill' && k1.refillQty === 200 && kb.refill.length === 1, k1);
+  check('point de commande = demande × délai', k1.reorderPoint === 200);
+  check('article bien approvisionné : signal vert', kb.items[1].signal === 'ok', kb.items[1]);
+  check('nombre de cartes imposé par l\'utilisateur respecté', Shop.computeKanban(Shop.cleanKanban({ items: [{ name: 'x', demandPerDay: 10, leadTimeDays: 1, containerQty: 5, cards: 9 }] })).items[0].cards === 9);
+
+  console.log('5S');
+  const sc = (a, b, c, d, e) => ({ sort: a, set: b, shine: c, standardize: d, sustain: e });
+  const f5 = Shop.computeFives(Shop.cleanFives({ zones: [{ name: 'Atelier', audits: [{ date: '2026-01-10', scores: sc(2, 2, 2, 1, 1) }, { date: '2026-03-10', scores: sc(3, 3, 3, 2, 2) }], actions: [{ text: 'Étiqueter les outils', s: 'set', due: '2026-02-01', status: 'todo' }, { text: 'Fait', status: 'done' }] }, { name: 'Magasin' }] }), '2026-03-15');
+  const z = f5.zones[0];
+  check('score 5S = total / 20 (13 sur 20 = 65 %)', z.last.pct === 65 && z.previous.pct === 40, z.last);
+  check('progression entre deux audits (+25 points)', z.delta === 25);
+  check('S la plus faible identifiée (standardiser)', z.weakest === 'standardize' || z.weakest === 'sustain', z.weakest);
+  check('actions en retard comptées, zone non auditée signalée', z.lateActions === 1 && f5.unaudited[0] === 'Magasin' && f5.lateActions === 1);
+  check('note hors échelle refusée', throws(() => Shop.cleanFives({ zones: [{ name: 'x', audits: [{ date: '2026-01-01', scores: { sort: 9 } }] }] })));
+  check('photo non image refusée (ignorée)', Shop.cleanFives({ zones: [{ name: 'x', audits: [{ date: '2026-01-01', scores: sc(1, 1, 1, 1, 1), photos: ['<script>', 'data:image/png;base64,AAAA'] }] }] }).zones[0].audits[0].photos.length === 1);
+}
+
+async function httpStage2(ctx) {
+  const { O, owner, mem } = ctx;
+  console.log('Production avancée (HTTP) : étape 2');
+  let r = await owner('PUT', `${O}/production/adv/kanban`, { items: [{ name: 'Sachets', demandPerDay: 100, leadTimeDays: 2, containerQty: 50, onHand: 50 }] });
+  check('kanban enregistré et calculé', r.status === 200 && r.json.result.items[0].cards >= 1 && r.json.result.items[0].signal === 'refill', r.json.result);
+  r = await owner('PUT', `${O}/production/adv/fives`, { zones: [{ name: 'Atelier', audits: [{ date: '2026-01-10', scores: { sort: 3, set: 3, shine: 3, standardize: 3, sustain: 3 } }] }] });
+  check('audit 5S enregistré (75 %)', r.status === 200 && r.json.result.zones[0].last.pct === 75, r.json.result);
+  check('un simple membre ne modifie pas le 5S', (await mem('PUT', `${O}/production/adv/fives`, { zones: [] })).status === 403);
+  r = await owner('POST', `${O}/production/flows`, { name: 'Lean test', sector: 'food', targetPerDay: 1, extra: { unitPrice: 1000, materialCost: 400, opexPerDay: 200 } });
+  check('circuit créé avec ses réglages TOC', r.status === 201 && r.json.extra.unitPrice === 1000, r.json.extra);
+  const fid = r.json.id;
+  const steps = r.json.steps.map((s, i) => ({ ...s, waitHours: i === 2 ? 6 : 0, stockBefore: i === 3 ? 10 : 0 }));
+  r = await owner('PUT', `${O}/production/flows/${fid}`, { steps });
+  check('les champs Lean des étapes sont enregistrés', r.status === 200 && r.json.steps[2].waitHours === 6 && r.json.steps[3].stockBefore === 10, r.json.steps[2]);
+  r = await owner('GET', `${O}/production/flows/${fid}/lean`);
+  check('cartographie de flux (VSM) : délai, valeur ajoutée, takt', r.status === 200 && r.json.takt === 8 && r.json.vaRatio > 0 && r.json.steps.length === 7, r.json);
+  r = await owner('GET', `${O}/production/flows/${fid}/toc`);
+  check('TOC : contrainte, tampon, comptabilité de débit', r.status === 200 && r.json.constraint.id === 's3' && r.json.throughput.perDay > 0, r.json.constraint);
+  r = await owner('GET', `${O}/production/flows/${fid}/jit`);
+  check('JIT : en-cours', r.status === 200 && r.json.wipLots === 10);
+  r = await owner('GET', `${O}/production/flows/${fid}`);
+  const inv = r.json.analysis.findings.find((f) => f.code === 'mudaInventory');
+  check('l\'analyse du circuit contient les avis Lean (stock excessif)', Boolean(inv), r.json.analysis.findings.map((f) => f.code));
+  r = await owner('POST', `${O}/production/flows/${fid}/apply`, { key: inv.key, solution: 'halveStock' });
+  check('solution Lean appliquée en un clic (stock divisé par 2)', r.status === 200 && r.json.steps[3].stockBefore === 5, r.json.steps[3]);
+  check('autre organisation : circuit invisible', (await ctx.other('GET', `/api/ws/orgs/${ctx.org2}/production/flows/${fid}/lean`)).status === 404);
+}
+
 async function main() {
   stage1();
+  stage2();
   const a = await fakeAi();
   const pgt = await startTestPg();
   for (const k of ['ALLOWED_ORIGINS', 'COOKIE_SAMESITE', 'COOKIE_SECURE', 'WHATSAPP_PHONE_ID', 'WHATSAPP_TOKEN', 'CAMPAY_USERNAME', 'CAMPAY_PASSWORD', 'BUSINESS_FILE', 'KNOWLEDGE_DIR', 'META_APP_ID', 'META_APP_SECRET', 'BREVO_API_KEY', 'SMTP_HOST']) process.env[k] = '';
@@ -130,6 +225,7 @@ async function main() {
     const members = (await owner('GET', `${O}/members`)).json.members;
     const ctx = { O, owner, mem, other, org2, members, paulId: members.find((m) => m.name === 'Paul').userId };
     await httpStage1(O, owner, mem);
+    await httpStage2(ctx);
     console.log('Cloisonnement');
     r = await other('GET', `/api/ws/orgs/${org2}/production/adv/mps`);
     check('une autre organisation ne voit pas le plan directeur', r.status === 200 && r.json.saved === false && r.json.doc.products.length === 0);

@@ -3,6 +3,7 @@
 // Une étape : { id, name, kind, after: [ids], ownerId, backupId, hours (durée d'un lot), slots (postes en parallèle), validation (visa requis) }.
 // Le serveur envoie des CODES (traduits par le site) et jamais de phrases toutes faites : chaque avis a une clé stable (code + étapes).
 const { topo } = require('./pert-lib');
+const Lean = require('./prod-lean-lib');
 
 const KINDS = ['supply', 'prep', 'make', 'qc', 'pack', 'store', 'ship', 'other'];
 const SECTORS = ['general', 'btp', 'food', 'cosmetics', 'trade'];
@@ -37,7 +38,7 @@ function cleanSteps(raw) {
     if (!Number.isFinite(hours) || hours < 0 || hours > 10000) throw new Error(`« ${name} » : durée invalide.`);
     if (!Number.isInteger(slots) || slots < 1 || slots > 50) throw new Error(`« ${name} » : nombre de postes invalide (1 à 50).`);
     const idOrNull = (v) => (v === null || v === undefined || v === '' ? null : Number(v));
-    return { id, name, kind: KINDS.includes(s.kind) ? s.kind : 'other', after: Array.isArray(s.after) ? [...new Set(s.after.map(String))].slice(0, 20) : [], ownerId: idOrNull(s.ownerId), backupId: idOrNull(s.backupId), hours, slots, validation: Boolean(s.validation) };
+    return { id, name, kind: KINDS.includes(s.kind) ? s.kind : 'other', after: Array.isArray(s.after) ? [...new Set(s.after.map(String))].slice(0, 20) : [], ownerId: idOrNull(s.ownerId), backupId: idOrNull(s.backupId), hours, slots, validation: Boolean(s.validation), ...Lean.stepExtras(s) };
   });
 }
 
@@ -165,6 +166,7 @@ function analyze(steps, settings, ctx = {}, dismissed = []) {
     add('spofPerson', list.length >= 4 ? 'medium' : 'low', list.map((s) => s.id), { person: m ? m.name : '?', n: list.length, steps: tag(list.map((s) => s.id)).join(', ') },
       alt ? [{ id: 'reassign', apply: true, params: { stepId: move.id, step: move.name, userId: alt.userId, name: alt.name } }] : [{ id: 'inviteMembers', apply: false }]);
   }
+  for (const f of Lean.findings(steps, settings, { ...ctx, extra: settings.extra })) add(f.code, f.severity, f.stepIds, f.params, f.solutions);
   const open = F.filter((f) => f.state === 'open');
   const pen = { high: 14, medium: 7, low: 3 };
   const score = Math.max(0, 100 - open.reduce((a, f) => a + pen[f.severity], 0));
@@ -216,7 +218,7 @@ function applySolution(steps, settings, finding, solutionId, ctx = {}) {
     case 'overload/lowerTarget': set.targetPerDay = Math.max(sol.params.to, 0.1); break;
     case 'spofStep/setBackup': byId(ids[0]).backupId = sol.params.userId; break;
     case 'spofPerson/reassign': byId(sol.params.stepId).ownerId = sol.params.userId; break;
-    default: throw new Error('Solution inconnue.');
+    default: if (!Lean.apply(S, set, finding, sol)) throw new Error('Solution inconnue.');
   }
   return { steps: S, settings: set };
 }

@@ -6,6 +6,7 @@ const { db, nowISO } = require('../db');
 const A = require('./access');
 const W = require('./w3');
 const F = require('./prod-flow-lib');
+const Lean = require('./prod-lean-lib');
 const { HttpError } = require('../util');
 
 const router = express.Router({ mergeParams: true });
@@ -20,7 +21,7 @@ async function flowOf(req, id) {
   if (!f) throw new HttpError(404, 'Circuit introuvable.');
   return f;
 }
-const settingsOf = (f) => ({ targetPerDay: Number(f.target_per_day), hoursPerDay: Number(f.hours_per_day) });
+const settingsOf = (f) => ({ targetPerDay: Number(f.target_per_day), hoursPerDay: Number(f.hours_per_day), extra: Lean.cleanExtra(json(f.extra, {})) });
 async function view(req, f, mem) {
   const m = mem || await members(req);
   const steps = json(f.steps, []); const dismissed = json(f.dismissed, []);
@@ -28,18 +29,18 @@ async function view(req, f, mem) {
   const name = new Map(m.map((x) => [x.userId, x.name]));
   const calc = new Map(a.steps.map((r) => [r.id, r]));
   return {
-    id: Number(f.id), name: f.name, sector: f.sector, source: f.source, targetPerDay: Number(f.target_per_day), hoursPerDay: Number(f.hours_per_day), updatedAt: f.updated_at,
+    id: Number(f.id), name: f.name, sector: f.sector, source: f.source, targetPerDay: Number(f.target_per_day), hoursPerDay: Number(f.hours_per_day), extra: Lean.cleanExtra(json(f.extra, {})), updatedAt: f.updated_at,
     steps: steps.map((s) => ({ ...s, owner: s.ownerId == null ? null : name.get(s.ownerId) || null, backup: s.backupId == null ? null : name.get(s.backupId) || null, ...(calc.get(s.id) || {}) })),
     analysis: { score: a.score, level: a.level, findings: a.findings, metrics: a.metrics },
   };
 }
 function readSettings(b, old) {
-  const o = old || { targetPerDay: 1, hoursPerDay: 8 };
+  const o = old || { targetPerDay: 1, hoursPerDay: 8, extra: Lean.cleanExtra({}) };
   const t = b.targetPerDay === undefined ? o.targetPerDay : Number(String(b.targetPerDay).replace(',', '.'));
   const h = b.hoursPerDay === undefined ? o.hoursPerDay : Number(String(b.hoursPerDay).replace(',', '.'));
   if (!Number.isFinite(t) || t <= 0 || t > 100000) throw new HttpError(400, 'Objectif par jour : un nombre de lots supérieur à 0.');
   if (!Number.isFinite(h) || h < 0.5 || h > 24) throw new HttpError(400, 'Heures de travail par jour : entre 0,5 et 24.');
-  return { targetPerDay: t, hoursPerDay: h };
+  return { targetPerDay: t, hoursPerDay: h, extra: b.extra === undefined ? o.extra : Lean.cleanExtra(b.extra) };
 }
 async function checkOwners(req, steps) {
   const ids = new Set(); for (const s of steps) { if (s.ownerId !== null) ids.add(s.ownerId); if (s.backupId !== null) ids.add(s.backupId); }
@@ -68,10 +69,18 @@ router.post('/', mgr, async (req, res) => {
   const n = Number((await db.prepare('SELECT COUNT(*) c FROM production_flows WHERE org_id = ?').get(req.org.id)).c);
   if (n >= 20) throw new HttpError(400, '20 circuits au plus : supprimez-en un avant d\'en ajouter.');
   const now = nowISO();
-  const id = Number((await db.prepare('INSERT INTO production_flows (org_id, name, sector, source, target_per_day, hours_per_day, steps, dismissed, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(req.org.id, name, sector, fromTemplate ? 'template' : 'custom', s.targetPerDay, s.hoursPerDay, JSON.stringify(steps), '[]', req.user.id, now, now)).lastInsertRowid);
+  const id = Number((await db.prepare('INSERT INTO production_flows (org_id, name, sector, source, target_per_day, hours_per_day, extra, steps, dismissed, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(req.org.id, name, sector, fromTemplate ? 'template' : 'custom', s.targetPerDay, s.hoursPerDay, JSON.stringify(s.extra), JSON.stringify(steps), '[]', req.user.id, now, now)).lastInsertRowid);
   await W.audit(req, 'production_flow', id, 'create', null, { sector, source: fromTemplate ? 'template' : 'custom' });
   res.status(201).json(await view(req, await flowOf(req, id)));
+});
+
+/** Lean (cartographie de flux), TOC et JIT d'un circuit : calculés à partir des étapes et de leurs champs facultatifs. */
+router.get('/:id/:tech(lean|toc|jit)', async (req, res) => {
+  const f = await flowOf(req, req.params.id); const steps = json(f.steps, []); const st = settingsOf(f);
+  const out = req.params.tech === 'lean' ? Lean.lean(steps, st) : req.params.tech === 'toc' ? Lean.toc(steps, st, st.extra) : Lean.jit(steps, st);
+  const mem = await members(req);
+  res.json({ ...out, flow: { id: Number(f.id), name: f.name, targetPerDay: st.targetPerDay, hoursPerDay: st.hoursPerDay, extra: st.extra }, score: F.analyze(steps, st, { members: mem }, json(f.dismissed, [])).score });
 });
 
 router.get('/:id', async (req, res) => res.json(await view(req, await flowOf(req, req.params.id))));
@@ -83,8 +92,8 @@ router.put('/:id', mgr, async (req, res) => {
   await checkOwners(req, steps);
   const s = readSettings(b, settingsOf(f));
   // Les avis écartés qui n'existent plus sont oubliés (la clé change si les étapes changent).
-  await db.prepare('UPDATE production_flows SET name = ?, target_per_day = ?, hours_per_day = ?, steps = ?, source = ?, updated_at = ? WHERE id = ?')
-    .run(name, s.targetPerDay, s.hoursPerDay, JSON.stringify(steps), f.source === 'template' && b.steps !== undefined ? 'custom' : f.source, nowISO(), f.id);
+  await db.prepare('UPDATE production_flows SET name = ?, target_per_day = ?, hours_per_day = ?, extra = ?, steps = ?, source = ?, updated_at = ? WHERE id = ?')
+    .run(name, s.targetPerDay, s.hoursPerDay, JSON.stringify(s.extra), JSON.stringify(steps), f.source === 'template' && b.steps !== undefined ? 'custom' : f.source, nowISO(), f.id);
   await W.audit(req, 'production_flow', f.id, 'update', null, { steps: steps.length });
   res.json(await view(req, await flowOf(req, f.id)));
 });

@@ -12,4 +12,8 @@ module.exports = [
     PRIMARY KEY (org_id, kind)
   );
   `,
+  // Circuit de production : réglages Lean / TOC (prix, coût matière, frais, stocks) en JSON.
+  `
+  ALTER TABLE production_flows ADD COLUMN IF NOT EXISTS extra TEXT NOT NULL DEFAULT '{}';
+  `,
 ];

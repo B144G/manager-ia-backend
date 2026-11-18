@@ -7,6 +7,7 @@ const { db, nowISO } = require('../db');
 const A = require('./access');
 const W = require('./w3');
 const Plan = require('./prod-plan-lib');
+const Shop = require('./prod-shop-lib');
 const { HttpError } = require('../util');
 
 const router = express.Router({ mergeParams: true });
@@ -18,6 +19,8 @@ const KINDS = {
   mps: { empty: { periods: 8, level: false, products: [] }, clean: Plan.cleanMps, compute: (d) => Plan.computeMps(d) },
   mrp: { empty: { periods: 8, useMps: true, items: [] }, clean: Plan.cleanMrp, compute: (d, o) => Plan.computeMrp(d, mpsPlans(o.mps)) },
   capacity: { empty: { periods: 8, useMps: true, overtimeMaxPct: 20, centers: [], routings: [], manual: [] }, clean: Plan.cleanCapacity, compute: (d, o) => Plan.computeCapacity(d, o.mps ? Plan.computeMps(o.mps).products : []) },
+  kanban: { empty: { items: [] }, clean: Shop.cleanKanban, compute: (d) => Shop.computeKanban(d) },
+  fives: { empty: { zones: [] }, clean: Shop.cleanFives, compute: (d) => Shop.computeFives(d) },
   schedule: { empty: { hoursPerDay: 8, rule: 'edd', jobs: [] }, clean: Plan.cleanSchedule, compute: (d) => Plan.computeSchedule(d) },
 };
 function mpsPlans(mps) {
