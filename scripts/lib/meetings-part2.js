@@ -375,6 +375,18 @@ module.exports = async function part2(t) {
   check('IA : type inconnu refusé', r.status === 400, r.status);
   r = await mem('POST', `${MT}/ai/agenda`, { type: 'team', fromMeetingId: C1 });
   check('IA : une réunion confidentielle non visible ne sert pas de base (404)', r.status === 404, r.status);
+
+  // ---------- Suppression d'une organisation : plus aucune donnée de réunion ----------
+  r = await other('POST', MT2, { title: 'Réunion de l\'autre société', type: 'team', date: addD(2), time: '09:00', participants: [] });
+  check('l\'autre organisation crée sa propre réunion (propriétaire)', r.status === 201, r.json);
+  const org2Id = Number((await dbx.prepare("SELECT id FROM orgs WHERE name = 'Autre Société'").get()).id);
+  await other('POST', `${MT2}/templates`, { name: 'Modèle B', type: 'team', durationMin: 30, items: [{ title: 'Point' }] });
+  r = await other('DELETE', t.ws(t.org2), { confirm: 'Autre Société' });
+  const left = Number((await dbx.prepare('SELECT (SELECT COUNT(*) FROM mtg_meetings WHERE org_id = ?) + (SELECT COUNT(*) FROM mtg_templates WHERE org_id = ?) + (SELECT COUNT(*) FROM mtg_log WHERE org_id = ?) + (SELECT COUNT(*) FROM mtg_participants WHERE org_id = ?) AS n').get(org2Id, org2Id, org2Id, org2Id)).n);
+  check('suppression d\'une organisation : réunions, modèles, journal et participants disparaissent', r.status === 200 && left === 0, [r.status, left]);
+  const stay = Number((await dbx.prepare('SELECT COUNT(*) c FROM mtg_meetings WHERE org_id = ?').get(org)).c);
+  check('… et celles de la première organisation restent', stay > 10, stay);
+
   // Quota de messages IA de l'organisation
   const now = new Date().toISOString();
   await dbx.exec(`INSERT INTO ai_usage (org_id, user_id, created_at) SELECT ${org}, ${memId}, '${now}' FROM generate_series(1, 600)`);
