@@ -101,6 +101,7 @@ router.put('/catalog/:id', async (req, res) => {
   await db.prepare('UPDATE catalog SET name = ?, description = ?, price = ?, unit = ?, active = ?, floor_price = ?, max_discount = ?, tiers = ? WHERE id = ?').run(
     b.name === undefined ? r.name : A.text(b.name, 100, { required: true, msg: "Indiquez le nom de l'article." }), b.description === undefined ? r.description : A.text(b.description, 300),
     pf.price, b.unit === undefined ? r.unit : A.text(b.unit, 30), b.active === undefined ? r.active : b.active ? 1 : 0, pf.fp, pf.md, pf.tiers, r.id);
+  if (pf.price !== Number(r.price)) await db.prepare('INSERT INTO cp_price_history (org_id, item_id, old_price, new_price, user_id, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(req.org.id, r.id, Number(r.price), pf.price, req.user.id, A.text(b.reason, 200), nowISO()).catch(() => {}); // historique des prix (module Commercial)
   if (pf.price !== Number(r.price) || pf.fp !== Number(r.floor_price) || pf.md !== Number(r.max_discount)) await require('./w3').audit(req, 'catalog_price', r.id, 'update', { price: r.price, floor: r.floor_price, maxDiscount: r.max_discount }, { price: pf.price, floor: pf.fp, maxDiscount: pf.md });
   res.json({ ok: true });
 });

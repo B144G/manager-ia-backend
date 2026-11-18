@@ -182,6 +182,7 @@ router.put('/documents/:id', A.need('manager'), async (req, res) => {
     if (d.kind === 'invoice' && ['paid', 'credited'].includes(d.status)) throw new HttpError(400, 'Une facture payée ou soldée par avoir ne peut plus changer de statut.');
     if (d.kind === 'invoice' && st === 'draft' && (d.paid > 0 || d.credited > 0)) throw new HttpError(400, 'Cette facture a déjà reçu un paiement ou un avoir.');
     if (d.kind === 'invoice' && st === 'cancelled' && d.paid > 0) throw new HttpError(400, 'Cette facture a reçu un paiement : émettez un avoir pour l\'annuler.');
+    if (d.kind === 'quote') await require('./commercial/quotes').onQuoteStatus(req, d, st); // circuit de remise du module Commercial
     await db.prepare('UPDATE documents SET status = ? WHERE id = ?').run(st, d.id);
   }
   await db.prepare('UPDATE documents SET updated_at = ? WHERE id = ?').run(nowISO(), d.id);
@@ -214,6 +215,7 @@ router.delete('/documents/:id', A.need('manager'), async (req, res) => {
 router.post('/documents/:id/convert', A.need('manager'), async (req, res) => {
   const d = await docOf(req, req.params.id);
   if (d.kind !== 'quote' || d.status !== 'accepted') throw new HttpError(400, 'Seul un devis accepté peut devenir une facture.');
+  await require('./commercial/quotes').guardSend(req, d);
   const ord = await orderFromQuote(req, d);
   if (ord) throw new HttpError(409, `Ce devis est déjà devenu la commande ${ord.number} : facturez-la depuis l'onglet Commandes.`);
   const id = await createDoc(req, { customerId: d.customer_id, lines: JSON.parse(d.lines).map((l) => ({ ...(l.itemId ? { itemId: l.itemId } : {}), label: l.label, quantity: l.quantity, price: l.price })), note: `Suite au devis ${d.number}`, due: req.body && req.body.due }, 'invoice',
@@ -229,6 +231,7 @@ const orderFromQuote = (req, q) => db.prepare("SELECT id, number FROM documents 
 router.post('/documents/:id/order', A.need('manager'), async (req, res) => {
   const d = await docOf(req, req.params.id);
   if (d.kind !== 'quote' || !['sent', 'accepted'].includes(d.status)) throw new HttpError(400, 'Seul un devis envoyé ou accepté peut devenir une commande.');
+  await require('./commercial/quotes').guardSend(req, d);
   const ord = await orderFromQuote(req, d);
   if (ord) throw new HttpError(409, `Ce devis est déjà devenu la commande ${ord.number}.`);
   const b = req.body || {};
@@ -416,3 +419,4 @@ module.exports.overdueList = overdueList;
 module.exports.createDoc = createDoc;
 module.exports.issueCreditNote = issueCreditNote;
 module.exports.nextNumber = nextNumber;
+module.exports.cleanLines = cleanLines;

@@ -3801,6 +3801,8 @@ MIGRATIONS.push(...require('./migrations/rh-talents'));
 
 MIGRATIONS.push(...require('./migrations/administration')); // module Administration (tables adm_)
 MIGRATIONS.push(...require('./migrations/biblio-evolution'));
+// Module Commercial (CRM, prospection, pipeline, segmentation…) : tables cp_*, ajoutées en fin de tableau.
+MIGRATIONS.push(...require('./migrations/commercial-pro'));
 
 db.ready = db.migrate(MIGRATIONS);
 

@@ -53,6 +53,7 @@ pub.use('/', require('./digest').pub);
 pub.use('/', require('./followups').pub);
 // Suivi de livraison par lien secret (Transport) : /api/ws/public/track/:token
 pub.use('/', require('./tms').pub);
+pub.use('/', require('./commercial').pub);
 pub.use('/whatsapp', require('./whatsapp'));
 pub.use('/meta', require('./meta-channels'));
 
@@ -253,6 +254,7 @@ orgRouter.use('/crm', require('./crm'));
 orgRouter.use('/mail', require('./mail'));
 orgRouter.use('/sales', require('./sales').router);
 orgRouter.use('/sales-mine', require('./sales').mine);
+orgRouter.use('/commercial', require('./commercial').router);
 orgRouter.use('/aifollow', require('./ai-follow').router);
 orgRouter.use('/hr', require('./hr'));
 orgRouter.use('/talents', require('./rh-talents')); // RH Talents : droits propres (rôles RH désignés), accessible aux membres pour ce qui les concerne
