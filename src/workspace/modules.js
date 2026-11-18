@@ -24,6 +24,7 @@ const modules = [
   { id: 'accounting', title: 'Comptabilité', min: 'admin', ai: false },
   { id: 'library', title: 'Bibliothèque', min: 'member', ai: false },
   { id: 'purchasing', title: 'Achats', min: 'member', ai: false },
+  { id: 'meetings', title: 'Réunions', min: 'member', ai: false },
   { id: 'structure', title: 'Organisation', min: 'member', ai: true },
   { id: 'processes', title: 'Fonctionnement', min: 'member', ai: true },
   { id: 'team', title: 'Équipe et antennes', min: 'member', ai: true },
