@@ -121,6 +121,7 @@ const MODULE_LOOK = {
   maintenance: ['#52525b', 'ruler'], legal: ['#9f1239', 'scale'], memory: ['#7c3aed', 'book'], agents: ['#4338ca', 'chip'], accounting: ['#1f6f8b', 'wallet'],
   structure: ['#0369a1', 'building'], processes: ['#2f6f5e', 'shield'], team: ['#0d9488', 'users'], alerts: ['#b91c1c', 'lock'], integrations: ['#37474f', 'chip'],
   billing: ['#854d0e', 'wallet'], meetings: ['#7c2d12', 'users'],
+  commercial: ['#c2410c', 'target'], talents: ['#a21caf', 'user'], treasury: ['#0f766e', 'wallet'], purchasing: ['#b45309', 'cart'], history: ['#6d28d9', 'book'], administration: ['#334155', 'building'],
 };
 const LOOK_FALLBACK = ['#2f6f5e', 'folder'];
 const MODULE_RIGHTS = { member: ['vra', 'vraed', 'vraed'], manager: ['', 'vra', 'vraed'], admin: ['', '', 'vraed'], owner: ['', '', 'vraed'] };
