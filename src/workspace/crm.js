@@ -335,10 +335,9 @@ async function postCreditEntry(req, cn, customerName) {
   } catch (e) { log.warn('Avoir : écriture non passée :', oneLine(e.message, 160)); return false; }
 }
 
-router.post('/documents/:id/credit-note', A.need('manager'), async (req, res) => {
-  const d = await docOf(req, req.params.id);
+/** Émet un avoir sur une facture (réutilisé par l'entrepôt : retour client). d = facture ; b = { reason, lines?, note? }. */
+async function issueCreditNote(req, d, b) {
   if (d.kind !== 'invoice' || !['sent', 'paid'].includes(d.status)) throw new HttpError(400, 'Un avoir se rattache à une facture envoyée ou payée.');
-  const b = req.body || {};
   const reason = A.text(b.reason, 300, { required: true, msg: "Indiquez le motif de l'avoir (retour, erreur de facturation, remise…)." });
   const lines = b.lines === undefined ? JSON.parse(d.lines) : cleanLines(b.lines);
   if (b.lines === undefined && d.credited > 0) throw new HttpError(400, 'Cette facture a déjà un avoir : indiquez les lignes à créditer.');
@@ -357,7 +356,12 @@ router.post('/documents/:id/credit-note', A.need('manager'), async (req, res) =>
   const cust = await db.prepare('SELECT name FROM customers WHERE id = ?').get(d.customer_id);
   const posted = await postCreditEntry(req, cn, cust.name);
   await A.logActivity(req.org.id, req.user.id, 'crm', `Avoir ${cn.number} sur la facture ${d.number}`);
-  res.status(201).json({ id: cnId, number: cn.number, total: t.total, accountingPosted: posted });
+  return { id: cnId, number: cn.number, total: t.total, accountingPosted: posted };
+}
+
+router.post('/documents/:id/credit-note', A.need('manager'), async (req, res) => {
+  const d = await docOf(req, req.params.id);
+  res.status(201).json(await issueCreditNote(req, d, req.body || {}));
 });
 
 // ---------- Impression, e-mail, WhatsApp ----------
@@ -410,4 +414,5 @@ async function overdueList(req) {
 module.exports = router;
 module.exports.overdueList = overdueList;
 module.exports.createDoc = createDoc;
+module.exports.issueCreditNote = issueCreditNote;
 module.exports.nextNumber = nextNumber;

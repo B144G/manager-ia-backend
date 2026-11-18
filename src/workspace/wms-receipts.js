@@ -128,7 +128,7 @@ router.get('/receipts/:id', mgr, async (req, res) => {
     id: Number(r.id), code: r.code, supplier: r.supplier || null, reference: r.reference || '', createdAt: r.created_at,
     baseValue: Math.round(lines.reduce((s, l) => s + Number(l.quantity) * Number(l.unit_cost), 0)), landedCost: landed, incorporated: landed - expensed, expensed,
     lines: lines.map((l) => ({ id: Number(l.id), itemId: Number(l.item_id), name: l.name, quantity: r3(l.quantity), unitCost: Number(l.unit_cost), baseValue: Math.round(Number(l.quantity) * Number(l.unit_cost)), landedTotal: Number(l.landed_total), landedUnit: Math.round(((Number(l.quantity) * Number(l.unit_cost) + Number(l.landed_total)) / Number(l.quantity)) * 100) / 100, incorporated: Number(l.landed_total) - (exByLine[Number(l.id)] || 0), expensed: exByLine[Number(l.id)] || 0 })),
-    costs: costs.map((c) => ({ id: Number(c.id), kind: c.kind, kindLabel: COST_KINDS[c.kind] || 'Autre frais', label: c.label || '', basis: c.basis, basisLabel: BASES[c.basis], amount: Number(c.amount), expensed: Number(c.expensed), incorporated: Number(c.amount) - Number(c.expensed) })),
+    costs: costs.map((c) => ({ id: Number(c.id), kind: c.kind, kindLabel: COST_KINDS[c.kind] || 'Autre frais', label: c.label || '', basis: c.basis, basisLabel: BASES[c.basis], invoiceId: c.invoice_id ? Number(c.invoice_id) : null, amount: Number(c.amount), expensed: Number(c.expensed), incorporated: Number(c.amount) - Number(c.expensed) })),
   } });
 });
 
@@ -157,10 +157,17 @@ async function addCost(req, receiptId, c) {
 }
 router.post('/receipts/:id/costs', mgr, async (req, res) => {
   const r = await receiptOf(req, req.params.id);
-  const [c] = readCosts([req.body || {}]);
+  const b = req.body || {};
+  // Échange avec Achats : le coût peut venir d'une facture d'achat validée (la charge est déjà comptabilisée : aucune nouvelle écriture, le montant ne se répartit qu'une fois).
+  const share = b.invoiceId ? await require('./stock-compta').checkInvoiceShare(req, b.invoiceId, b.amount) : null;
+  const [c] = readCosts([share ? { ...b, amount: share.amount, label: b.label || `Facture ${share.invoice.supplier_ref || share.invoice.number}` } : b]);
   if (!c) throw new HttpError(400, 'Montant invalide.');
-  const expensed = await db.transaction(() => addCost(req, r.id, c))();
-  res.status(201).json({ ok: true, expensed });
+  const expensed = await db.transaction(async () => {
+    const ex = await addCost(req, r.id, c);
+    if (share) await db.prepare('UPDATE wms_receipt_costs SET invoice_id = ? WHERE id = (SELECT MAX(id) FROM wms_receipt_costs WHERE receipt_id = ?)').run(share.invoice.id, r.id);
+    return ex;
+  })();
+  res.status(201).json({ ok: true, expensed, invoiceId: share ? Number(share.invoice.id) : null });
 });
 router.post('/receipts/from-purchase', mgr, async (req, res) => {
   const b = req.body || {};
