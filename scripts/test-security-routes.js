@@ -5,6 +5,7 @@
 const path = require('path');
 const { run, client } = require('./lib/wave2');
 process.env.DATABASE_URL = 'pglite://memory'; process.env.NODE_ENV = 'test'; process.env.JWT_SECRET = 'x'.repeat(40);
+process.env.RATE_LIMIT_GLOBAL = process.env.RATE_LIMIT_GLOBAL || '20000'; // le balayage de ~1 900 routes dépasse la limite globale de production (3 000 requêtes / 15 min / adresse)
 const { listRoutes } = require('./lib/routes');
 const { app } = require(path.join(__dirname, '..', 'src', 'server.js'));
 
@@ -22,6 +23,7 @@ const PUBLIC = new Set([
   'GET /api/ws/public/file/:token', 'GET /api/ws/public/calendar/:token.ics', 'GET /api/ws/public/csat/:token', 'POST /api/ws/public/csat/:token',
   'GET /api/ws/public/intake/:token/info', 'GET /api/ws/public/unsubscribe/:token', 'GET /api/ws/public/digest-unsub/:token', 'GET /api/ws/public/followup-stop/:token',
   'GET /api/ws/public/whatsapp/:token', 'POST /api/ws/public/whatsapp/:token', 'GET /api/ws/public/meta/:token', 'POST /api/ws/public/meta/:token',
+  'GET /api/ws/public/quote/:token', 'POST /api/ws/public/quote/:token/accept', 'POST /api/ws/public/quote/:token/refuse', // COMMERCIAL : devis consulté / accepté / refusé par le client final via un jeton secret non devinable dans l'adresse
   'GET /api/ws/public/track/:token', // FUSION (ligne A) : suivi de livraison pour le client final, protégé par un jeton secret non devinable dans l'adresse
 ]);
 // Routes protégées par une clé d'API (en-tête), pas par un cookie : sans clé, 401 aussi.
