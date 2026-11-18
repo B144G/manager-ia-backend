@@ -70,8 +70,23 @@ if (!['lax', 'strict', 'none'].includes(sameSite)) sameSite = 'lax';
 let cookieSecure = bool('COOKIE_SECURE', isProd);
 if (sameSite === 'none') cookieSecure = true; // obligatoire pour les navigateurs
 
-const campayUser = str('CAMPAY_USERNAME');
-const campayPass = str('CAMPAY_PASSWORD');
+// --- Paiement automatique Campay (MTN / Orange) ---
+// CAMPAY_MODE : « test » (défaut, serveur de démonstration demo.campay.net, aucun argent réel) ou « reel » (campay.net). Les identifiants viennent de l'application
+// Campay : nom d'utilisateur + mot de passe d'application (CAMPAY_APP_USERNAME / CAMPAY_APP_PASSWORD) ou jeton permanent (CAMPAY_APP_TOKEN).
+// Les anciens noms CAMPAY_USERNAME / CAMPAY_PASSWORD restent acceptés. CAMPAY_WEBHOOK_KEY : clé du webhook (signature HS256 des rappels de Campay).
+const campayMode = (str('CAMPAY_MODE') || 'test').toLowerCase();
+if (!['test', 'reel'].includes(campayMode)) { console.error(`\n[ERREUR] CAMPAY_MODE doit valoir « test » ou « reel » (reçu : « ${campayMode} »).\n`); process.exit(1); }
+const campayUser = str('CAMPAY_APP_USERNAME') || str('CAMPAY_USERNAME');
+const campayPass = str('CAMPAY_APP_PASSWORD') || str('CAMPAY_PASSWORD');
+const campayToken = str('CAMPAY_APP_TOKEN');
+const campayWebhookKey = str('CAMPAY_WEBHOOK_KEY');
+const campayHasCreds = Boolean((campayUser && campayPass) || campayToken);
+if (campayMode === 'reel') {
+  const missing = [];
+  if (!campayHasCreds) missing.push('CAMPAY_APP_USERNAME + CAMPAY_APP_PASSWORD (ou CAMPAY_APP_TOKEN)');
+  if (!campayWebhookKey) missing.push('CAMPAY_WEBHOOK_KEY');
+  if (missing.length) { console.error(`\n[ERREUR] CAMPAY_MODE=reel refusé : variable(s) manquante(s) : ${missing.join(', ')}. Repassez en CAMPAY_MODE=test ou renseignez-les.\n`); process.exit(1); }
+}
 
 const config = {
   ROOT,
@@ -207,16 +222,32 @@ const config = {
   assistantDailyLimit: int('ASSISTANT_DAILY_LIMIT', 200),
 
   campay: {
+    mode: campayMode,
+    test: campayMode !== 'reel',
     username: campayUser,
     password: campayPass,
-    baseUrl: str('CAMPAY_BASE_URL', 'https://www.campay.net/api').replace(/\/+$/, ''),
-    enabled: Boolean(campayUser && campayPass),
+    token: campayToken,
+    webhookKey: campayWebhookKey,
+    // Démonstration : demo.campay.net/api (documentation Campay). Production : www.campay.net/api (adresse non écrite dans la documentation, à confirmer à l'ouverture du compte réel).
+    baseUrl: (str('CAMPAY_BASE_URL') || (campayMode === 'reel' ? 'https://www.campay.net/api' : 'https://demo.campay.net/api')).replace(/\/+$/, ''),
+    enabled: campayHasCreds,
+    pendingTtlMin: Math.max(1, int('CAMPAY_PENDING_TTL_MIN', 10)), // au-delà, une demande restée sans réponse passe à « expiré » (une confirmation tardive reste prise en compte)
+    reconcileAfterMin: Math.max(0, int('CAMPAY_RECONCILE_AFTER_MIN', 3)), // la réconciliation revérifie les paiements en attente depuis plus de N minutes
+    webhookRate: Math.max(5, int('CAMPAY_WEBHOOK_RATE', 120)), // webhooks acceptés par minute et par adresse
+    failAlertCount: Math.max(2, int('CAMPAY_FAIL_ALERT_COUNT', 3)), // échecs d'un même client (24 h) avant l'alerte e-mail à l'administrateur
   },
 
   payment: {
-    mtn: str('MTN_NUMBER'),
-    orange: str('ORANGE_NUMBER'),
-    holder: str('PAYMENT_HOLDER_NAME'),
+    mtn: str('MANUAL_PAY_MTN_NUMBER') || str('MTN_NUMBER'),
+    orange: str('MANUAL_PAY_ORANGE_NUMBER') || str('ORANGE_NUMBER'),
+    holder: str('MANUAL_PAY_ACCOUNT_NAME') || str('PAYMENT_HOLDER_NAME'),
+  },
+  // Paiement manuel de secours (« Mobile Money direct, confirmé par l'administrateur »). MANUAL_PAY_ENABLED=1/0 ; sans la variable : actif tant que Campay n'est pas
+  // configuré (comportement d'origine), et seulement si MANUAL_PAY_ENABLED=1 quand Campay est actif. N'est proposé que si au moins un numéro de réception est configuré.
+  manualPay: {
+    flag: str('MANUAL_PAY_ENABLED'),
+    ttlHours: Math.max(1, int('MANUAL_PAY_TTL_HOURS', 48)), // une commande jamais soumise expire après ce délai
+    maxAttempts: Math.max(1, int('MANUAL_PAY_MAX_ATTEMPTS', 5)), // soumissions d'identifiant par commande
   },
 
   durationDays: int('PLAN_DURATION_DAYS', 30),
@@ -244,5 +275,13 @@ const config = {
   const price = { Pro: config.legacyPlans.pro.priceXAF, 'Pro Max': config.legacyPlans.promax.priceXAF, 'Méga Pro': config.legacyPlans.megapro.priceXAF, 'Illimité': config.plans.unl_month.priceXAF };
   for (const [name, p] of Object.entries(price)) config.workspaceLimits[name].aiMonth = Math.min(config.workspaceLimits[name].aiMonth, econ.targetCap(p, 1));
 }
+
+/** Le paiement manuel est-il proposé ? Numéros configurés ET (MANUAL_PAY_ENABLED=1, ou variable absente et Campay inactif). */
+config.manualPay.available = () => {
+  const hasNumbers = Boolean(config.payment.mtn || config.payment.orange);
+  const f = config.manualPay.flag.toLowerCase();
+  const on = f ? ['1', 'true', 'yes', 'oui', 'on'].includes(f) : !config.campay.enabled;
+  return hasNumbers && on;
+};
 
 module.exports = config;

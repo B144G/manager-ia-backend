@@ -41,7 +41,7 @@ async function startLocal(port) {
   let out = '';
   child.stdout.on('data', (d) => { out += d; }); child.stderr.on('data', (d) => { out += d; });
   let up = false;
-  for (let i = 0; i < 120 && !up; i++) { await sleep(250); try { up = (await fetch(base + '/api/health')).ok; } catch { /* pas prêt */ } }
+  for (let i = 0; i < Number(process.env.TEST_START_TRIES || 120) && !up; i++) { await sleep(250); try { up = (await fetch(base + '/api/health')).ok; } catch { /* pas prêt */ } }
   if (!up) throw new Error("Le serveur local n'a pas démarré.\n" + out);
   return { base, pg, log: () => out, stop: async () => { child.kill(); await pg.stop(); } };
 }

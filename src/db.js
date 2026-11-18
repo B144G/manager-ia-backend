@@ -3803,6 +3803,8 @@ MIGRATIONS.push(...require('./migrations/administration')); // module Administra
 MIGRATIONS.push(...require('./migrations/biblio-evolution'));
 // Module Commercial (CRM, prospection, pipeline, segmentation…) : tables cp_*, ajoutées en fin de tableau.
 MIGRATIONS.push(...require('./migrations/commercial-pro'));
+// Paiement automatique Campay (colonnes de suivi des transactions, anti-rejeu des webhooks) : toujours en fin de tableau.
+MIGRATIONS.push(...require('./migrations/paiement-campay'));
 
 db.ready = db.migrate(MIGRATIONS);
 

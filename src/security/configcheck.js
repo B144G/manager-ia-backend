@@ -45,6 +45,11 @@ async function run() {
   }
   add('api-url', !config.apiPublicUrl || /^https:/.test(config.apiPublicUrl) || !prod ? 'ok' : 'warn', 'Adresse publique du serveur (API_PUBLIC_URL)', /^https:/.test(config.apiPublicUrl || '') ? 'En https.' : prod ? 'Pas en https : les liens de médias WhatsApp seraient refusés par Meta.' : 'Non définie (développement).');
   if (config.meta && (config.meta.appSecret === undefined || config.meta.appSecret === '') && (config.whatsapp.token || config.meta.verifyToken)) add('meta', 'bad', 'Signature des webhooks Meta', 'META_APP_SECRET manquant : les messages entrants ne peuvent pas être authentifiés.');
+  const cp = config.campay;
+  if (cp.enabled) {
+    add('campay-mode', cp.test ? (prod ? 'warn' : 'ok') : 'ok', 'Paiement automatique Campay', cp.test ? 'MODE TEST (serveur de démonstration) : aucun argent réel n\'est encaissé. Passez en CAMPAY_MODE=reel quand le dossier Campay est accepté.' : 'MODE RÉEL : les paiements MTN / Orange sont encaissés.');
+    add('campay-webhook', cp.webhookKey ? 'ok' : 'bad', 'Clé du webhook Campay (CAMPAY_WEBHOOK_KEY)', cp.webhookKey ? 'Définie : les rappels de Campay sont authentifiés (signature).' : 'Absente : les rappels de Campay sont refusés ; seule la réconciliation automatique confirme les paiements.');
+  }
   return { items: out, summary: { ok: out.filter((x) => x.level === 'ok').length, warn: out.filter((x) => x.level === 'warn').length, bad: out.filter((x) => x.level === 'bad').length } };
 }
 

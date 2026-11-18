@@ -152,12 +152,12 @@ async function main() {
     check('offre inconnue -> 400', r.status === 400);
     r = await user('POST', '/api/payments/initiate', { plan: 'unl_month', operator: 'mtn', phone: '670000010' });
     const pay = r.json;
-    check('initiate manuel', r.status === 200 && pay.mode === 'manual' && pay.status === 'pending' && pay.amountXAF === 80000 && /^MI-[A-Z0-9]{6}$/.test(pay.reference) && pay.instructions.includes(pay.reference) && pay.instructions.includes('670000001') && pay.instructions.includes('Titulaire Test'), r.json);
+    check('initiate manuel', r.status === 200 && pay.mode === 'manual' && pay.status === 'pending' && pay.amountXAF === 80000 && /^(MI-[A-Z0-9]{6}|BRIJ-\d{6})$/.test(pay.reference) && pay.instructions.includes(pay.reference) && pay.instructions.includes('670000001') && pay.instructions.includes('Titulaire Test'), r.json);
     r = await user('GET', '/api/payments/' + pay.reference);
     check('statut pending', r.status === 200 && r.json.status === 'pending' && r.json.plan === 'unl_month', r.json);
-    r = await client(base)('POST', '/api/payments/confirm-manual', { reference: pay.reference, transactionId: 'XXXX' });
+    r = await client(base)('POST', '/api/payments/confirm-manual', { reference: pay.reference, transactionId: 'XXXX', payerName: 'Test Payeur' });
     check('confirm-manual sans connexion -> 401', r.status === 401, r.json);
-    r = await user('POST', '/api/payments/confirm-manual', { reference: pay.reference, transactionId: 'MP240101.1234.A56789' });
+    r = await user('POST', '/api/payments/confirm-manual', { reference: pay.reference, transactionId: 'MP240101.1234.A56789', payerName: 'Test Payeur' });
     check('confirm-manual', r.status === 200 && r.json.status === 'awaiting_validation', r.json);
     r = await user('GET', '/api/payments/' + pay.reference);
     check('statut awaiting_validation', r.json.status === 'awaiting_validation', r.json);

@@ -13,19 +13,39 @@
   async function payAction(p, what) {
     if (payBusy.has(p.id)) return;
     const who = typeof p.user === 'string' ? p.user : p.user.name;
-    const r = await ask(what === 'validate'
-      ? { title: 'Valider ce paiement ?', lines: [who + ' · ' + p.planName + ' · ' + fmtXAF(p.amountXAF) + ' · réf. ' + p.reference, "L'offre sera activée tout de suite et le client sera prévenu (dans l'application, et par e-mail avec son reçu s'il a une adresse e-mail)."], confirmText: 'Oui, valider et activer' }
-      : { title: 'Refuser ce paiement ?', lines: [who + ' · ' + p.planName + ' · ' + fmtXAF(p.amountXAF) + ' · réf. ' + p.reference, 'Aucune offre ne sera activée. Le motif ci-dessous sera envoyé au client.'], danger: true, confirmText: 'Oui, refuser', reason: { label: 'Motif du refus', placeholder: 'Ex. ID de transaction introuvable, montant insuffisant…', min: 3, error: 'Le motif est obligatoire (au moins 3 caractères).' } });
-    if (!r) return;
+    const head = who + ' · ' + p.planName + ' · ' + fmtXAF(p.amountXAF) + ' · réf. ' + p.reference;
+    let r = {};
+    if (what === 'recheck') { /* lecture seule chez Campay : pas de confirmation */ } else {
+      r = await ask(what === 'validate'
+        ? { title: 'Valider ce paiement ?', lines: [head, "L'offre sera activée tout de suite et le client sera prévenu (dans l'application, et par e-mail avec son reçu s'il a une adresse e-mail)."], confirmText: 'Oui, valider et activer' }
+        : what === 'activate'
+          ? { title: 'Activer manuellement ?', lines: [head, 'À utiliser seulement si l’argent est bien arrivé et que le webhook est perdu. Campay est d’abord interrogé ; sinon l’offre est activée sur votre décision. Action tracée dans le journal d’audit.'], confirmText: 'Oui, activer', reason: { label: 'Motif (conservé dans le journal)', placeholder: 'Ex. SMS opérateur vérifié, webhook perdu…', min: 5, error: 'Le motif est obligatoire (au moins 5 caractères).' } }
+          : { title: 'Refuser ce paiement ?', lines: [head, 'Aucune offre ne sera activée. Le motif ci-dessous sera envoyé au client.'], danger: true, confirmText: 'Oui, refuser', reason: { label: 'Motif du refus', placeholder: 'Ex. ID de transaction introuvable, montant insuffisant…', min: 3, error: 'Le motif est obligatoire (au moins 3 caractères).' } });
+      if (!r) return;
+    }
     payBusy.add(p.id); A.refresh();
-    try { await api('/payments/' + p.id + '/' + what, { method: 'POST', body: r.reason ? { reason: r.reason } : {} }); toast(what === 'validate' ? 'Paiement validé : l’offre est activée et le client est prévenu.' : 'Paiement refusé : le client est prévenu avec le motif.', 'ok'); }
+    try {
+      const d = await api('/payments/' + p.id + '/' + what, { method: 'POST', body: r.reason ? { reason: r.reason } : {} });
+      toast(what === 'validate' ? 'Paiement validé : l’offre est activée et le client est prévenu.' : what === 'activate' ? 'Offre activée manuellement : action journalisée.' : what === 'recheck' ? 'Campay interrogé : statut « ' + (A.STATUS_LABEL[d.status] || d.status) + ' ».' : 'Paiement refusé : le client est prévenu avec le motif.', 'ok');
+    }
     catch (e) { fail(e); } finally { payBusy.delete(p.id); await A.reload(); }
   }
-  const payButtons = (p) => (p.status === 'paid' || p.status === 'failed' ? null : [
-    h('button', { class: 'btn sm primary', type: 'button', disabled: payBusy.has(p.id) ? '' : null, onclick: () => payAction(p, 'validate') }, icon('check', 'sm'), 'Valider'),
-    h('button', { class: 'btn sm danger-o', type: 'button', disabled: payBusy.has(p.id) ? '' : null, onclick: () => payAction(p, 'reject') }, 'Refuser')]);
-  const STATUS_LABEL = { pending: 'En attente', awaiting_validation: 'À valider', paid: 'Validé', failed: 'Refusé / échoué' };
-  const PAY_KIND = { paid: 'ok', failed: 'bad', awaiting_validation: 'warn', pending: '' };
+  const payButtons = (p) => {
+    const dis = payBusy.has(p.id) ? '' : null;
+    if (p.status === 'paid') return null;
+    if (p.mode === 'push') {
+      if (p.status === 'failed') return null;
+      return [
+        h('button', { class: 'btn sm', type: 'button', disabled: dis, onclick: () => payAction(p, 'recheck') }, icon('refresh', 'sm'), 'Revérifier chez Campay'),
+        h('button', { class: 'btn sm primary', type: 'button', disabled: dis, onclick: () => payAction(p, 'activate') }, icon('check', 'sm'), 'Activer manuellement'),
+        p.status === 'needs_review' ? h('button', { class: 'btn sm danger-o', type: 'button', disabled: dis, onclick: () => payAction(p, 'reject') }, 'Refuser') : null];
+    }
+    return p.status === 'failed' ? null : [
+      h('button', { class: 'btn sm primary', type: 'button', disabled: dis, onclick: () => payAction(p, 'validate') }, icon('check', 'sm'), 'Valider'),
+      h('button', { class: 'btn sm danger-o', type: 'button', disabled: dis, onclick: () => payAction(p, 'reject') }, 'Refuser')];
+  };
+  const STATUS_LABEL = { pending: 'En attente', awaiting_validation: 'À valider', paid: 'Validé', failed: 'Refusé / échoué', expired: 'Expiré', needs_review: 'Encaissé : à vérifier' };
+  const PAY_KIND = { paid: 'ok', failed: 'bad', awaiting_validation: 'warn', pending: '', expired: 'warn', needs_review: 'bad' };
   const payBadge = (s) => badge(STATUS_LABEL[s] || s, PAY_KIND[s] || '');
   const OPERATOR = { orange: 'Orange Money', mtn: 'MTN Mobile Money' };
   Object.assign(A, { payAction, payButtons, payBadge, STATUS_LABEL, OPERATOR, fmtDay });

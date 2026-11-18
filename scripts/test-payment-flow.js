@@ -54,11 +54,11 @@ async function main() {
     let r = await A1.c('POST', '/api/payments/initiate', { custom: { amount: 20000, period: 'month' }, operator: 'mtn', phone: '670000010' });
     check('paiement lancé en mode manuel avec une référence', r.status === 200 && r.json.mode === 'manual' && /^[A-Z0-9-]{6,}$/i.test(r.json.reference) && r.json.amountXAF === 20000, r.json);
     const ref = r.json.reference;
-    r = await A1.c('POST', '/api/payments/confirm-manual', { reference: ref, transactionId: 'ab' });
+    r = await A1.c('POST', '/api/payments/confirm-manual', { reference: ref, transactionId: 'ab', payerName: 'Test Payeur' });
     check('ID de transaction trop court refusé', r.status === 400, r.status);
-    r = await A1.c('POST', '/api/payments/confirm-manual', { reference: ref, transactionId: 'MP240101.1234.A56789' });
+    r = await A1.c('POST', '/api/payments/confirm-manual', { reference: ref, transactionId: 'MP240101.1234.A56789', payerName: 'Test Payeur' });
     check('confirmation avec l\'ID : en attente de validation', r.status === 200 && r.json.status === 'awaiting_validation', r.json);
-    r = await A1.c('POST', '/api/payments/confirm-manual', { reference: ref, transactionId: 'MP240101.1234.A56789' });
+    r = await A1.c('POST', '/api/payments/confirm-manual', { reference: ref, transactionId: 'MP240101.1234.A56789', payerName: 'Test Payeur' });
     check('double clic : accepté sans refaire de notification', r.status === 200 && r.json.already === true, r.json);
     await sleep(500);
 
@@ -81,7 +81,7 @@ async function main() {
     console.log('3. Vue Paiements : filtres et détails');
     r = await adm('GET', '/api/admin/payments?status=awaiting_validation');
     const pay = r.json.payments.find((p) => p.reference === ref);
-    check('filtre « à valider » : détails complets', pay && pay.operator === 'mtn' && pay.phone === '237670000010' && pay.transactionId === 'MP240101.1234.A56789' && pay.amountXAF === 20000 && pay.durationDays === 30 && pay.created && /Sur mesure/.test(pay.planName), pay);
+    check('filtre « à valider » : détails complets', pay && pay.operator === 'mtn' && /010$/.test(pay.phone) && !/670000010/.test(pay.phone) && pay.transactionId === 'MP240101.1234.A56789' && pay.amountXAF === 20000 && pay.durationDays === 30 && pay.created && /Sur mesure/.test(pay.planName), pay);
     check('compteurs par statut', r.json.counts.awaiting_validation === 1 && r.json.counts.paid === 0, r.json.counts);
     r = await adm('GET', '/api/admin/payments?status=paid');
     check('filtre « validés » vide pour l\'instant', r.json.payments.length === 0);
@@ -128,7 +128,7 @@ async function main() {
     check('inscription par téléphone', B.status === 201 && B.id, B.status);
     r = await B.c('POST', '/api/payments/initiate', { plan: 'unl_week', operator: 'orange', phone: '670000021' });
     const refB = r.json.reference;
-    await B.c('POST', '/api/payments/confirm-manual', { reference: refB, transactionId: 'OM-998877' });
+    await B.c('POST', '/api/payments/confirm-manual', { reference: refB, transactionId: 'OM-998877', payerName: 'Test Payeur' });
     await sleep(300);
     const rowB = await db.prepare('SELECT * FROM payments WHERE reference = ?').get(refB);
     const mailsBefore = mails.length;
@@ -145,7 +145,7 @@ async function main() {
     const Cc = await reg('Chantal Telephone', '670000031');
     r = await Cc.c('POST', '/api/payments/initiate', { plan: 'unl_month', operator: 'mtn', phone: '670000031' });
     const refC = r.json.reference;
-    await Cc.c('POST', '/api/payments/confirm-manual', { reference: refC, transactionId: 'FAUX-000111' });
+    await Cc.c('POST', '/api/payments/confirm-manual', { reference: refC, transactionId: 'FAUX-000111', payerName: 'Test Payeur' });
     await sleep(300);
     const rowC = await db.prepare('SELECT * FROM payments WHERE reference = ?').get(refC);
     r = await adm('POST', `/api/admin/payments/${rowC.id}/reject`, {});
@@ -163,7 +163,7 @@ async function main() {
     r = await Cc.c('GET', '/api/billing');
     const hist = r.json.history.find((h) => h.reference === refC);
     check('« Abonnement » affiche le refus et son motif', hist && hist.status === 'failed' && hist.rejectReason.includes('introuvable'), hist);
-    r = await Cc.c('POST', '/api/payments/confirm-manual', { reference: refC, transactionId: 'AUTRE-ID-123' });
+    r = await Cc.c('POST', '/api/payments/confirm-manual', { reference: refC, transactionId: 'AUTRE-ID-123', payerName: 'Test Payeur' });
     check('un paiement refusé ne peut pas être « reconfirmé »', r.status === 409, r.status);
     r = await adm('GET', '/api/admin/payments?status=failed');
     const pf = r.json.payments.find((p) => p.reference === refC);
@@ -173,7 +173,7 @@ async function main() {
     const D = await reg('Denis Email', 'denis.email@exemple.com');
     r = await D.c('POST', '/api/payments/initiate', { plan: 'unl_week', operator: 'orange', phone: '670000041' });
     const refD = r.json.reference;
-    await D.c('POST', '/api/payments/confirm-manual', { reference: refD, transactionId: 'OM-445566' });
+    await D.c('POST', '/api/payments/confirm-manual', { reference: refD, transactionId: 'OM-445566', payerName: 'Test Payeur' });
     await sleep(300);
     const rowD = await db.prepare('SELECT * FROM payments WHERE reference = ?').get(refD);
     await adm('POST', `/api/admin/payments/${rowD.id}/reject`, { reason: 'Montant reçu insuffisant' });
