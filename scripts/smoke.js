@@ -74,7 +74,7 @@ async function main() {
     child.stderr.on('data', (d) => { out += d; });
     child.on('exit', (code) => { if (code) console.log('Le serveur s\'est arrêté (code ' + code + ') :\n' + out); });
     let up = false;
-    for (let i = 0; i < 60 && !up; i++) {
+    for (let i = 0; i < Number(process.env.TEST_START_TRIES || 60) && !up; i++) {
       await sleep(250);
       try { up = (await fetch(base + '/api/health')).ok; } catch { /* pas encore prêt */ }
     }
