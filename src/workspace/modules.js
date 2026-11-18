@@ -29,6 +29,7 @@ const modules = [
   { id: 'team', title: 'Équipe et antennes', min: 'member', ai: true },
   { id: 'alerts', title: 'Alertes', min: 'member', ai: true },
   { id: 'integrations', title: 'Intégrations', min: 'admin', ai: false },
+  { id: 'administration', title: 'Administration', min: 'member', ai: false },
   { id: 'billing', title: 'Abonnement', min: 'owner', ai: false },
 ];
 module.exports = { modules, ids: modules.map((m) => m.id) };
