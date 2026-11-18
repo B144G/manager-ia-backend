@@ -33,6 +33,7 @@ const modules = [
   { id: 'history', title: "Histoire de l'entreprise", min: 'member', ai: false },
   { id: 'alerts', title: 'Alertes', min: 'member', ai: true },
   { id: 'integrations', title: 'Intégrations', min: 'admin', ai: false },
+  { id: 'administration', title: 'Administration', min: 'member', ai: false },
   { id: 'billing', title: 'Abonnement', min: 'owner', ai: false },
 ];
 module.exports = { modules, ids: modules.map((m) => m.id) };

@@ -3794,8 +3794,12 @@ MIGRATIONS.push(...require('./migrations/projets-production-avancee'));
 MIGRATIONS.push(...require('./migrations/reunions')); // module Réunions (tables mtg_)
 // Module « Histoire de l'entreprise » (organigramme, frise, moments forts et durs, médias).
 MIGRATIONS.push(...require('./migrations/histoire'));
-MIGRATIONS.push(...require('./migrations/fusion-achats'), ...require('./migrations/fusion-bibliotheque'), ...require('./migrations/fusion-entrepot'), ...require('./migrations/tresorerie'));
-MIGRATIONS.push(...require('./migrations/fusion-achats'), ...require('./migrations/fusion-bibliotheque'), ...require('./migrations/fusion-entrepot'), ...require('./migrations/rh-talents'));
+// Trésorerie : prévisions, scénarios, rapprochement, cash pooling (append-only).
+MIGRATIONS.push(...require('./migrations/tresorerie'));
+// RH talents : recrutement, compétences, formation, évaluations (append-only).
+MIGRATIONS.push(...require('./migrations/rh-talents'));
+
+MIGRATIONS.push(...require('./migrations/administration')); // module Administration (tables adm_)
 
 db.ready = db.migrate(MIGRATIONS);
 

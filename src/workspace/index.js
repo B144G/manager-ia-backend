@@ -266,6 +266,7 @@ orgRouter.use('/integrations', require('./integrations'));
 for (const id of ['payroll', 'fiscal', 'marketing', 'logistics', 'production', 'construction', 'maintenance', 'legal', 'memory', 'agents']) orgRouter.use('/' + id, require('./' + id));
 orgRouter.use('/structure', require('./structure'));
 orgRouter.use('/profile', require('./profile').router);
+orgRouter.use('/administration', require('./administration').router); // module Administration (tables adm_)
 orgRouter.use('/ai', require('./ai').router);
 
 module.exports = { router, pub };
