@@ -3791,6 +3791,7 @@ MIGRATIONS.push(...require('./migrations/fusion-stock-compta')); // échange sto
 MIGRATIONS.push(...require('./migrations/projets-ro'));
 // Production avancée : documents MRP / MPS / capacités / ordonnancement / lean / kanban / 5S / Six Sigma / TPM / qualité.
 MIGRATIONS.push(...require('./migrations/projets-production-avancee'));
+MIGRATIONS.push(...require('./migrations/reunions')); // module Réunions (tables mtg_)
 
 db.ready = db.migrate(MIGRATIONS);
 

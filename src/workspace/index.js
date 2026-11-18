@@ -257,6 +257,7 @@ orgRouter.use('/hr', require('./hr'));
 orgRouter.use('/accounting', require('./accounting'));
 orgRouter.use('/library', require('./library').router);
 orgRouter.use('/purchasing', require('./purchasing').router);
+orgRouter.use('/meetings', require('./meetings').router);
 orgRouter.use('/integrations', require('./integrations'));
 for (const id of ['payroll', 'fiscal', 'marketing', 'logistics', 'production', 'construction', 'maintenance', 'legal', 'memory', 'agents']) orgRouter.use('/' + id, require('./' + id));
 orgRouter.use('/structure', require('./structure'));
