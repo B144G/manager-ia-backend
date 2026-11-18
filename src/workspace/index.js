@@ -111,7 +111,8 @@ orgRouter.get('/', async (req, res) => {
   const branches = await db.prepare('SELECT id, name, location FROM branches WHERE org_id = ? ORDER BY name').all(req.org.id);
   const members = await db.prepare('SELECT user_id, role, title, branch_id FROM org_members WHERE org_id = ?').all(req.org.id);
   const me = { role: req.member.role, roleLabel: A.ROLE_LABEL[req.member.role], title: req.member.title, branchId: req.member.branch_id, userId: req.user.id };
-  const mods = modules.filter((m) => A.RANK[req.member.role] >= A.RANK[m.min]);
+  let mods = modules.filter((m) => A.RANK[req.member.role] >= A.RANK[m.min]);
+  if (!await require('./tre-lib').hasAccess(req)) mods = mods.filter((m) => m.id !== 'treasury'); // Trésorerie : réservée au responsable, aux trésoriers et aux administrateurs
   res.json({
     org: { ...orgView(req.org), plan: await A.ownerPlan(req.org) },
     me, branches, modules: mods,
@@ -255,6 +256,7 @@ orgRouter.use('/sales-mine', require('./sales').mine);
 orgRouter.use('/aifollow', require('./ai-follow').router);
 orgRouter.use('/hr', require('./hr'));
 orgRouter.use('/accounting', require('./accounting'));
+orgRouter.use('/treasury', require('./treasury'));
 orgRouter.use('/library', require('./library').router);
 orgRouter.use('/purchasing', require('./purchasing').router);
 orgRouter.use('/integrations', require('./integrations'));

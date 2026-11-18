@@ -22,6 +22,7 @@ const modules = [
   { id: 'memory', title: "Mémoire de l'entreprise", min: 'member', ai: true },
   { id: 'agents', title: 'Agents spécialisés', min: 'member', ai: false },
   { id: 'accounting', title: 'Comptabilité', min: 'admin', ai: false },
+  { id: 'treasury', title: 'Trésorerie', min: 'member', ai: false },
   { id: 'library', title: 'Bibliothèque', min: 'member', ai: false },
   { id: 'purchasing', title: 'Achats', min: 'member', ai: false },
   { id: 'structure', title: 'Organisation', min: 'member', ai: true },
