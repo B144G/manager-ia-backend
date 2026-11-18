@@ -27,9 +27,16 @@ function date(v) {
   if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(Date.parse(v))) throw new HttpError(400, 'Date invalide (format AAAA-MM-JJ).');
   return v;
 }
+/** Lit un montant saisi à la main : « 15 000 », « 15.000 », « 15000 FCFA », « 1 500,50 ». */
+function parseNum(v) {
+  if (typeof v !== 'string') return v;
+  let s = v.replace(/[\s\u00a0\u202f]/g, '').replace(/(fcfa|xaf|xof|cfa|f|€|\$)$/i, '');
+  if (/^\d{1,3}([.,]\d{3})+$/.test(s)) s = s.replace(/[.,]/g, ''); // 15.000 = quinze mille
+  return Number(s.replace(',', '.'));
+}
 function amount(v) {
-  const n = typeof v === 'string' ? Number(v.replace(/\s/g, '').replace(',', '.')) : v;
-  if (!Number.isFinite(n) || n <= 0 || n > 1e12) throw new HttpError(400, 'Montant invalide : indiquez un nombre positif.');
+  const n = parseNum(v);
+  if (!Number.isFinite(n) || n <= 0 || n > 1e12) throw new HttpError(400, 'Montant invalide : indiquez un nombre supérieur à zéro, en chiffres (par exemple 15000).');
   return Math.round(n);
 }
 /** Quantité (peut avoir des décimales, ex. 2,5 kg). allowZero pour les seuils ; jamais négative. */
