@@ -45,6 +45,8 @@ module.exports = function register(router, h) {
   // ---------- Emprunter ----------
   router.post('/records/:id/loan', async (req, res) => {
     const b = req.body || {}; const rec = await R().loadRecord(req, req.params.id); const st = await R().catSettings(req.org.id);
+    // Fusion : une ressource non prêtable donne le message clair (400) avant le refus d'accès générique (le droit « prêt » inclut « prêtable »).
+    if (!Number(rec.loanable)) throw new HttpError(400, 'Cette ressource ne se prête pas.');
     if (!(await h.can(req, rec, 'loan'))) throw new HttpError(403, 'Votre accès ne permet pas cette action.');
     const target = b.userId !== undefined && b.userId !== null && b.userId !== '' ? await A.memberOf(req, b.userId) : req.user.id;
     if (Number(target) !== Number(req.user.id) && !isManager(req)) throw new HttpError(403, 'Seul un responsable peut enregistrer un prêt au nom d’une autre personne.');

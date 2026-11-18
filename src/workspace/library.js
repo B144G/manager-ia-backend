@@ -404,7 +404,8 @@ function blockInput(b, cur) {
 }
 router.post('/blocks', A.need('admin'), async (req, res) => {
   const v = blockInput(req.body || {});
-  const n = Number((await db.prepare('SELECT COUNT(*) AS c FROM lib_blocks WHERE org_id = ?').get(req.org.id)).c);
+  // Fusion : les blocs créés d'office (un par module + blocs de départ) ne comptent pas dans la limite : seuls les blocs personnalisés sont plafonnés.
+  const n = Number((await db.prepare('SELECT COUNT(*) AS c FROM lib_blocks WHERE org_id = ? AND COALESCE(builtin, 0) = 0').get(req.org.id)).c);
   if (n >= MAX_BLOCKS) throw new HttpError(403, 'Vous avez atteint 40 blocs : supprimez-en un avant d’en ajouter.');
   const pos = Number((await db.prepare('SELECT COALESCE(MAX(position), 0) AS p FROM lib_blocks WHERE org_id = ?').get(req.org.id)).p) + 1;
   const id = Number((await db.prepare('INSERT INTO lib_blocks (org_id, slug, name, color, icon, hidden, position, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, await freeSlug(req.org.id, v.name), v.name, v.color, v.icon, v.hidden, pos, req.user.id, nowISO())).lastInsertRowid);
