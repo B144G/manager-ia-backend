@@ -1,0 +1,13 @@
+{
+ "vus": 189,
+ "problemes": [
+  "MODULE agents | MESSAGE-ERREUR | L'IA n'est pas encore activée sur ce serveur : les agents ne peuvent pas répondre.",
+  "MODULE alerts | MESSAGE-ERREUR | L'envoi d'e-mails n'est pas encore activé sur ce serveur : le résumé et les alertes ne partiront pas tant que l'administrateur n'a pas configuré le service d'e-mail.",
+  "MODULE commercial › Coaching | MESSAGE-ERREUR | Ce commercial ne figure pas dans la force de vente.",
+  "ANGLAIS projects | TEXTE-FR-EN-MODE-ANGLAIS | Hôtel Les ¦ Hôtel Les Palmier… 0 %, Boutique Mvogo 17 % ¦ Hôtel Les Palmiers : 12 chambres",
+  "ANGLAIS production | TEXTE-FR-EN-MODE-ANGLAIS | OF-0001 · Étagère murale (produit fini) × 10",
+  "ANGLAIS history | TEXTE-FR-EN-MODE-ANGLAIS | Création de l'atelier ¦ · Douala, Bonabéri ¦ Jean-Pierre ouvre l'atelier avec deux établis et un seul client. ¦ Un travail soigné et le bouche-à-oreille des premiers clients. ¦ Sylvie rejoint l’atelier pour structurer la gestion. ¦ Une pers",
+  "ANGLAIS talents | TEXTE-FR-EN-MODE-ANGLAIS | Former Éric à la lecture de plans ¦ 17/01/2027 · Éric Ndongo ¦ 18/03/2027 · Éric Ndongo",
+  "ANGLAIS administration | TEXTE-FR-EN-MODE-ANGLAIS | Livrer vingt meubles supplémentaires par trimestre ¦ Augmenter le chiffre d'affaires de l'atelier"
+ ]
+}

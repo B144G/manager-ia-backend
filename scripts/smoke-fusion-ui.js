@@ -35,7 +35,7 @@ const slug = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCa
   p.on('console', (m) => { if (m.type() === 'error' && !/status of (401|403|404)|Failed to load resource.*(401|403)/.test(m.text())) note('CONSOLE', m.text()); });
   p.on('response', (r) => { const s = r.status(); const u = r.url().replace(/^https?:\/\/[^/]+/, ''); if (s >= 500) note('HTTP-' + s, u); else if (s >= 400 && ![401, 403, 404].includes(s) && /\/api\//.test(u)) note('HTTP-' + s, u); });
   const shot = async (name, full) => { if (!SHOTS) return; try { await p.screenshot({ path: path.join(OUT, name + '.jpg'), type: 'jpeg', quality: 55, fullPage: !!full }); } catch (e) { note('CAPTURE', e.message); } };
-  const closeTour = () => p.evaluate(() => { const x = [...document.querySelectorAll('button')].find((e) => ['Plus tard', 'Later'].includes(e.textContent.trim())); if (x) x.click(); });
+  const closeTour = () => p.evaluate(() => { for (const t of ['Tout refuser', "C'est noté", 'Reject all']) { const y = [...document.querySelectorAll('button')].find((e) => e.textContent.trim() === t); if (y) y.click(); } const x = [...document.querySelectorAll('button')].find((e) => ['Plus tard', 'Later'].includes(e.textContent.trim())); if (x) x.click(); });
   const state = () => p.evaluate(() => ({
     broken: /n'a pas pu s'afficher|could not be displayed/.test(document.body.innerText),
     err: (document.querySelector('.ws-mod .ws-err') || {}).innerText || '',
@@ -55,6 +55,7 @@ const slug = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCa
   await Promise.all([p.waitForNavigation({ waitUntil: 'networkidle2' }).catch(() => {}), p.click('button[type=submit]')]); await sleep(2000);
   if (!/\/app/.test(p.url())) { note('CONNEXION', 'pas de redirection vers /app : ' + p.url()); }
 
+  await p.evaluate(() => { for (const t of ['Tout refuser', "C'est noté"]) { const x = [...document.querySelectorAll('button')].find((e) => e.textContent.trim() === t); if (x) x.click(); } });
   // 1. Tous les modules, une ouverture.
   for (const m of ALL) {
     current = 'MODULE ' + m;
@@ -66,15 +67,15 @@ const slug = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCa
   // 2. Modules de la fusion : chaque onglet / entrée de menu, avec capture.
   for (const m of NEW) {
     await p.goto(`${SITE}/app/1/${m}`, { waitUntil: 'networkidle2' }).catch(() => {}); await sleep(1000); await closeTour();
-    const SEL = '.msh-item, .ws-tabs .tab, .ws-tabs button';
-    const count = await p.evaluate((s) => document.querySelectorAll(s).length, SEL);
-    for (let i = 0; i < Math.min(count, MAX_TABS); i++) {
-      const label = await p.evaluate((s, idx) => {
-        const els = [...document.querySelectorAll(s)]; const el = els[idx]; if (!el) return null;
-        if (/↗/.test(el.textContent) || el.getAttribute('aria-disabled')) return '';
-        el.scrollIntoView(); el.click(); return el.textContent.trim().replace(/\s+/g, ' ').slice(0, 40);
-      }, SEL, i);
-      if (label === null) break; if (label === '') continue;
+    const TABSEL = '.msh-item, .ws-tabs .tab, .ws-tabs button, [role=tab]';
+    const expandAll = () => p.evaluate(() => { document.querySelectorAll('.msh-gh[aria-expanded=false]').forEach((g) => g.click()); });
+    await expandAll(); await sleep(300);
+    const labels = await p.evaluate((s) => [...new Set([...document.querySelectorAll(s)].filter((e) => !/↗/.test(e.textContent) && !e.getAttribute('aria-disabled')).map((e) => e.textContent.trim().replace(/\s+/g, ' ').slice(0, 40)))], TABSEL);
+    for (let i = 0; i < Math.min(labels.length, MAX_TABS); i++) {
+      const label = labels[i];
+      await expandAll(); await sleep(150);
+      const clicked = await p.evaluate((s, l) => { const el = [...document.querySelectorAll(s)].find((e) => e.textContent.trim().replace(/\s+/g, ' ').slice(0, 40) === l); if (!el) return false; el.scrollIntoView(); el.click(); return true; }, TABSEL, label);
+      if (!clicked) continue;
       current = `MODULE ${m} › ${label}`; await sleep(900);
       judge(await state(), `${m} › ${label}`); seen.push(`${m}›${label}`);
       await shot(`${m}--${String(i).padStart(2, '0')}-${slug(label)}`);
