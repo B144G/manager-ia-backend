@@ -270,4 +270,69 @@ module.exports = [
     created_at TEXT NOT NULL
   );
   `,
+
+  // ---------- Étape 2 : SPIN Selling, objectifs (prévision), devis versionnés avec circuit de remise ----------
+  `
+  CREATE TABLE IF NOT EXISTS cp_spin (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    opp_id BIGINT REFERENCES cp_opps(id) ON DELETE CASCADE,
+    customer_id BIGINT REFERENCES customers(id) ON DELETE CASCADE,
+    lead_id BIGINT REFERENCES cp_leads(id) ON DELETE CASCADE,
+    user_id BIGINT,
+    kind TEXT NOT NULL DEFAULT 'call',
+    held_at TEXT NOT NULL,
+    situation TEXT NOT NULL DEFAULT '[]',
+    problem TEXT NOT NULL DEFAULT '[]',
+    implication TEXT NOT NULL DEFAULT '[]',
+    payoff TEXT NOT NULL DEFAULT '[]',
+    notes TEXT NOT NULL DEFAULT '',
+    next_step TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS cp_targets (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL DEFAULT 0,
+    period TEXT NOT NULL,
+    metric TEXT NOT NULL DEFAULT 'revenue',
+    value BIGINT NOT NULL DEFAULT 0,
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    UNIQUE (org_id, user_id, period, metric)
+  );
+  CREATE TABLE IF NOT EXISTS cp_quote_meta (
+    doc_id BIGINT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    opp_id BIGINT REFERENCES cp_opps(id) ON DELETE SET NULL,
+    group_id BIGINT NOT NULL,
+    version BIGINT NOT NULL DEFAULT 1,
+    variant TEXT NOT NULL DEFAULT '',
+    superseded BIGINT NOT NULL DEFAULT 0,
+    valid_until TEXT,
+    conditions TEXT NOT NULL DEFAULT '',
+    discount_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+    list_total BIGINT NOT NULL DEFAULT 0,
+    approval_required BIGINT NOT NULL DEFAULT 0,
+    approval TEXT NOT NULL DEFAULT 'none',
+    approval_reason TEXT NOT NULL DEFAULT '',
+    approval_comment TEXT NOT NULL DEFAULT '',
+    requested_by BIGINT,
+    decided_by BIGINT,
+    decided_at TEXT,
+    accept_token TEXT,
+    sent_at TEXT,
+    viewed_at TEXT,
+    accepted_at TEXT,
+    accepted_name TEXT NOT NULL DEFAULT '',
+    refused_at TEXT,
+    refuse_reason TEXT NOT NULL DEFAULT '',
+    created_role TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS cp_quote_token ON cp_quote_meta (accept_token) WHERE accept_token IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS cp_quote_group ON cp_quote_meta (org_id, group_id);
+  `,
 ];

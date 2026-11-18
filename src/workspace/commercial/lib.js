@@ -22,6 +22,13 @@ const DEFAULTS = {
   rfmWindowMonths: 24,
   staleLeadDays: 7,
   defaultStagnantDays: 14,
+  forecastAlpha: 0.4,
+  forecastWindow: 3,
+  blendPipeline: 60,
+  scenarioFactors: { pessimistic: 0.7, central: 1, optimistic: 1.25 },
+  discountCaps: { sales_manager: 30, sales_assistant: 5, sales_field: 8 },
+  quoteValidityDays: 30,
+  marginMinPct: 10,
 };
 const mergeSettings = (stored) => {
   const s = stored && typeof stored === 'object' ? stored : {};
@@ -178,7 +185,61 @@ function matchRules(obj, rules) {
 
 const weighted = (amount, prob) => Math.round((num(amount) * clamp(num(prob))) / 100);
 
+
+// ---------- SPIN Selling : synthèse du besoin ----------
+const SPIN_KEYS = ['situation', 'problem', 'implication', 'payoff'];
+const SPIN_NEEDED = { situation: 2, problem: 1, implication: 2, payoff: 1 };
+const SPIN_WEIGHTS = { situation: 15, problem: 25, implication: 30, payoff: 30 };
+const answered = (list) => (Array.isArray(list) ? list : []).filter((x) => x && String(x.a || '').trim());
+/** Synthèse de fiches SPIN : réponses utiles par rubrique, complétude 0-100 (chaque rubrique compte jusqu'à son nombre de réponses attendu), maturité du besoin et rubriques manquantes. */
+function spinSynthesis(sheets) {
+  const out = {};
+  for (const k of SPIN_KEYS) out[k] = (sheets || []).flatMap((sh) => answered(sh[k])).map((x) => ({ q: String(x.q || ''), a: String(x.a).trim(), key: Boolean(x.key) }));
+  let completeness = 0;
+  for (const k of SPIN_KEYS) completeness += SPIN_WEIGHTS[k] * Math.min(1, out[k].length / SPIN_NEEDED[k]);
+  const missing = SPIN_KEYS.filter((k) => out[k].length < SPIN_NEEDED[k]);
+  const pick = (k) => (out[k].find((x) => x.key) || out[k][0] || {}).a || '';
+  const maturity = out.problem.length && out.implication.length && out.payoff.length ? 'explicit' : out.problem.length ? 'implicit' : 'none';
+  return { sections: out, counts: Object.fromEntries(SPIN_KEYS.map((k) => [k, out[k].length])), completeness: Math.round(completeness), missing, maturity, need: { problem: pick('problem'), implication: pick('implication'), payoff: pick('payoff') } };
+}
+
+// ---------- Prévision ----------
+/** Moyenne mobile des k dernières valeurs. */
+const movingAverage = (series, k = 3) => { const t = series.slice(-k); return t.length ? t.reduce((a, b) => a + b, 0) / t.length : 0; };
+/** Lissage exponentiel simple : niveau_0 = y_0, niveau_t = α·y_t + (1−α)·niveau_(t−1) ; la prévision est le dernier niveau. */
+function ses(series, alpha = 0.4) {
+  if (!series.length) return 0;
+  let l = series[0];
+  for (let i = 1; i < series.length; i++) l = alpha * series[i] + (1 - alpha) * l;
+  return l;
+}
+/** Rétro-test : pour chaque mois t ≥ minHistory, prévision faite avec les mois avant t, comparée au réalisé ; erreur moyenne en % (MAPE) sur les mois non nuls. */
+function backtest(series, alpha = 0.4, minHistory = 3) {
+  const rows = [];
+  for (let t = minHistory; t < series.length; t++) {
+    const f = ses(series.slice(0, t), alpha);
+    rows.push({ index: t, actual: series[t], forecast: Math.round(f), errorPct: series[t] ? Math.round((Math.abs(series[t] - f) * 1000) / series[t]) / 10 : null });
+  }
+  const ok = rows.filter((r) => r.errorPct !== null);
+  return { rows, mape: ok.length ? Math.round((ok.reduce((a, r) => a + r.errorPct, 0) / ok.length) * 10) / 10 : null };
+}
+/** Atterrissage d'un mois = déjà réalisé + pipeline pondéré (W) selon le scénario ; l'optimiste est plafonné au pipeline non pondéré (A). */
+function landing(realized, W, A, f = DEFAULTS.scenarioFactors) {
+  return { pessimistic: Math.round(realized + W * f.pessimistic), central: Math.round(realized + W * f.central), optimistic: Math.round(realized + Math.min(W * f.optimistic, A)) };
+}
+
+// ---------- Devis : remise par rapport au prix de liste ----------
+/** Remise en % (1 décimale) = 1 − total vendu / total au prix de liste. Un prix de liste inconnu (0) se compte au prix de la ligne. */
+function discountPct(lines) {
+  let sold = 0; let list = 0;
+  for (const l of lines) { const q = num(l.quantity); const p = num(l.price); const lp = num(l.listPrice) > 0 ? num(l.listPrice) : p; sold += q * p; list += q * Math.max(lp, p); }
+  return list > 0 ? Math.round((1 - sold / list) * 1000) / 10 : 0;
+}
+/** Plafond de remise (en %) d'un rôle ; le responsable du compte n'a pas de plafond. */
+const discountCap = (role, boss, caps = DEFAULTS.discountCaps) => (boss ? 100 : num(caps[role], 0));
+
 module.exports = {
+  SPIN_KEYS, SPIN_NEEDED, spinSynthesis, movingAverage, ses, backtest, landing, discountPct, discountCap,
   clamp, round, num, dayMs, toDay, daysBetween, addDays, monthOf, addMonths, monthsBetween,
   DEFAULTS, mergeSettings, BANT_KEYS, bantScore, scoreLead, pickAssignee,
   normName, phoneKey, emailKey, dice, duplicateGroups, quintile, RFM_SEGMENTS, rfmSegment, rfm, abc, RULE_OPS, matchRules, weighted, stripAccents,
