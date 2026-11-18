@@ -117,6 +117,9 @@ function findings(steps, st, ctx = {}) {
     const bare = info.filter((o) => o.e.machine && !ctx.maintenance.includes(o.e.machine.toLowerCase()));
     group('tpmNoPlan', 'medium', bare, {}, [{ id: 'planMaintenance', apply: false }]);
   }
+  // Qualité : un contrôle qualité sans plan de contrôle écrit ; TPM : machine au rendement très bas (TRS)
+  if (typeof ctx.qualityPlans === 'number' && ctx.qualityPlans === 0 && steps.some((s) => s.kind === 'qc')) out.push({ code: 'qcNoPlan', severity: 'medium', stepIds: steps.filter((s) => s.kind === 'qc').map((s) => s.id), params: {}, solutions: [{ id: 'manualPlan', apply: false }] });
+  if (ctx.oee) group('tpmLowOee', 'medium', info.filter((o) => o.e.machine && ctx.oee[o.e.machine.toLowerCase()] !== undefined && ctx.oee[o.e.machine.toLowerCase()] < 40), { oee: Math.min(...info.filter((o) => o.e.machine && ctx.oee[o.e.machine.toLowerCase()] !== undefined).map((o) => ctx.oee[o.e.machine.toLowerCase()])) }, [{ id: 'manualTpm', apply: false }]);
   return out;
 }
 

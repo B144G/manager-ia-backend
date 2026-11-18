@@ -7,6 +7,7 @@ const Plan = require('../src/workspace/prod-plan-lib');
 const Lean = require('../src/workspace/prod-lean-lib');
 const Shop = require('../src/workspace/prod-shop-lib');
 const Flow = require('../src/workspace/prod-flow-lib');
+const Q = require('../src/workspace/prod-quality-lib');
 
 let passed = 0; let failed = 0;
 const check = (name, cond, extra) => { if (cond) { passed++; console.log('  OK   ' + name); } else { failed++; console.log('  ECHEC ' + name + (extra !== undefined ? ' -> ' + JSON.stringify(extra) : '')); } };
@@ -200,9 +201,80 @@ async function httpStage2(ctx) {
   check('autre organisation : circuit invisible', (await ctx.other('GET', `/api/ws/orgs/${ctx.org2}/production/flows/${fid}/lean`)).status === 404);
 }
 
+function stage3() {
+  console.log('Six Sigma : cartes de contrôle, capabilité, DPMO, Pareto, Ishikawa, DMAIC');
+  const g = [[10.1, 10.0, 9.9, 10.2], [10.0, 10.1, 10.0, 9.8], [10.3, 10.2, 10.1, 10.0], [9.9, 10.0, 10.1, 10.0], [10.0, 10.1, 9.9, 10.1]];
+  const six = Q.computeSix(Q.cleanSix({ spec: { lsl: 9.5, usl: 10.5 }, xr: { subgroups: g }, dpmo: { units: 1000, opportunities: 5, defects: 15 }, defects: [{ cause: 'a', count: 20 }, { cause: 'b', count: 50 }, { cause: 'c', count: 30 }], ishikawa: { problem: 'Rayures', causes: { machine: ['usure', 'réglage'], man: ['formation'] } }, projects: [{ title: 'Réduire les rayures', phase: 'analyze', tasks: [{ text: 'Mesurer', phase: 'measure', done: true }, { text: 'Pareto', phase: 'analyze' }] }], p: { samples: [{ n: 100, d: 2 }, { n: 100, d: 3 }, { n: 100, d: 2 }, { n: 100, d: 25 }] } }));
+  check('carte X-barre : moyenne des moyennes et limites ± A2 × R-barre', six.xr.x.center === 10.04 && near(six.xr.x.ucl, 10.04 + 0.729 * 0.26, 0.01), six.xr.x);
+  check('carte R : limites avec D3 = 0 et D4 = 2,282', six.xr.r.lcl === 0 && near(six.xr.r.ucl, 2.282 * six.xr.r.center, 0.01));
+  check('processus stable sur cet exemple', six.xr.stable === true);
+  const bad = Q.computeSix(Q.cleanSix({ xr: { subgroups: [[10, 10.1], [10, 10.1], [10.05, 10.1], [10.4, 10.5], [10, 10.1], [10.05, 10.05], [10, 10.1]] } }));
+  check('un point hors limites est détecté', bad.xr.x.signals.some((s) => s.rule === 'limit' && s.index === 3), bad.xr.x.signals);
+  check('Cp, Cpk et niveau sigma calculés', six.capability.cp > six.capability.cpk && six.capability.cpk > 0 && six.capability.sigmaLevel > 3, six.capability);
+  check('verdict de capabilité (Cpk entre 1 et 1,33 : limite)', six.capability.verdict === 'marginal', six.capability);
+  check('DPMO = 15 / (1000 × 5) × 1 000 000 = 3 000, niveau sigma ≈ 4,25', six.dpmo.dpmo === 3000 && near(six.dpmo.sigmaLevel, 4.25, 0.02), six.dpmo);
+  check('Pareto trié, cumul et « quelques causes vitales » (50 + 30 = 80 %)', six.pareto[0].cause === 'b' && six.pareto[1].cumPct === 80 && six.vitalFew.length === 2, six.pareto);
+  check('carte p : un échantillon à 25 % est hors contrôle', six.p.signals.join() === '3' && !six.p.stable, six.p);
+  check('Ishikawa : la catégorie la plus chargée est la machine', six.ishikawa.main === 'machine');
+  check('DMAIC : avancement et prochaine étape guidée', six.projects[0].progress === 50 && six.projects[0].nextStep === 'rootcause', six.projects[0]);
+  check('sous-groupes de tailles différentes refusés', throws(() => Q.cleanSix({ xr: { subgroups: [[1, 2], [1, 2, 3]] } })));
+  check('niveau sigma 6 ↔ 3,4 DPMO (convention 1,5 sigma)', near(Q.sigmaFromDpmo(3.4), 6, 0.05));
+
+  console.log('TPM : TRS, 6 pertes, MTBF / MTTR, calendrier');
+  const tp = Q.computeTpm(Q.cleanTpm({ machines: [{ name: 'Presse', plannedHours: 160, breakdownHours: 8, setupHours: 12, minorStopHours: 5, idealCycleMin: 1, totalCount: 8000, goodCount: 7600, failures: [{ date: '2026-01-02', hours: 3 }, { date: '2026-02-01', hours: 5 }], pm: [{ task: 'Graissage', everyDays: 30, lastDone: '2026-01-01' }, { task: 'Nettoyage', kind: 'autonomous', everyDays: 7, lastDone: '2026-02-27' }] }, { name: 'Emballeuse', plannedHours: 100 }] }), '2026-03-01');
+  const m = tp.machines[0];
+  check('disponibilité = (planifié − pannes − réglages) / planifié = 87,5 %', m.availability === 87.5, m);
+  check('qualité = bonnes / produites = 95 %', m.quality === 95);
+  check('TRS = disponibilité × performance × qualité', near(m.oee, m.availability * m.performance * m.quality / 10000, 0.15), m.oee);
+  check('6 grandes pertes chiffrées, la plus lourde identifiée (réglages)', m.losses.length === 6 && m.biggestLoss === 'setup', m.losses);
+  check('MTBF et MTTR depuis la liste des pannes', m.mtbf > 0 && m.mttr === 4, { mtbf: m.mtbf, mttr: m.mttr });
+  check('calendrier : graissage en retard, nettoyage bientôt dû', m.calendar.find((c) => c.task === 'Graissage').status === 'overdue' && m.calendar.find((c) => c.task === 'Nettoyage').status === 'soon', m.calendar);
+  check('machine sans plan de maintenance signalée', tp.noPlan.join() === 'Emballeuse' && tp.overdue >= 1);
+
+  console.log('Qualité : AQL, non-conformités, CAPA, traçabilité');
+  check('échantillonnage : lot 500 → échantillon 50 (code H), acceptation 3 à AQL 2,5', Q.sampling(500, 2.5).sample === 50 && Q.sampling(500, 2.5).accept === 3);
+  check('échantillonnage : lot 1 200, AQL 1,0 → 80 pièces, 2 défauts acceptés', Q.sampling(1200, 1).sample === 80 && Q.sampling(1200, 1).accept === 2);
+  const oc = Q.sampling(500, 2.5).oc;
+  check('courbe d\'efficacité décroissante (plus de défauts, moins de lots acceptés)', oc.every((p, i) => i === 0 || p.accept <= oc[i - 1].accept) && oc[0].accept > 90);
+  const ql = Q.computeQuality(Q.cleanQuality({ produced: 1000, plans: [{ stage: 'final', characteristic: 'Poids', aql: 2.5, lotSize: 500 }], ncs: [{ id: 'n1', date: '2026-02-01', lot: 'L1', qty: 20, disposition: 'scrap', cause: 'Réglage', category: 'machine', capa: { action: 'Refaire le réglage', due: '2026-02-10' } }, { id: 'n2', date: '2026-02-02', lot: 'L2', qty: 30, disposition: 'rework', cause: 'Formation', category: 'man', status: 'closed', capa: { action: 'Former', done: true, effective: true } }], lots: [{ code: 'L1', product: 'Savon', qty: 500, materialLots: ['M-7'] }, { code: 'L2', qty: 500, materialLots: ['M-7', 'M-8'] }] }), '2026-03-01');
+  check('taux de rebut 2 % et de retouche 3 %', ql.rates.scrapPct === 2 && ql.rates.reworkPct === 3, ql.rates);
+  check('Pareto des causes de non-conformité', ql.pareto[0].cause === 'Formation' && ql.pareto[0].cumPct === 60);
+  check('CAPA en retard comptée, étapes sans plan de contrôle signalées', ql.capa.late === 1 && ql.missingStages.join() === 'incoming,inprocess', ql.capa);
+  check('traçabilité : un lot de matière retrouve les lots finis qui l\'ont utilisé', ql.materialUse.find((x) => x.material === 'M-7').lots.join() === 'L1,L2' && ql.lots[0].ncQty === 20, ql.materialUse);
+}
+
+async function httpStage3(ctx) {
+  const { O, owner, mem } = ctx;
+  console.log('Production avancée (HTTP) : étape 3');
+  let r = await owner('PUT', `${O}/production/adv/sixsigma`, { spec: { lsl: 9.5, usl: 10.5 }, xr: { subgroups: [[10, 10.1, 9.9], [10, 10.2, 10], [10.1, 9.9, 10], [10, 10, 10.1]] }, defects: [{ cause: 'rayure', count: 5 }] });
+  check('Six Sigma enregistré et calculé', r.status === 200 && r.json.result.xr.x.center > 9 && r.json.result.pareto.length === 1, r.json.result.xr);
+  r = await owner('PUT', `${O}/production/adv/tpm`, { machines: [{ name: 'Mélangeur', plannedHours: 160, breakdownHours: 40, setupHours: 20, idealCycleMin: 1, totalCount: 4000, goodCount: 3200 }] });
+  check('TPM : TRS bas calculé', r.status === 200 && r.json.result.machines[0].oee < 40 && r.json.result.noPlan.length === 1, r.json.result.machines[0]);
+  r = await owner('PUT', `${O}/production/adv/quality`, { produced: 1000, plans: [], ncs: [{ date: '2026-02-01', qty: 10, lot: 'L1', cause: 'x' }] });
+  check('qualité enregistrée', r.status === 200 && r.json.result.rates.scrapPct === 1, r.json.result.rates);
+  check('lecture du module Maintenance (lecture seule)', (await owner('GET', `${O}/production/adv/import/maintenance`)).status === 200);
+  check('un simple membre ne modifie ni TPM ni qualité', (await mem('PUT', `${O}/production/adv/tpm`, { machines: [] })).status === 403 && (await mem('GET', `${O}/production/adv/tpm`)).status === 200);
+  check('document invalide refusé (sous-groupes inégaux)', (await owner('PUT', `${O}/production/adv/sixsigma`, { xr: { subgroups: [[1, 2], [1, 2, 3]] } })).status === 400);
+  // Intégration à l'analyse du circuit
+  r = await owner('POST', `${O}/production/flows`, { name: 'Savons', sector: 'cosmetics', targetPerDay: 1 });
+  const fid = r.json.id;
+  const steps = r.json.steps.map((s, i) => ({ ...s, machine: i === 2 ? 'Mélangeur' : (i === 3 ? 'Banc de test' : '') }));
+  r = await owner('PUT', `${O}/production/flows/${fid}`, { steps });
+  const codes = r.json.analysis.findings.map((f) => f.code);
+  check('machine au TRS très bas signalée dans l\'analyse du circuit', codes.includes('tpmLowOee'), codes);
+  check('machine sans plan de maintenance signalée dans l\'analyse du circuit', codes.includes('tpmNoPlan'), codes);
+  check('contrôle qualité sans plan de contrôle signalé', codes.includes('qcNoPlan'), codes);
+  r = await owner('PUT', `${O}/production/adv/quality`, { produced: 1000, plans: [{ stage: 'final', characteristic: 'Poids', aql: 2.5, lotSize: 500 }] });
+  r = await owner('PUT', `${O}/production/adv/tpm`, { machines: [{ name: 'Mélangeur', plannedHours: 160, idealCycleMin: 1, totalCount: 100, goodCount: 100, pm: [{ task: 'Graissage', everyDays: 30, lastDone: '2026-01-01' }] }, { name: 'Banc de test', pm: [{ task: 'Étalonnage', everyDays: 90 }] }] });
+  r = await owner('GET', `${O}/production/flows/${fid}`);
+  const c2 = r.json.analysis.findings.map((f) => f.code);
+  check('une fois le plan de contrôle et la maintenance créés, ces avis disparaissent', !c2.includes('qcNoPlan') && !c2.includes('tpmNoPlan'), c2);
+}
+
 async function main() {
   stage1();
   stage2();
+  stage3();
   const a = await fakeAi();
   const pgt = await startTestPg();
   for (const k of ['ALLOWED_ORIGINS', 'COOKIE_SAMESITE', 'COOKIE_SECURE', 'WHATSAPP_PHONE_ID', 'WHATSAPP_TOKEN', 'CAMPAY_USERNAME', 'CAMPAY_PASSWORD', 'BUSINESS_FILE', 'KNOWLEDGE_DIR', 'META_APP_ID', 'META_APP_SECRET', 'BREVO_API_KEY', 'SMTP_HOST']) process.env[k] = '';
@@ -226,6 +298,7 @@ async function main() {
     const ctx = { O, owner, mem, other, org2, members, paulId: members.find((m) => m.name === 'Paul').userId };
     await httpStage1(O, owner, mem);
     await httpStage2(ctx);
+    await httpStage3(ctx);
     console.log('Cloisonnement');
     r = await other('GET', `/api/ws/orgs/${org2}/production/adv/mps`);
     check('une autre organisation ne voit pas le plan directeur', r.status === 200 && r.json.saved === false && r.json.doc.products.length === 0);

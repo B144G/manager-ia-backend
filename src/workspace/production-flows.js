@@ -11,6 +11,17 @@ const { HttpError } = require('../util');
 
 const router = express.Router({ mergeParams: true });
 const mgr = A.need('manager');
+const Q = require('./prod-quality-lib');
+/** Liens avec les autres techniques (lecture seule) : machines couvertes par un plan de maintenance, TRS des machines, plans de contrôle qualité. */
+async function linkCtx(req) {
+  const docs = {};
+  for (const r of await db.prepare("SELECT kind, data FROM production_docs WHERE org_id = ? AND kind IN ('tpm', 'quality')").all(req.org.id)) docs[r.kind] = JSON.parse(r.data || '{}');
+  const covered = new Set(); const oee = {};
+  if (docs.tpm) { try { for (const m of Q.computeTpm(Q.cleanTpm(docs.tpm)).machines) { if (m.hasPlan) covered.add(m.name.toLowerCase()); oee[m.name.toLowerCase()] = m.oee; } } catch { /* document abîmé */ } }
+  for (const e of await db.prepare('SELECT DISTINCT e.name FROM maintenance_equipment e JOIN maintenance_plans p ON p.equipment_id = e.id WHERE e.org_id = ?').all(req.org.id)) covered.add(String(e.name).toLowerCase());
+  let plans = null; if (docs.quality) { try { plans = Q.cleanQuality(docs.quality).plans.length; } catch { plans = null; } }
+  return { maintenance: [...covered], oee, qualityPlans: plans };
+}
 const json = (s, def) => { try { return JSON.parse(s); } catch { return def; } };
 
 async function members(req) {
@@ -25,7 +36,7 @@ const settingsOf = (f) => ({ targetPerDay: Number(f.target_per_day), hoursPerDay
 async function view(req, f, mem) {
   const m = mem || await members(req);
   const steps = json(f.steps, []); const dismissed = json(f.dismissed, []);
-  const a = F.analyze(steps, settingsOf(f), { members: m }, dismissed);
+  const a = F.analyze(steps, settingsOf(f), { members: m, ...(await linkCtx(req)) }, dismissed);
   const name = new Map(m.map((x) => [x.userId, x.name]));
   const calc = new Map(a.steps.map((r) => [r.id, r]));
   return {
@@ -80,7 +91,7 @@ router.get('/:id/:tech(lean|toc|jit)', async (req, res) => {
   const f = await flowOf(req, req.params.id); const steps = json(f.steps, []); const st = settingsOf(f);
   const out = req.params.tech === 'lean' ? Lean.lean(steps, st) : req.params.tech === 'toc' ? Lean.toc(steps, st, st.extra) : Lean.jit(steps, st);
   const mem = await members(req);
-  res.json({ ...out, flow: { id: Number(f.id), name: f.name, targetPerDay: st.targetPerDay, hoursPerDay: st.hoursPerDay, extra: st.extra }, score: F.analyze(steps, st, { members: mem }, json(f.dismissed, [])).score });
+  res.json({ ...out, flow: { id: Number(f.id), name: f.name, targetPerDay: st.targetPerDay, hoursPerDay: st.hoursPerDay, extra: st.extra }, score: F.analyze(steps, st, { members: mem, ...(await linkCtx(req)) }, json(f.dismissed, [])).score });
 });
 
 router.get('/:id', async (req, res) => res.json(await view(req, await flowOf(req, req.params.id))));
@@ -110,7 +121,7 @@ router.post('/:id/apply', mgr, async (req, res) => {
   const f = await flowOf(req, req.params.id); const b = req.body || {};
   const mem = await members(req);
   const steps = json(f.steps, []);
-  const a = F.analyze(steps, settingsOf(f), { members: mem }, json(f.dismissed, []));
+  const a = F.analyze(steps, settingsOf(f), { members: mem, ...(await linkCtx(req)) }, json(f.dismissed, []));
   const finding = a.findings.find((x) => x.key === String(b.key || ''));
   if (!finding) throw new HttpError(404, 'Cet avis n\'existe plus : le circuit a changé.');
   let out;

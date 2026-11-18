@@ -8,6 +8,7 @@ const A = require('./access');
 const W = require('./w3');
 const Plan = require('./prod-plan-lib');
 const Shop = require('./prod-shop-lib');
+const Q = require('./prod-quality-lib');
 const { HttpError } = require('../util');
 
 const router = express.Router({ mergeParams: true });
@@ -21,6 +22,9 @@ const KINDS = {
   capacity: { empty: { periods: 8, useMps: true, overtimeMaxPct: 20, centers: [], routings: [], manual: [] }, clean: Plan.cleanCapacity, compute: (d, o) => Plan.computeCapacity(d, o.mps ? Plan.computeMps(o.mps).products : []) },
   kanban: { empty: { items: [] }, clean: Shop.cleanKanban, compute: (d) => Shop.computeKanban(d) },
   fives: { empty: { zones: [] }, clean: Shop.cleanFives, compute: (d) => Shop.computeFives(d) },
+  sixsigma: { empty: { spec: {}, xr: { subgroups: [] }, p: { samples: [] }, dpmo: {}, defects: [], ishikawa: { causes: {} }, projects: [] }, clean: Q.cleanSix, compute: (d) => Q.computeSix(d) },
+  tpm: { empty: { machines: [] }, clean: Q.cleanTpm, compute: (d) => Q.computeTpm(d) },
+  quality: { empty: { produced: 0, plans: [], ncs: [], lots: [] }, clean: Q.cleanQuality, compute: (d) => Q.computeQuality(d) },
   schedule: { empty: { hoursPerDay: 8, rule: 'edd', jobs: [] }, clean: Plan.cleanSchedule, compute: (d) => Plan.computeSchedule(d) },
 };
 function mpsPlans(mps) {
@@ -61,6 +65,13 @@ router.get('/import/stock', async (req, res) => {
     boms: boms.map((b) => ({ product: name.get(Number(b.product_id)) || null, productId: Number(b.product_id), lines: lines.filter((l) => Number(l.bom_id) === Number(b.id)).map((l) => ({ item: name.get(Number(l.item_id)) || null, itemId: Number(l.item_id), qty: Number(l.quantity) })) })),
     openPurchases: orders.map((o) => ({ itemId: Number(o.item_id), item: name.get(Number(o.item_id)) || null, qty: Number(o.q) })),
   });
+});
+
+/** Équipements et plans du module Maintenance (lecture seule) : pour pré-remplir les machines du TPM. */
+router.get('/import/maintenance', async (req, res) => {
+  const eq = await db.prepare('SELECT id, name, status FROM maintenance_equipment WHERE org_id = ? ORDER BY name LIMIT 100').all(req.org.id);
+  const plans = await db.prepare('SELECT equipment_id, task, period_kind, period_value, last_done_at FROM maintenance_plans WHERE org_id = ?').all(req.org.id);
+  res.json({ equipment: eq.map((e) => ({ id: Number(e.id), name: e.name, status: e.status, plans: plans.filter((p) => Number(p.equipment_id) === Number(e.id)).map((p) => ({ task: p.task, everyDays: p.period_kind === 'days' ? Number(p.period_value) : null, lastDone: p.last_done_at ? String(p.last_done_at).slice(0, 10) : '' })) })) });
 });
 
 router.get('/:kind', async (req, res) => {
