@@ -3794,6 +3794,7 @@ MIGRATIONS.push(...require('./migrations/projets-production-avancee'));
 MIGRATIONS.push(...require('./migrations/reunions')); // module Réunions (tables mtg_)
 // Module « Histoire de l'entreprise » (organigramme, frise, moments forts et durs, médias).
 MIGRATIONS.push(...require('./migrations/histoire'));
+MIGRATIONS.push(...require('./migrations/fusion-achats'), ...require('./migrations/fusion-bibliotheque'), ...require('./migrations/fusion-entrepot'), ...require('./migrations/tresorerie'));
 
 db.ready = db.migrate(MIGRATIONS);
 
