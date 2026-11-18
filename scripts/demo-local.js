@@ -49,6 +49,7 @@ async function main() {
   const ownerCall = (method, path, body) => clients[owner.contact](method, '/api/ws' + path, body);
   const team = PEOPLE.slice(1).map((p) => ({ name: p.name.split(' ')[0], role: p.role, job: p.job, userId: p.userId, call: (method, path, body) => clients[p.contact](method, '/api/ws' + path, body) }));
   const report = await seed(ownerCall, { team });
+  if (report.org) { const { seedTalents } = require('./lib/demo-seed-talents'); const rt = await seedTalents(ownerCall, report.org, team); report.failed.push(...rt.failed); }
   console.log('\n==============================================================');
   console.log('ENTREPRISE DE TEST PRÊTE : « Atelier Nkoulou (TEST) »');
   console.log('Serveur local : ' + base + '   (ouvrez le site avec « npm run dev » : http://localhost:5173)');
