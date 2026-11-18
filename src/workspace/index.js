@@ -254,6 +254,7 @@ orgRouter.use('/sales', require('./sales').router);
 orgRouter.use('/sales-mine', require('./sales').mine);
 orgRouter.use('/aifollow', require('./ai-follow').router);
 orgRouter.use('/hr', require('./hr'));
+orgRouter.use('/talents', require('./rh-talents')); // RH Talents : droits propres (rôles RH désignés), accessible aux membres pour ce qui les concerne
 orgRouter.use('/accounting', require('./accounting'));
 orgRouter.use('/library', require('./library').router);
 orgRouter.use('/purchasing', require('./purchasing').router);

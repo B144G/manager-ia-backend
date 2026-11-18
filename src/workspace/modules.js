@@ -11,6 +11,7 @@ const modules = [
   { id: 'sales', title: 'Assistant commercial', min: 'member', ai: true },
   { id: 'aifollow', title: "Suivi de l'IA", min: 'manager', ai: false },
   { id: 'hr', title: 'Ressources humaines', min: 'manager', ai: true },
+  { id: 'talents', title: 'Talents et compétences', min: 'member', ai: false }, // RH Talents : droits propres (rôles RH désignés par le propriétaire)
   { id: 'payroll', title: 'Paie', min: 'admin', ai: true },
   { id: 'fiscal', title: 'Fiscalité et liasse', min: 'admin', ai: true },
   { id: 'marketing', title: 'Marketing', min: 'member', ai: true },
