@@ -294,11 +294,12 @@ async function refsOf(req, b) {
 }
 const ACT_KINDS = ['call', 'visit', 'meeting', 'message', 'email'];
 router.get('/activities', P.need('view'), async (req, res) => {
-  const { from, to } = B.range(req.query);
+  const ref = req.query.customerId ? ['customer_id', req.query.customerId] : req.query.leadId ? ['lead_id', req.query.leadId] : req.query.oppId ? ['opp_id', req.query.oppId] : null;
+  const { from, to } = B.range(ref ? { ...req.query, from: req.query.from || '2000-01-01' } : req.query);
   const ow = await P.own(req, 'a.user_id');
   const names = await B.names(req.org.id);
-  const rows = await db.prepare(`SELECT a.*, c.name AS customer, l.name AS lead FROM cp_activities a LEFT JOIN customers c ON c.id = a.customer_id LEFT JOIN cp_leads l ON l.id = a.lead_id WHERE a.org_id = ? AND a.happened_at >= ? AND a.happened_at < ?${ow.sql}${req.query.userId ? ' AND a.user_id = ?' : ''} ORDER BY a.happened_at DESC LIMIT 300`)
-    .all(req.org.id, `${from}T00:00:00`, `${L.addDays(to, 1)}T00:00:00`, ...ow.args, ...(req.query.userId ? [A.id(req.query.userId)] : []));
+  const rows = await db.prepare(`SELECT a.*, c.name AS customer, l.name AS lead FROM cp_activities a LEFT JOIN customers c ON c.id = a.customer_id LEFT JOIN cp_leads l ON l.id = a.lead_id WHERE a.org_id = ? AND a.happened_at >= ? AND a.happened_at < ?${ow.sql}${req.query.userId ? ' AND a.user_id = ?' : ''}${ref ? ` AND a.${ref[0]} = ?` : ''} ORDER BY a.happened_at DESC LIMIT 300`)
+    .all(req.org.id, `${from}T00:00:00`, `${L.addDays(to, 1)}T00:00:00`, ...ow.args, ...(req.query.userId ? [A.id(req.query.userId)] : []), ...(ref ? [A.id(ref[1])] : []));
   res.json({ activities: rows.map((a) => ({ id: Number(a.id), kind: a.kind, customerId: a.customer_id ? Number(a.customer_id) : null, customer: a.customer || '', leadId: a.lead_id ? Number(a.lead_id) : null, lead: a.lead || '', oppId: a.opp_id ? Number(a.opp_id) : null, userId: Number(a.user_id), user: names.get(Number(a.user_id)) || '', outcome: a.outcome, durationMin: N(a.duration_min), note: a.note, at: a.happened_at })) });
 });
 router.post('/activities', P.need('activity'), async (req, res) => {
