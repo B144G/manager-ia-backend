@@ -26,7 +26,7 @@ async function main() {
   const base = `http://127.0.0.1:${port}`;
   const client = () => {
     const jar = {};
-    return async (method, url, body) => {
+    const call = async (method, url, body) => {
       const headers = body !== undefined ? { 'content-type': 'application/json' } : {};
       const cookie = Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; ');
       if (cookie) headers.cookie = cookie;
@@ -35,6 +35,8 @@ async function main() {
       const text = await res.text(); let json = null; try { json = JSON.parse(text); } catch { /* texte */ }
       return { status: res.status, json, text };
     };
+    call.cookie = async () => Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; ');
+    return call;
   };
   const clients = {};
   for (const p of PEOPLE) {
@@ -49,6 +51,10 @@ async function main() {
   const ownerCall = (method, path, body) => clients[owner.contact](method, '/api/ws' + path, body);
   const team = PEOPLE.slice(1).map((p) => ({ name: p.name.split(' ')[0], role: p.role, job: p.job, userId: p.userId, call: (method, path, body) => clients[p.contact](method, '/api/ws' + path, body) }));
   const report = await seed(ownerCall, { team });
+  try { // histoire de l'entreprise : données d'essai (module scripts/lib/demo-history.js)
+    const cookie = await clients[owner.contact].cookie();
+    await require('./lib/demo-history').seedHistory({ base, cookie, orgId: report.org });
+  } catch (e) { report.failed.push('Histoire de l\'entreprise : ' + e.message); }
   console.log('\n==============================================================');
   console.log('ENTREPRISE DE TEST PRÊTE : « Atelier Nkoulou (TEST) »');
   console.log('Serveur local : ' + base + '   (ouvrez le site avec « npm run dev » : http://localhost:5173)');
