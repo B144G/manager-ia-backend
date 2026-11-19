@@ -98,6 +98,7 @@ router.use('/security', require('./admin-security'));
 router.use(require('./admin-clients')); // résumé (pastilles), clients, alertes
 router.use(require('./admin-insights')); // étape 2 : modules, santé, posture de sécurité, abonnements à expirer
 router.use(require('./admin-live')); // nouveaux comptes en direct (flux SSE + repli), inscriptions en attente, recherche globale
+router.use('/feedback', require('./admin-feedback')); // avis et recommandations : liste, statuts, notes internes, indicateurs, export CSV, résumé
 
 router.get('/security-log', async (req, res) => {
   const ev = await central.audit.list({ limit: req.query.limit });

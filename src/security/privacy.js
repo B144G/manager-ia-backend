@@ -17,6 +17,8 @@ const ERASE_GRACE_DAYS = () => Math.min(Math.max(parseInt(process.env.PRIVACY_ER
 const REQUEST_DEADLINE_DAYS = 30; // délai de réponse visé pour toute demande (accès, export, suppression)
 
 const SECRET_COL = /(hash|secret|token|password|recovery|pass_|api_key|key_prefix)/i;
+// Avis adressés à la plateforme (module Avis) : ils n'appartiennent pas à l'organisation, donc hors de son export (l'auteur les retrouve dans l'export de SES données).
+const ORG_EXPORT_SKIP = new Set(['fb_feedback', 'fb_notes', 'fb_state']);
 const ID_COLS = ['user_id', 'created_by', 'decided_by', 'requested_by', 'assignee_id', 'author_id', 'updated_by'];
 
 // ---------- Consentements ----------
@@ -72,6 +74,8 @@ async function exportUser(userId) {
     const rows = await db.prepare(`SELECT ${sel.map(ident).join(', ')} FROM ${ident(table)} WHERE ${keys.map((k) => `${ident(k)} = ?`).join(' OR ')} ORDER BY 1 LIMIT 5000`).all(...keys.map(() => userId));
     if (rows.length) out.tables[table] = readable(table, rows);
   }
+  const anon = await require('../services/feedback').exportAnonymousFor(userId); // avis envoyés « en anonyme » : retrouvables par leur seul auteur
+  if (anon.length) out.tables.fb_feedback_anonymes = anon;
   return out;
 }
 
@@ -81,7 +85,7 @@ async function exportOrg(orgId) {
   const org = await db.prepare('SELECT id, name, sector, description, currency, created_at FROM orgs WHERE id = ?').get(orgId);
   const out = { format: 'brij-ia-org-export', version: 1, exportedAt: nowISO(), org, tables: {}, notes: ['Fichiers binaires (photos du catalogue, médias) et secrets non inclus.', 'Limite de 50 000 lignes par table.'] };
   for (const [table, cols] of Object.entries(by)) {
-    if (table === 'orgs' || !cols.some((x) => x.c === 'org_id')) continue;
+    if (table === 'orgs' || ORG_EXPORT_SKIP.has(table) || !cols.some((x) => x.c === 'org_id')) continue;
     const sel = safeCols(cols); if (!sel.length) continue;
     const rows = await db.prepare(`SELECT ${sel.map(ident).join(', ')} FROM ${ident(table)} WHERE org_id = ? ORDER BY 1 LIMIT 50000`).all(orgId);
     if (rows.length) out.tables[table] = readable(table, rows);
@@ -133,6 +137,7 @@ async function anonymizeUser(userId) {
     }
     await db.prepare("UPDATE data_requests SET status = 'done', done_at = ? WHERE user_id = ? AND kind = 'erasure' AND status = 'pending'").run(nowISO(), userId);
   })();
+  await require('../services/feedback').eraseUser(userId); // avis : texte, capture et nom effacés, témoignage public retiré
   await sessions.revokeAllForUser(userId, '', 'compte supprimé');
   await audit.record(null, 'privacy.erasure_done', { userId, severity: 'warn', target: `user:${userId}` });
 }
