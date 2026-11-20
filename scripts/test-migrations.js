@@ -36,6 +36,7 @@ const check = (name, cond, detail) => { if (cond) { ok++; console.log('  OK  ', 
     const dup = Object.entries(seen[k]).filter(([, v]) => v.size > 1).map(([name, v]) => `${name}: ${[...v].join(', ')}`);
     check(`aucun(e) ${k} créé(e) par deux fichiers de modules`, dup.length === 0, dup);
   }
+  check('Transport · géolocalisation : migrations 140 (tables tg_) et 141 (clients / fournisseurs typés) ; 116 à 139 réservées (Avis = 116)', /tg_settings/.test(MIGRATIONS[139] || '') && /pty_terms/.test(MIGRATIONS[140] || '') && MIGRATIONS.slice(115, 139).every((m) => /^SELECT \d+ AS reserve$/.test(m) || /fb_|reserve/.test(m)));
   // Rejouabilité : les migrations ajoutées par la fusion (indice >= BASE_COUNT) doivent pouvoir être rejouées sans erreur (IF NOT EXISTS partout).
   let failed = null;
   for (let i = BASE_COUNT; i < MIGRATIONS.length && !failed; i++) { try { await db.exec(MIGRATIONS[i]); } catch (e) { failed = `migration ${i + 1} : ${e.message}`; } }

@@ -15,6 +15,7 @@ router.use(fleet);
 router.use(require('./tms'));
 router.use(require('./tms-costs'));
 router.use(require('./tms-kpi'));
+router.use(require('./tms-geo')); // géolocalisation : carte, recommandation de transporteurs, position des chauffeurs
 
 const STATUSES = ['to_prepare', 'shipped', 'on_route', 'delivered', 'failed', 'returned'];
 const STATUS_LABEL = { to_prepare: 'À préparer', shipped: 'Expédiée', on_route: 'En route', delivered: 'Livrée', failed: 'Échec', returned: 'Retournée' };

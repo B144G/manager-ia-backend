@@ -7,6 +7,7 @@ module.exports = async function operations(ctx) {
   // La maintenance d'abord : un camion du parc est relié à son équipement « véhicule » (compteur kilométrique partagé).
   await require('./operations-maint')(ctx);
   await require('./operations-tms')(ctx);
+  await require('./operations-geo')(ctx); // géolocalisation des transporteurs, clients et fournisseurs typés
   await require('./operations-prod')(ctx);
   await require('./operations-site')(ctx);
 };

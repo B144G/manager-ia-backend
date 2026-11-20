@@ -3806,6 +3806,11 @@ MIGRATIONS.push(...require('./migrations/commercial-pro'));
 // Paiement automatique Campay (colonnes de suivi des transactions, anti-rejeu des webhooks) : toujours en fin de tableau.
 MIGRATIONS.push(...require('./migrations/paiement-campay'));
 
+// Transport · géolocalisation et clients / fournisseurs typés : numéros 140 et suivants (116 à 139 réservés aux autres modules, ex. Avis = 116).
+// Les emplacements non utilisés reçoivent une migration vide : le numéro d'une migration est sa position, il ne doit jamais bouger.
+while (MIGRATIONS.length < 139) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1} AS reserve`);
+MIGRATIONS.push(...require('./migrations/transport-geo'));
+
 db.ready = db.migrate(MIGRATIONS);
 
 
