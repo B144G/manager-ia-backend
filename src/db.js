@@ -3805,6 +3805,8 @@ MIGRATIONS.push(...require('./migrations/biblio-evolution'));
 MIGRATIONS.push(...require('./migrations/commercial-pro'));
 // Paiement automatique Campay (colonnes de suivi des transactions, anti-rejeu des webhooks) : toujours en fin de tableau.
 MIGRATIONS.push(...require('./migrations/paiement-campay'));
+// Avis et recommandations (tables fb_) : toujours en fin de tableau.
+MIGRATIONS.push(...require('./migrations/avis'));
 
 db.ready = db.migrate(MIGRATIONS);
 

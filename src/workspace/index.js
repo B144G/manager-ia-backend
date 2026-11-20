@@ -14,6 +14,8 @@ const { HttpError, asyncHandler } = require('../util');
 const router = express.Router();
 const pub = express.Router();
 
+pub.use('/testimonials', require('./feedback').pubRouter); // témoignages approuvés et consentis (aucune donnée privée)
+
 // ---------- Entrée publique : formulaire de contact d'une organisation (crée un ticket) ----------
 const intakeLimit = limits.make(10 * 60 * 1000, 8, 'Trop de messages envoyés. Réessayez dans quelques minutes.');
 pub.post('/intake/:token', intakeLimit, async (req, res) => {
@@ -262,6 +264,7 @@ orgRouter.use('/accounting', require('./accounting'));
 orgRouter.use('/treasury', require('./treasury'));
 orgRouter.use('/library', require('./library').router);
 orgRouter.use('/history', require('./history'));
+orgRouter.use('/feedback', require('./feedback').router); // avis et recommandations (bouton discret, tables fb_)
 orgRouter.use('/purchasing', require('./purchasing').router);
 orgRouter.use('/meetings', require('./meetings').router);
 orgRouter.use('/integrations', require('./integrations'));

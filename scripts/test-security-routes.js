@@ -25,6 +25,7 @@ const PUBLIC = new Set([
   'GET /api/ws/public/whatsapp/:token', 'POST /api/ws/public/whatsapp/:token', 'GET /api/ws/public/meta/:token', 'POST /api/ws/public/meta/:token',
   'GET /api/ws/public/quote/:token', 'POST /api/ws/public/quote/:token/accept', 'POST /api/ws/public/quote/:token/refuse', // COMMERCIAL : devis consulté / accepté / refusé par le client final via un jeton secret non devinable dans l'adresse
   'GET /api/ws/public/track/:token', // FUSION (ligne A) : suivi de livraison pour le client final, protégé par un jeton secret non devinable dans l'adresse
+  'GET /api/ws/public/testimonials', // AVIS : témoignages approuvés par l'administrateur ET consentis par leur auteur (aucune donnée privée ; voir docs/avis.md)
 ]);
 // Routes protégées par une clé d'API (en-tête), pas par un cookie : sans clé, 401 aussi.
 const fill = (p, orgId) => p.replace(/:orgId/g, String(orgId)).replace(/:action\([^)]*\)/g, 'confirm').replace(/:token\.ics/, 'abc.ics').replace(/:[A-Za-z]+/g, '1');

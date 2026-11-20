@@ -8,11 +8,11 @@
   // ---------- Plan du menu ----------
   const NAV = [
     ['Pilotage', [['overview', "Vue d'ensemble", 'overview'], ['clients', 'Clients', 'users'], ['orgs', 'Organisations', 'orgs'], ['payments', 'Paiements', 'payments'], ['alerts', 'Alertes', 'alerts']]],
-    ['Commercial', [['plans', 'Offres et abonnements', 'plans'], ['expiring', 'Abonnements à expirer', 'clock'], ['contacts', 'Contacts reçus', 'contacts']]],
+    ['Commercial', [['plans', 'Offres et abonnements', 'plans'], ['expiring', 'Abonnements à expirer', 'clock'], ['contacts', 'Contacts reçus', 'contacts'], ['feedback', 'Avis', 'star']]],
     ['Plateforme', [['modules', 'Utilisation des modules', 'grid'], ['ai', "Utilisation de l'IA", 'ai'], ['health', 'Santé de la plateforme', 'activity'], ['notifications', 'Notifications', 'notifications'], ['security', 'Sécurité', 'security'], ['settings', 'Paramètres', 'settings']]],
   ];
   const TITLES = Object.fromEntries(NAV.flatMap(([, items]) => items.map(([k, l]) => [k, l])));
-  const VIEW_OF = { overview: 'overview', clients: 'users', orgs: 'orgs', payments: 'payments', alerts: 'alerts', plans: 'plans', expiring: 'expiring', modules: 'modules', health: 'health', contacts: 'contacts', ai: 'ai', notifications: 'notifications', security: 'security', settings: 'settings' };
+  const VIEW_OF = { overview: 'overview', clients: 'users', orgs: 'orgs', payments: 'payments', alerts: 'alerts', plans: 'plans', expiring: 'expiring', modules: 'modules', health: 'health', contacts: 'contacts', feedback: 'feedback', ai: 'ai', notifications: 'notifications', security: 'security', settings: 'settings' };
 
   let gen = 0, leaves = [], crumbDetail = '', route = { name: 'overview', arg: null };
   A.onLeave = (fn) => { leaves.push(fn); return fn; };
