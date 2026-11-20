@@ -12,7 +12,7 @@ Branche `transport-geo` (serveur et site), partie de `fusion-modules`. Ce docume
 
 Aucun service de cartes payant, aucune clé : les distances sont à vol d'oiseau × coefficient routier (réglage existant du Transport, 1,3 par défaut), la durée est la distance ÷ la vitesse moyenne (réglage existant, 30 km/h par défaut).
 
-## 2. Migrations (numéros 140 et 141)
+## 2. Migrations (numéros 140, 141 et 142)
 
 Le numéro d'une migration est sa position dans le tableau `MIGRATIONS` (`schema_migrations.version`). Le module Avis occupe la 116. Pour qu'aucune migration ne bouge quand les deux branches seront réunies, `src/db.js` complète le tableau par des migrations vides (`SELECT n AS reserve`) jusqu'à la position 139 puis ajoute `src/migrations/transport-geo.js` :
 
@@ -20,6 +20,8 @@ Le numéro d'une migration est sa position dans le tableau `MIGRATIONS` (`schema
 |---|---|
 | 140 | `tg_settings`, `tg_driver`, `tg_positions`, `tg_requests`, `tg_audit` + 3 colonnes de `logistics_deliveries` (`geo_source`, `geo_at`, `geo_accuracy`) |
 | 141 | `pty_terms`, `pty_type_log`, `pty_notes` + colonnes additives sur `customers` et `suppliers` (`party_type`, `valid_until`, `lat`, `lng`, `geo_source`, `geo_at`, `tags`, `party_status`, `pty_discount`, `pty_pay_days`, `pty_delivery_days`, `pty_credit_limit`, `type_changed_at`) |
+
+| 142 | `orgs` : `geo_lat`, `geo_lng`, `geo_city`, `geo_country`, `geo_shared_at`, `geo_shared_by` (position de l'entreprise, facultative) |
 
 Aucune migration existante n'est modifiée ; tout est `IF NOT EXISTS` (rejouable, vérifié par `test-migrations.js`).
 Important pour la fusion avec Avis : la ligne `MIGRATIONS.push(...require('./migrations/avis'))` doit être **avant** le bloc « Transport · géolocalisation » de `src/db.js` (sinon Avis passerait en position 140+).
@@ -125,3 +127,13 @@ Ajoutés à `npm run test:chain` (`test:tmsgeo`, `test:parties`). Côté site : 
 * Un navigateur n'envoie pas la position en arrière-plan : la page « Ma position » doit rester ouverte pendant le service (avis affiché au transporteur).
 * La recherche d'adresse passe par le service public Nominatim d'OpenStreetMap (limites d'usage : une requête par clic, jamais en arrière-plan). Sans elle, le point se pose à la main.
 * La fiabilité utilise les livraisons des tournées des 90 derniers jours ; sans historique elle vaut 75 % (signalé).
+
+## 12. Position des entreprises (carte de l'administration)
+
+Chaque entreprise ayant un compte Brij-IA peut **partager volontairement** la position de son siège avec l'administration de la plateforme (statistiques par pays et par ville). Rien n'est public ni visible des autres entreprises.
+
+* **Saisie** : espace de travail › Équipe et antennes › « Position de l'entreprise » (administrateurs de l'entreprise) : recherche d'adresse (OpenStreetMap, sur clic), position GPS de l'appareil ou point posé sur la carte, ville et pays. Le partage exige une **case de consentement** ; la position est **arrondie à 3 décimales (≈ 100 m)** ; le pays est obligatoire ; elle se **retire à tout moment** (`DELETE /orgs/:orgId/geo`). Tout est journalisé dans l'activité de l'entreprise.
+* **Routes** : `GET /orgs/:orgId/geo` (tout membre : sa propre entreprise), `PUT` et `DELETE` (administrateur de l'entreprise) ; `GET /api/admin/geo/orgs` (session administrateur de la plateforme uniquement).
+* **Administration** (`/admin#/geo`, menu Pilotage › « Carte des entreprises ») : tuiles (entreprises localisées, taux de partage, pays, villes), carte Leaflet (fichiers locaux `admin/vendor/leaflet`, fonds OpenStreetMap, attribution affichée ; la politique de sécurité de l'administration autorise seulement `https://tile.openstreetmap.org` en plus), répartition par pays et par ville, tableau. L'API ne renvoie que : identifiant, nom, ville, pays, position, offre du propriétaire, nombre de personnes, dates — jamais de donnée métier.
+* **Test** : `node scripts/test-org-geo.js` (rôles, consentement, arrondi, cloisonnement, accès administrateur, statistiques, retrait).
+* Limite : une entreprise qui ne partage pas sa position n'apparaît pas ; le taux de partage indique la couverture.

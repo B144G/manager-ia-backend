@@ -13,6 +13,7 @@
 //  pty_terms       conditions propres à chaque type de client / fournisseur (remise, délai de paiement, délai de livraison, plafond)
 //  pty_type_log    historique des changements de type
 //  pty_notes       notes datées sur une fiche
+//  orgs            position de l'entreprise (migration 142 : geo_lat, geo_lng, geo_city, geo_country, geo_shared_at, geo_shared_by)
 //  customers / suppliers : colonnes additives (type, fin de validité, GPS, étiquettes, statut, conditions propres)
 module.exports = [
   `
@@ -152,5 +153,14 @@ module.exports = [
   ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS type_changed_at TEXT;
   CREATE INDEX IF NOT EXISTS idx_customers_ptype ON customers(org_id, party_type);
   CREATE INDEX IF NOT EXISTS idx_suppliers_ptype ON suppliers(org_id, party_type);
+  `,
+  // 142 : position de l'entreprise (facultative, partagée volontairement avec l'administration de la plateforme).
+  `
+  ALTER TABLE orgs ADD COLUMN IF NOT EXISTS geo_lat DOUBLE PRECISION;
+  ALTER TABLE orgs ADD COLUMN IF NOT EXISTS geo_lng DOUBLE PRECISION;
+  ALTER TABLE orgs ADD COLUMN IF NOT EXISTS geo_city TEXT NOT NULL DEFAULT '';
+  ALTER TABLE orgs ADD COLUMN IF NOT EXISTS geo_country TEXT NOT NULL DEFAULT '';
+  ALTER TABLE orgs ADD COLUMN IF NOT EXISTS geo_shared_at TEXT;
+  ALTER TABLE orgs ADD COLUMN IF NOT EXISTS geo_shared_by BIGINT;
   `,
 ];
