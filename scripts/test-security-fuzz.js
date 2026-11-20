@@ -4,6 +4,7 @@
 const path = require('path');
 const { run } = require('./lib/wave2');
 process.env.DATABASE_URL = 'pglite://memory'; process.env.NODE_ENV = 'test'; process.env.JWT_SECRET = 'x'.repeat(40);
+process.env.RATE_LIMIT_GLOBAL = process.env.RATE_LIMIT_GLOBAL || '20000'; // le balayage (lectures + écritures) approche la limite globale de production (3 000 requêtes / 15 min / adresse)
 const { listRoutes } = require('./lib/routes');
 const { app } = require(path.join(__dirname, '..', 'src', 'server.js'));
 
