@@ -55,6 +55,8 @@ pub.use('/', require('./digest').pub);
 pub.use('/', require('./followups').pub);
 // Suivi de livraison par lien secret (Transport) : /api/ws/public/track/:token
 pub.use('/', require('./tms').pub);
+// Localisation du client par lien secret (Transport · géolocalisation) : /api/ws/public/geo/:token
+pub.use('/', require('./tms-geo').pub);
 pub.use('/', require('./commercial').pub);
 pub.use('/whatsapp', require('./whatsapp'));
 pub.use('/meta', require('./meta-channels'));
@@ -253,6 +255,8 @@ orgRouter.use('/budget', require('./budget'));
 orgRouter.use('/stock/wms', require('./wms').router);
 orgRouter.use('/stock', require('./stock'));
 orgRouter.use('/crm', require('./crm'));
+orgRouter.use('/parties', require('./parties')); // clients et fournisseurs typés (simple, temporaire, permanent, haut de gamme) : étend customers et suppliers
+orgRouter.use('/geo', require('./org-geo')); // position de l'entreprise, partagée volontairement avec l'administration de la plateforme
 orgRouter.use('/mail', require('./mail'));
 orgRouter.use('/sales', require('./sales').router);
 orgRouter.use('/sales-mine', require('./sales').mine);

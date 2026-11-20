@@ -391,3 +391,5 @@ ul.dleg{margin:0;padding:0}
 .fb-shot { max-width: 100%; max-height: 260px; border: 1px solid var(--line, #ddd); border-radius: 8px; display: block; margin: 8px 0; }
 .fb-detail .textarea { width: 100%; }
 .fb-chart{position:relative;overflow:hidden}
+.geo-box{width:100%;border:1px solid var(--line,#dfe3ec);border-radius:10px;overflow:hidden;z-index:0}
+.bar-row{display:grid;grid-template-columns:minmax(80px,1fr) 2fr auto;gap:10px;align-items:center;margin:6px 0}.bar-row .bt{background:var(--line,#eceff6);border-radius:4px;height:8px;display:block}.bar-row .bt i{display:block;height:8px;border-radius:4px;background:#4f46e5}

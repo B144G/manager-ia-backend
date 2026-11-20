@@ -757,4 +757,4 @@ pub.get('/track/:token', limits.make(60 * 1000, 30, 'Trop de requêtes. Réessay
 });
 
 module.exports = router;
-Object.assign(module.exports, { pub, saveTmsFields, returnPart, settings, ctxOf, pointOf, depotOf, local, REASONS, TRIP_STATUS, tripOf, FINISHED });
+Object.assign(module.exports, { pub, saveTmsFields, returnPart, settings, ctxOf, pointOf, depotOf, local, REASONS, TRIP_STATUS, tripOf, FINISHED, routeOf, applyRoute, tripEstimate, vehOf, shipmentLoad, fixedRoute });

@@ -39,6 +39,7 @@ async function runOnce() {
   await require('./security/privacy').purgeRetention().catch((e) => log.warn('Durées de conservation : ' + String(e.message).slice(0, 100)));
   await require('./security/aibudget').sweep().catch(() => {});
   await require('./services/signedUrl').purge();
+  await require('./workspace/tms-geo').purge().catch((e) => log.warn('Positions des transporteurs : ' + String(e.message).slice(0, 100)));
   await require('./services/accounts').sweep();
   await require('./services/alerts').sweep();
   await require('./workspace/ai-rules').liftAllExpired(); // exclusions de l'IA arrivées à échéance (elles sont aussi levées à chaque lecture)

@@ -27,6 +27,7 @@ const modules = [
   { id: 'treasury', title: 'Trésorerie', min: 'member', ai: false },
   { id: 'library', title: 'Bibliothèque', min: 'member', ai: false },
   { id: 'purchasing', title: 'Achats', min: 'member', ai: false },
+  { id: 'parties', title: 'Clients et fournisseurs', min: 'member', ai: false }, // clients / fournisseurs typés (simple, temporaire, permanent, haut de gamme) : étend customers et suppliers
   { id: 'meetings', title: 'Réunions', min: 'member', ai: false },
   { id: 'structure', title: 'Organisation', min: 'member', ai: true },
   { id: 'processes', title: 'Fonctionnement', min: 'member', ai: true },
