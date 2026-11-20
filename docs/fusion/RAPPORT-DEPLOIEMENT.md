@@ -68,3 +68,56 @@ Si la première production reçoit directement ce lot, les migrations de la fusi
 
 ## Champs légaux encore à compléter (non bloquant pour le démarrage, bloquant pour une mise en service publique)
 Les modèles de `docs/securite/legal/fr/` contiennent encore ~58 marques `[À COMPLÉTER]` : dénomination, forme juridique et capital, siège, **RCCM**, **NIU**, directeur de la publication, e-mails de contact et de « vie privée », régions d'hébergement Render et Neon, sous-traitants et transferts (07), durées de conservation, accord de sous-traitance (06), plan de continuité (10). Le **taux de chaque rubrique de paie** et la date « à jour au » restent à saisir par l'entreprise (aucun taux n'est inventé). Côté module Administration, la « référence du texte applicable » est à renseigner par l'entreprise cliente. Côté Campay : identifiants et clé webhook du compte réel, et adresse de l'API de production à confirmer.
+
+
+---
+# Complément — fusion « Avis » + « Transport géolocalisé » (branche `fusion-avis-transport`)
+
+Base : `fusion-modules` (serveur `a34cce2`, site `06d462a`) + `avis-module` + `transport-geo`. Les branches sources et la production ne sont pas modifiées.
+
+## Migrations (141 → 142 au total ; 1 à 115 inchangées)
+- Les 115 premières migrations sont **identiques octet pour octet** à la production (empreinte SHA-1 du tableau, comparée entre `fusion-modules` et la branche fusionnée : `08da46a4a8725a63f6c2ed18a4d2c0ace30ba42c` des deux côtés).
+- **116 = Avis** (`src/migrations/avis.js`, tables `fb_feedback`, `fb_notes`, `fb_state`) : elle occupe l'emplacement que la branche Transport réservait par une migration vide. Aucune migration vide n'est plus au numéro 116.
+- **117 à 139** : migrations vides réservées (`SELECT n AS reserve`), laissées pour les futurs modules : on ne les renumérote jamais.
+- **140 à 142 = Transport géolocalisé** (`src/migrations/transport-geo.js` : `tg_*`, clients / fournisseurs typés, position d'entreprise). Mêmes numéros que dans la branche source.
+- Piège évité : si la production recevait d'abord Transport seul, le numéro 116 serait marqué « appliqué » avec une migration vide et Avis ne créerait jamais ses tables. **Déployer cette branche d'un seul bloc (Avis + Transport), jamais la branche Transport seule avant Avis.**
+- `scripts/test-migrations.js` vérifie désormais : 78 premières inchangées, 116 = tables `fb_` (et non un emplacement vide), 117 à 139 exactement `SELECT n AS reserve`, 142 migrations au total.
+
+## Variables d'environnement à régler sur Render
+| Variable | Rôle | Valeur / remarque |
+|---|---|---|
+| `SITE_URL` | **À régler.** Adresse publique du site (ex. celle de Vercel, sans `/` final). Sert à construire le lien envoyé au client pour partager sa position (`<SITE_URL>/localiser/<jeton>`). Sans elle, le lien est relatif et inutilisable dans un message WhatsApp. | recommandée (obligatoire en pratique pour la géolocalisation des clients) |
+| `ADMIN_EMAIL` | Destinataire de la notification de chaque nouvel avis et du résumé quotidien. Défaut dans le code : l'adresse du fondateur. | à vérifier |
+| `BREVO_API_KEY` + expéditeur, ou `SMTP_*` | Un des deux moyens d'envoi d'e-mail déjà utilisés par `services/notify.js`. **Sans l'un d'eux, aucun e-mail d'avis ne part** (rien ne casse : trace dans les journaux et dans « Notifications » de l'administration). | à vérifier |
+| `FEEDBACK_NOTIFY=off` | Coupe l'e-mail à chaque avis (le résumé quotidien reste) | facultative |
+| `FEEDBACK_PER_DAY` (5), `FEEDBACK_MIN_GAP_S` (60), `FEEDBACK_SHOT_MAX_MB` (2) | Limites anti-abus et taille des captures | facultatives |
+| `FEEDBACK_WHATSAPP=on` | Sans effet tant qu'aucun canal WhatsApp n'est branché (pas d'API officielle) | laisser absente |
+| `DATA_KEY` | Chiffre les captures d'avis et sert de clé à l'empreinte des avis anonymes. **La même clé qu'aujourd'hui : ne pas la changer** (les captures déjà enregistrées deviendraient illisibles). | déjà recommandée |
+Aucune autre variable nouvelle : Transport n'en ajoute pas. La carte utilise les fonds OpenStreetMap (gratuits) ; la recherche d'adresse passe par Nominatim, seulement au clic.
+
+## Ordre de déploiement
+1. **Sauvegarde de la base** (Neon : point de restauration / branche, ou `scripts/backup.js` avec `BACKUP_KEY`) — avant tout. Noter l'heure.
+2. Régler sur Render `SITE_URL` (et vérifier `ADMIN_EMAIL`, l'envoi d'e-mail).
+3. Pousser le **serveur** : `fusion-avis-transport` vers `claude/postgres-react` puis `master`. Attendre `/api/health` = OK ; les migrations 116 et 140-142 s'appliquent au démarrage, sous verrou, en quelques secondes (tables nouvelles et colonnes avec valeur par défaut uniquement).
+4. Pousser le **site** (`main`, Vercel) seulement ensuite : les écrans Avis et Transport appellent des routes qui doivent déjà exister. Le site ajoute la dépendance `leaflet@1.9.4` (installée par `npm ci` sur Vercel).
+5. Contrôles : (a) propriétaire : bouton « Donner mon avis » → envoyer un avis de test → « Mes avis » ; (b) `/admin` › Commercial › Avis : l'avis apparaît, e-mail reçu ; (c) Logistique › Géolocalisation › Carte et affectation : la carte s'affiche, points verts/rouges ; (d) Clients et fournisseurs : types, filtre « Localisés sur la carte » ; (e) Équipe et antennes › Position de l'entreprise ; `/admin#/geo` : carte des entreprises ; (f) page d'accueil : la section « Ils utilisent Brij-IA » reste masquée tant qu'aucun témoignage n'est approuvé.
+
+## Sauvegarde et retour arrière
+- **Code** : redéployer les commits précédents (serveur `a34cce2`, site `06d462a`) sur Render et Vercel. Les tables `fb_*` et `tg_*`, ainsi que les colonnes ajoutées, restent en place sans gêner l'ancien code (valeurs par défaut) ; ne jamais supprimer de lignes de `schema_migrations`.
+- **Données** : restaurer la sauvegarde seulement en dernier recours (perte des écritures faites depuis le déploiement, y compris des avis reçus).
+- Notification d'avis : `FEEDBACK_NOTIFY=off` la coupe sans redéploiement. Géolocalisation : chaque transporteur et chaque entreprise garde la main (consentement, arrêt du partage, suppression des positions après 14 jours par défaut).
+
+## Points d'attention
+- **Un seul bloc** : ne pas déployer Transport sans Avis (voir « Migrations »). Les deux modules ont été testés ensemble ; la suite complète est donnée plus bas.
+- **Administration** : deux écrans ajoutés dans `/admin` : « Carte des entreprises » (Pilotage, `admin/views-geo.js`) et « Avis » (Commercial, `admin/views-d.js`). Le fichier de Transport s'appelait aussi `views-d.js` : il a été renommé `views-geo.js` pour la fusion. La politique de sécurité de `/admin` autorise uniquement `tile.openstreetmap.org` en plus d'elle-même.
+- **Vie privée** : les positions des transporteurs ne sont collectées qu'avec leur accord ; les avis anonymes ne gardent qu'une empreinte à clé secrète ; un témoignage n'est public que s'il est approuvé par le fondateur ET consenti par son auteur. Le registre des traitements et la politique de confidentialité devront mentionner ces deux traitements (avis ; positions) : à faire avant la mise en service publique.
+- **Services externes appelés depuis le navigateur** : OpenStreetMap (fonds de carte ; l'adresse IP de l'utilisateur est vue par OSM) et Nominatim (adresse saisie, seulement au clic). Les citer dans la liste des sous-traitants si le fondateur le juge nécessaire. Pas d'appel depuis le serveur.
+- **Charge** : `RATE_LIMIT_GLOBAL` n'est relevée que pour les tests ; ne pas la relever en production.
+- Le site de production (Vercel) reste valable sans le nouveau serveur uniquement pour les écrans existants ; les nouveaux écrans exigent le nouveau serveur (d'où l'ordre).
+
+## Résultats de vérification (20/11/2026, `TEST_START_TRIES=200`)
+- Suite complète serveur (`npm test`) : **73 étapes sur 73 réussies, 0 échec, aucun second essai** (1 202 s), dont `test:feedback`, `test:tmsgeo`, `test:parties`, `test:orggeo` et `test:migrations` (10 vérifications, dont les deux nouvelles sur 116 et 140-142).
+- Site : `npm ci` (leaflet 1.9.4), `eslint src` sans erreur, `i18n-check` FR/EN/DE/ES 12 184/12 184 textes, `vite build` réussi. Aucun conflit de fusion côté site.
+- Test de fumée navigateur : captures dans `docs/fusion/captures-avis-transport/` (20 images, bureau et 375 px).
+- Correctif trouvé pendant le test : en mobile, la barre basse masquait le pied de page (dont « Donner mon avis ») ; `shell.css` ajoute désormais la hauteur de la barre au bas du pied de page.
+- Observations non bloquantes : la démonstration `scripts/demo/index.js` signale 59 échecs, tous dans son groupe « stock › Achats » (le script de démonstration approuve son propre bon de commande, refusé par la règle de double approbation ; sans lien avec cette fusion) ; la graphique « Évolution de la note moyenne » de l'admin affiche un axe jusqu'à 6 ; le champ d'adresse de « Position de l'entreprise » est prérempli avec l'adresse de l'entreprise, téléphone compris (envoyé à OpenStreetMap seulement au clic sur « Rechercher ») ; en 375 px le sélecteur de langue de la page `/localiser/:jeton` chevauche légèrement le logo.
