@@ -206,6 +206,11 @@ async function main() {
     check('logo servi sans compte, type image/png, nosniff, sandbox', r.status === 200 && r.headers.get('content-type') === 'image/png' && r.headers.get('x-content-type-options') === 'nosniff' && /sandbox/.test(r.headers.get('content-security-policy') || '') && r.buf.equals(png), r.status);
     r = await anon('GET', '/api/ws/public/brand/' + 'a'.repeat(36) + '/logo');
     check('jeton inconnu : 404', r.status === 404);
+    const tokA = (await db.prepare('SELECT token FROM org_brand WHERE org_id = ?').get(org)).token;
+    r = await anon('GET', `/api/ws/public/brand/${tokA}/manifest.webmanifest`);
+    check("manifeste de l'application installable : nom, couleur et icône de l'entreprise", r.status === 200 && /manifest\+json/.test(r.headers.get('content-type')) && r.json.name === 'Awa Shop' && r.json.theme_color === '#0f766e' && r.json.icons[0].src.includes('/logo') && r.json.icons[0].sizes === '64x64' && r.json.icons.length === 3, r.json);
+    r = await anon('GET', '/api/ws/public/brand/' + 'b'.repeat(36) + '/manifest.webmanifest');
+    check('manifeste : jeton inconnu = 404', r.status === 404);
 
     // ---------- 5. Marque appliquée partout ----------
     console.log('5. Personnalisation appliquée (PDF, e-mails, WhatsApp, IA, pages publiques)');

@@ -131,13 +131,27 @@ router.post('/import', A.need('admin'), async (req, res) => {
 
 // ---------- Public : images et marque des pages ouvertes sans compte ----------
 const imgLimit = limits.make(60 * 1000, 120, 'Trop de requêtes.');
-pub.get('/brand/:token/:kind', imgLimit, async (req, res) => {
+pub.get('/brand/:token/:kind(logo|favicon)', imgLimit, async (req, res) => {
   const kind = req.params.kind === 'favicon' ? 'favicon' : req.params.kind === 'logo' ? 'logo' : null;
   const t = String(req.params.token || '');
   const row = kind && /^[a-f0-9]{36}$/.test(t) ? await db.prepare(`SELECT ${kind}_mime AS mime, ${kind}_data AS data, ${kind}_hash AS hash FROM org_brand WHERE token = ?`).get(t) : null;
   if (!row || !row.mime) return res.status(404).json({ error: 'Image introuvable.' });
   res.set({ 'Content-Type': row.mime, 'Content-Length': row.data.length, 'Cache-Control': 'public, max-age=3600', ETag: `"${row.hash}"`, 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox", 'Cross-Origin-Resource-Policy': 'cross-origin' });
   return res.end(row.data);
+});
+
+// Manifeste de l'application installable (PWA) de l'entreprise : nom, couleur et icône choisis par elle ; icônes d'origine en secours.
+pub.get('/brand/:token/manifest.webmanifest', imgLimit, async (req, res) => {
+  const t = String(req.params.token || '');
+  const row = /^[a-f0-9]{36}$/.test(t) ? await db.prepare('SELECT b.org_id, b.logo_mime, b.logo_data, b.logo_hash FROM org_brand b WHERE b.token = ?').get(t) : null;
+  const org = row ? await db.prepare('SELECT id, name FROM orgs WHERE id = ?').get(row.org_id) : null;
+  if (!org) return res.status(404).json({ error: 'Application introuvable.' });
+  const eff = B.effectiveFrom(org, await B.rowOf(org.id));
+  const icons = [{ src: '/assets/icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' }, { src: '/assets/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' }];
+  if (row.logo_mime) { const info = IMG.sniff(Buffer.from(row.logo_data)); icons.unshift({ src: eff.logoUrl, sizes: info ? `${info.w}x${info.h}` : '512x512', type: row.logo_mime, purpose: 'any' }); }
+  const short = eff.name.slice(0, 12);
+  res.set({ 'Content-Type': 'application/manifest+json; charset=utf-8', 'Cache-Control': 'public, max-age=300', 'X-Content-Type-Options': 'nosniff' })
+    .send(JSON.stringify({ name: eff.name, short_name: short, description: eff.name, lang: 'fr', start_url: '/app', scope: '/', display: 'standalone', orientation: 'any', background_color: '#0a101e', theme_color: eff.color || B.DEFAULT_COLOR, icons }));
 });
 
 // Résolution du jeton d'une page publique vers son entreprise (le même jeton secret que la page utilise déjà).
