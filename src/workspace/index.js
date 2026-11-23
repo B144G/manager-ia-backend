@@ -262,6 +262,7 @@ orgRouter.use('/sales', require('./sales').router);
 orgRouter.use('/sales-mine', require('./sales').mine);
 orgRouter.use('/commercial', require('./commercial').router);
 orgRouter.use('/aifollow', require('./ai-follow').router);
+orgRouter.use('/wa-scope', require('./wa-scope').router); // portée des réponses automatiques WhatsApp
 orgRouter.use('/hr', require('./hr'));
 orgRouter.use('/talents', require('./rh-talents')); // RH Talents : droits propres (rôles RH désignés), accessible aux membres pour ce qui les concerne
 orgRouter.use('/accounting', require('./accounting'));

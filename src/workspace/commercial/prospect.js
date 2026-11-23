@@ -241,9 +241,12 @@ async function syncChats(orgId) {
     const temp = ['chaud', 'tiede', 'froid'].includes(lead.temperature) ? lead.temperature : '';
     const now = nowISO();
     const nm = (cu && cu.name) || (c.contact ? `+${c.contact}` : 'Contact WhatsApp');
+    // Origine enregistrée par la portée WhatsApp (publicité reconnue) : la source du prospect est « publicité », avec la campagne ou l'annonce.
+    const og = c.contact ? await db.prepare("SELECT is_ad, ad_id, campaign FROM wa_contact_origin WHERE org_id = ? AND phone9 = ?").get(orgId, require('../ai-rules').phone9(c.contact)) : null;
+    const fromAd = Boolean(og && Number(og.is_ad));
     try {
-      const id = (await db.prepare("INSERT INTO cp_leads (org_id, name, phone, email, source, campaign, product, city, zone_id, temperature, chat_id, customer_id, notes, last_contact_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'whatsapp', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(orgId, nm, (cu && cu.phone) || c.contact || '', (cu && cu.email) || '', c.campaign || '', oneLine(lead.need || '', 120), (cu && cu.city) || lead.city || '', await zoneFor(orgId, (cu && cu.city) || lead.city), temp, c.id, c.customer_id || null, oneLine([lead.need, lead.quantity && `Quantité : ${lead.quantity}`, lead.deadline && `Pour : ${lead.deadline}`, lead.budget && `Budget : ${lead.budget}`].filter(Boolean).join(' – '), 600), c.updated_at, now, now)).lastInsertRowid;
+      const id = (await db.prepare("INSERT INTO cp_leads (org_id, name, phone, email, source, campaign, product, city, zone_id, temperature, chat_id, customer_id, notes, last_contact_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(orgId, nm, (cu && cu.phone) || c.contact || '', (cu && cu.email) || '', fromAd ? 'ad' : 'whatsapp', c.campaign || (fromAd ? og.campaign || og.ad_id || '' : ''), oneLine(lead.need || '', 120), (cu && cu.city) || lead.city || '', await zoneFor(orgId, (cu && cu.city) || lead.city), temp, c.id, c.customer_id || null, oneLine([lead.need, lead.quantity && `Quantité : ${lead.quantity}`, lead.deadline && `Pour : ${lead.deadline}`, lead.budget && `Budget : ${lead.budget}`].filter(Boolean).join(' – '), 600), c.updated_at, now, now)).lastInsertRowid;
       await rescore(orgId, Number(id)); n++;
     } catch (e) { log.warn('Prospect WhatsApp :', oneLine(e.message, 120)); }
   }

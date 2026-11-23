@@ -254,7 +254,10 @@ function createManager(opts = {}) {
     try { if (s.sock && s.sock.readMessages) await s.sock.readMessages([key]); } catch { /* sans importance */ }
     const wa = handlers.module || require('../workspace/whatsapp');
     if (wa.tooMany(`${org.id}:${from}`)) return;
-    const reply = (t) => sendText(s.orgId, from, t, { reply: true });
+    let ad = null; try { ad = require('../workspace/wa-scope').adFromBaileys(content); } catch { /* sans importance */ }
+    // Hors périmètre : aucun message automatique, pas même « message non pris en charge » (le message est tout de même enregistré plus loin si c'est du texte).
+    const quiet = typeof wa.scopeQuiet === 'function' ? await wa.scopeQuiet(org, from, ad).catch(() => false) : false;
+    const reply = async (t) => { if (!quiet) return await sendText(s.orgId, from, t, { reply: true }); };
 
     let text = ''; let viaVoice = false; let attachment = null;
     const c = content;
@@ -270,7 +273,7 @@ function createManager(opts = {}) {
       try { attachment = await download(s, msg, doc); } catch (e) { log.warn('WhatsApp QR : pièce jointe illisible :', oneLine(e.message, 120)); return void (await reply("Je n'ai pas pu ouvrir votre fichier. Pouvez-vous le renvoyer ou m'écrire votre demande ?")); }
       text = String(doc.caption || '');
     } else return void (await reply(wa.UNSUPPORTED));
-    await wa.processIncoming(org, from, { text, viaVoice, attachment });
+    await wa.processIncoming(org, from, { text, viaVoice, attachment, ad });
   }
 
   async function download(s, msg, part) {

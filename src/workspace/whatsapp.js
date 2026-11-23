@@ -11,6 +11,7 @@ const stt = require('../services/stt');
 const inbound = require('./inbound');
 const R = require('./ai-rules');
 const waOut = require('./wa-out');
+const scope = require('./wa-scope');
 const { safeEqual, log, makeSeen, oneLine, cleanText } = require('../util');
 
 const router = express.Router();
@@ -80,7 +81,8 @@ async function handleMessage(org, m) {
   if (tooMany(`${org.id}:${from}`)) return;
 
   // Contact dont l'IA est exclue : aucun message automatique (« je n'ai pas compris »…), le message reste pour l'équipe.
-  const quiet = await R.excludedContact(org, 'whatsapp', from);
+  const ad = scope.adFromMeta(m.referral); // publicité cliquer-pour-discuter : champ referral du webhook officiel
+  const quiet = await R.excludedContact(org, 'whatsapp', from) || !(await scope.peek(org, from, { ad })).allowed; // hors périmètre : aucun message automatique non plus
   const say = async (t) => { if (!quiet) await waOrg.sendText(org, from, t); };
   let text = ''; let viaVoice = false; let attachment = null;
   if (m.type === 'text' && m.text && typeof m.text.body === 'string') text = cleanText(m.text.body, 1000);
@@ -95,11 +97,11 @@ async function handleMessage(org, m) {
   } else {
     return void (await say(UNSUPPORTED));
   }
-  await processIncoming(org, from, { text, viaVoice, attachment });
+  await processIncoming(org, from, { text, viaVoice, attachment, ad });
 }
 
 /** Suite commune à Meta et au QR code : désabonnement (STOP), campagne (#nom), puis l'assistant. */
-async function processIncoming(org, from, { text = '', viaVoice = false, attachment = null } = {}) {
+async function processIncoming(org, from, { text = '', viaVoice = false, attachment = null, ad = null } = {}) {
   text = cleanText(text, 1000);
   if (!text && !attachment) return;
 
@@ -119,7 +121,7 @@ async function processIncoming(org, from, { text = '', viaVoice = false, attachm
   const tag = /#([A-Za-z0-9_-]{2,40})/.exec(text);
   if (tag) { campaign = tag[1]; text = cleanText(text.replace(tag[0], ''), 1000) || 'Bonjour'; }
 
-  await inbound.receive(org, 'whatsapp', from, { campaign, text, viaVoice, attachment });
+  await inbound.receive(org, 'whatsapp', from, { campaign, text, viaVoice, attachment, ad });
 }
 
 module.exports = router;
@@ -128,4 +130,6 @@ module.exports.handleChange = handleChange;
 module.exports.validSignature = validSignature;
 module.exports.processIncoming = processIncoming;
 module.exports.tooMany = tooMany;
+/** Vrai si l'assistant ne doit envoyer aucun message automatique à ce numéro (hors périmètre). */
+module.exports.scopeQuiet = async (org, from, ad) => !(await scope.peek(org, from, { ad })).allowed;
 module.exports.UNSUPPORTED = UNSUPPORTED;

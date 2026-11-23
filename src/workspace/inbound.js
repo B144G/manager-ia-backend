@@ -9,6 +9,7 @@ const sales = require('./sales-public');
 const channels = require('./channels');
 const waMedia = require('./wa-media');
 const R = require('./ai-rules');
+const scope = require('./wa-scope');
 const { oneLine, log } = require('../util');
 
 // En production : toujours des secondes réelles. Les variables servent uniquement aux tests automatiques.
@@ -20,12 +21,14 @@ const MAX_SPOKEN = 700; // caractères lus à voix haute au plus
 const delayMs = (org) => Math.max(0, Math.min(180, Number(org.reply_delay) || 0)) * scale();
 const wantsVoice = (org, viaVoice) => channels.voiceReady() && (org.voice_reply === 'always' || (org.voice_reply === 'mirror' && Boolean(viaVoice)));
 
-async function deliver(org, chat0, { viaVoice, mediaId, heard }) {
+async function deliver(org, chat0, { viaVoice, mediaId, heard, force = false }) {
   const chat = await db.prepare('SELECT * FROM chats WHERE id = ?').get(chat0.id);
-  if (!chat || chat.status === 'handoff') return;          // un conseiller a repris la main pendant l'attente
-  if (!channels.isConnected(org, chat.channel)) return;
+  if (!chat || chat.status === 'handoff') return false;     // un conseiller a repris la main pendant l'attente
+  if (!channels.isConnected(org, chat.channel)) return false;
+  // Portée des réponses automatiques : le mode a pu changer pendant l'attente. Une réponse demandée par un humain (force) passe toujours.
+  if (!force && !(await scope.recheck(org, chat)).allowed) return false;
   const out = await sales.respond(org, chat, { text: heard, viaVoice, media: await sales.mediaById(chat.id, mediaId) });
-  if (out.silent || !out.reply) return;
+  if (out.silent || !out.reply) return false;
   await channels.sendText(org, chat, viaVoice && heard ? `(J'ai compris : « ${oneLine(heard, 200)} »)\n\n${out.reply}` : out.reply);
   if (out.media && out.media.length) await waMedia.sendForChat(org, chat, out.media);
   const spoken = String(out.spoken || '').trim();
@@ -36,15 +39,19 @@ async function deliver(org, chat0, { viaVoice, mediaId, heard }) {
       await db.prepare("INSERT INTO chat_messages (chat_id, role, content, created_at) VALUES (?, 'assistant', ?, ?)").run(chat.id, '[réponse vocale envoyée]', nowISO());
     } catch (e) { log.warn('Réponse vocale impossible :', oneLine(e.message, 160)); }
   }
+  return true;
 }
 
 /** Point d'entrée unique : appelé par les webhooks WhatsApp, Messenger et Instagram. */
-async function receive(org, channel, contact, { campaign = '', text = '', viaVoice = false, attachment = null } = {}) {
+async function receive(org, channel, contact, { campaign = '', text = '', viaVoice = false, attachment = null, ad = null } = {}) {
   const chat = await sales.ensureChat(org, channel, contact, campaign);
+  const sc = await scope.gate(org, chat, { text, campaign, ad }); // WhatsApp seulement : origine du contact + décision de portée
   const ing = await sales.ingest(org, chat, text, viaVoice, attachment);
   // « Suivi de l'IA » : si l'IA est exclue pour ce contact, le message est déjà enregistré ; l'équipe est prévenue et l'IA ne répond pas (ni attente, ni message automatique).
   const rules = await R.rulesOfChat(org.id, chat);
   if (rules.excluded) return void (await R.onHeldMessage(org, chat));
+  // Hors périmètre : message enregistré, équipe prévenue, l'assistant n'envoie rien (pas même « fichier illisible »).
+  if (!sc.allowed) return void (await scope.onHeld(org, chat, sc));
   if (ing.bad) return void (await channels.sendText(org, chat, sales.FILE_TEXT));
   const cur = await db.prepare('SELECT status FROM chats WHERE id = ?').get(chat.id);
   if (cur.status === 'handoff') return;                    // conversation reprise par un humain : l'IA se tait
@@ -54,6 +61,22 @@ async function receive(org, channel, contact, { campaign = '', text = '', viaVoi
   await db.prepare(`INSERT INTO reply_queue (chat_id, org_id, due_at, via_voice, media_id, last_text, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(chat_id) DO UPDATE SET via_voice = GREATEST(reply_queue.via_voice, excluded.via_voice), media_id = COALESCE(excluded.media_id, reply_queue.media_id), last_text = excluded.last_text`)
     .run(chat.id, org.id, new Date(Date.now() + ms).toISOString(), viaVoice ? 1 : 0, ing.media ? ing.media.id : null, text, nowISO());
+}
+
+/** Réponse de l'assistant déclenchée par un humain sur le dernier message du client, même hors périmètre. */
+async function replyNow(org, chat0) {
+  const chat = await db.prepare('SELECT * FROM chats WHERE id = ? AND org_id = ?').get(chat0.id, org.id);
+  if (!chat) return { sent: false, why: 'Conversation introuvable.' };
+  if ((await R.rulesOfChat(org.id, chat)).excluded) return { sent: false, why: "L'IA est exclue pour ce contact (Suivi de l'IA)." };
+  if (chat.status === 'handoff') return { sent: false, why: 'Un conseiller a repris cette conversation.' };
+  if (!channels.isConnected(org, chat.channel)) return { sent: false, why: "WhatsApp n'est pas connecté." };
+  const last = await db.prepare("SELECT content FROM chat_messages WHERE chat_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1").get(chat.id);
+  if (!last) return { sent: false, why: 'Aucun message du client à traiter.' };
+  const m = /^\[(?:image|document) #(\d+)\]\s*/.exec(last.content);
+  const voice = last.content.startsWith('[message vocal] ');
+  const heard = last.content.replace(/^\[(?:image|document) #\d+\]\s*/, '').replace(/^\[message vocal\] /, '');
+  const sent = await deliver(org, chat, { viaVoice: voice, mediaId: m ? Number(m[1]) : null, heard, force: true });
+  return { sent: Boolean(sent) };
 }
 
 let busy = false; let timer = null;
@@ -74,4 +97,4 @@ async function tick() {
 }
 function start() { if (!timer) { timer = setInterval(async () => { tick().catch(() => {}); }, tickMs()); if (timer.unref) timer.unref(); } }
 
-module.exports = { receive, start, tick, delayMs };
+module.exports = { receive, start, tick, delayMs, replyNow };

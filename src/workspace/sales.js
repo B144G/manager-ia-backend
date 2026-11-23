@@ -115,14 +115,15 @@ router.delete('/catalog/:id', async (req, res) => {
 router.get('/chats', async (req, res) => {
   const rows = await db.prepare(`SELECT c.id, c.campaign, c.status, c.channel, c.contact, c.created_at, c.updated_at, c.assignee_id, c.lead, au.name AS assignee, cu.name AS customer, cu.phone, cu.stage,
       (SELECT content FROM chat_messages m WHERE m.chat_id = c.id AND m.role = 'user' ORDER BY m.id DESC LIMIT 1) AS lastText,
-      (SELECT COUNT(*) FROM chat_messages m WHERE m.chat_id = c.id) AS messages
+      (SELECT COUNT(*) FROM chat_messages m WHERE m.chat_id = c.id) AS messages,
+      (SELECT held FROM wa_chat_scope w WHERE w.chat_id = c.id) AS scope_held, (SELECT reason FROM wa_chat_scope w WHERE w.chat_id = c.id) AS scope_reason
     FROM chats c LEFT JOIN customers cu ON cu.id = c.customer_id LEFT JOIN users au ON au.id = c.assignee_id WHERE c.org_id = ? ORDER BY c.updated_at DESC LIMIT 100`).all(req.org.id);
-  res.json({ chats: rows.map((r) => ({ id: r.id, campaign: r.campaign, status: r.status, channel: r.channel, contact: r.contact, assigneeId: r.assignee_id, assignee: r.assignee, temperature: L.cleanLead(JSON.parse(r.lead || '{}')).temperature || null, at: r.updated_at, customer: r.customer, phone: r.phone, stage: r.stage, lastText: r.lastText, messages: r.messages })) });
+  res.json({ chats: rows.map((r) => ({ id: r.id, campaign: r.campaign, status: r.status, channel: r.channel, contact: r.contact, assigneeId: r.assignee_id, assignee: r.assignee, temperature: L.cleanLead(JSON.parse(r.lead || '{}')).temperature || null, at: r.updated_at, customer: r.customer, phone: r.phone, stage: r.stage, lastText: r.lastText, messages: r.messages, outOfScope: Boolean(Number(r.scope_held)) && r.channel === 'whatsapp', scopeReason: Number(r.scope_held) ? r.scope_reason : '' })) });
 });
 router.get('/chats/:id', async (req, res) => {
   const c = await db.prepare('SELECT * FROM chats WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
   if (!c) throw new HttpError(404, 'Conversation introuvable.');
-  res.json({ campaign: c.campaign, status: c.status, channel: c.channel, contact: c.contact, assigneeId: c.assignee_id, lead: L.cleanLead(JSON.parse(c.lead || '{}')), summary: L.leadSummary(c.lead), brief: B.read(c), appointments: await db.prepare("SELECT id, date, time, purpose, status FROM appointments WHERE chat_id = ? ORDER BY id DESC LIMIT 5").all(c.id), negotiation: await N.logOfChat(req.org.id, c.id), ...await AF.thread(req.org, c, req.query) });
+  res.json({ campaign: c.campaign, status: c.status, channel: c.channel, contact: c.contact, assigneeId: c.assignee_id, lead: L.cleanLead(JSON.parse(c.lead || '{}')), summary: L.leadSummary(c.lead), brief: B.read(c), appointments: await db.prepare("SELECT id, date, time, purpose, status FROM appointments WHERE chat_id = ? ORDER BY id DESC LIMIT 5").all(c.id), negotiation: await N.logOfChat(req.org.id, c.id), scope: await require('./wa-scope').chatInfo(req.org, c), ...await AF.thread(req.org, c, req.query) });
 });
 
 // Mise à jour en direct de la conversation ouverte : seulement les messages d'identifiant plus grand que « since » (interrogation légère toutes les 4-5 secondes).
