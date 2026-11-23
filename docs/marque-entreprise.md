@@ -121,3 +121,21 @@ Site : `eslint src` propre, `scripts/i18n-check.mjs` : 12 293/12 293 textes dans
 * Le logo est affiché tel quel (pas de recadrage automatique) ; pas de version claire/sombre séparée.
 * Les messages de relais et résumés envoyés par tâche planifiée lisent la marque avec 30 s de retard au plus après un enregistrement.
 * Les modules en cours dans d'autres branches (Réunions, nouvelle navigation par espaces) ne sont pas encore branchés (voir `marque-entreprise-passation.md` dans le dossier de notes partagé).
+
+---
+
+## 8. Renommage futur du produit (« Brij-IA » → « Mabah ») : un seul endroit
+
+Rien n'est renommé ici. Le nom par défaut et ses variantes sont centralisés pour le code de la marque d'entreprise :
+
+* **Serveur** : `src/services/product.js` (`name`, `shortName`, `assistantName`, `mailFromName`, `poweredByLabel`, `publicUrl`, `reservedTokens` : fragments interdits comme nom affiché d'une entreprise ; à compléter avec le nouveau nom au moment du renommage).
+* **Site** : `src/lib/product.js` (`name`, `shortName`, `assistantName`, `poweredByLabel`, `publicUrl`, `logoMarkup`).
+
+Utilisés par : `brand-lib.js` (signature, crédit, identité de l'IA, marque effective), `workspace/brand.js` (noms réservés), `services/pdf.js` (pied, métadonnées), `services/notify.js` (nom d'expéditeur par défaut), `workspace/digest.js`, `src/lib/brand.js`, `Frame.jsx` (logo, pied de page), `BrandSettings.jsx` (aperçu).
+
+### Ce qui reste écrit en dur (non centralisable ici)
+
+* **Traductions** : les clés de `src/i18n/{en,de,es}/*.js` sont le texte français d'origine (≈ 312 occurrences) ; renommer = remplacer dans les clés ET les valeurs. Les motifs `PLATFORM_ONLY` de `src/lib/brand.js` et les textes de `docs`/`BrandSettings` (`t('… Brij-IA …')`) reposent sur ces clés. À faire avec un remplacement global contrôlé par `scripts/i18n-check.mjs`.
+* **Site** : vitrine et accueil (`pages/vitrine/*`, `Home.jsx`, `Essai.jsx`, `NotFound.jsx`), textes légaux (`src/legal/content/*/*.md`, `Legal.jsx`, `LegalCenter.jsx`), `Logo.jsx`, `InstallPrompt.jsx`, `SiteAssistant.jsx`, `Receipt.jsx`, `InvoicePrint.jsx` (clé de traduction), guides (`ws/guide/*`), `PrivacyCenter.jsx`, `OrgPosition.jsx`, plusieurs écrans (`Billing`, `Digest`, `Profile`, `Share`, `WaWizard`, `Followup`, `Liasse`, `Slip`, `meetings/*`, `integrations`, `alerts`, `dashboard` via `t()`), `index.html` (titre, SEO, JSON-LD), `public/manifest.webmanifest`, `public/offline.html`, `public/sw.js`, `public/logo.svg`, `favicon.svg`, illustrations `public/assets/img/*.svg`, feuilles de style (`site.css`, `vitrine.css`), domaine `brij-ia.vercel.app` (`vite.config.js`, `index.html`, `claude.js`).
+* **Serveur** : e-mails de compte et de paiement (`routes/auth.js`, `services/accounts.js`, `services/payments.js`, `services/campay-pay.js`), prospection (`services/prospects.js`), `jobs.js`, `services/feedback.js`, `services/claude.js` (invites du site), `ai/workspace-prompts.js`, `ai/sales-agent.js` (« fournie par … »), `workspace/ai.js` (« fournies par … »), `routes/assistant.js`, `routes/contact.js`, `security/*` (émetteur 2FA `totp.js`, `privacy.js`), `workspace/fiscal.js`, `legal-library.js`, `legal-extra.js`, `profile-questions.js`, `org-geo.js`, `integrations.js` (note de secret), `wms-hu.js` (métadonnée PDF), `meetings*.js` (autre session), PRODID des `.ics`, `server.js` (journal), `waWeb.js` (nom de navigateur WhatsApp), `knowledge/*` (éducation de l'IA), `admin/*` (titre de l'administration), scripts et tests (`scripts/*`).
+* **Réglages d'environnement** : `SMTP_FROM`, `SITE_URL`, `.env.example`, `render.yaml`.

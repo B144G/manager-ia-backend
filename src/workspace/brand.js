@@ -7,6 +7,7 @@ const express = require('express');
 const { db, nowISO } = require('../db');
 const A = require('./access');
 const B = require('../services/brand-lib');
+const PRODUCT = require('../services/product');
 const IMG = require('../services/image-check');
 const limits = require('../middleware/limits');
 const { modules } = require('./modules');
@@ -31,7 +32,7 @@ async function assertNotImpersonation(req, cfg) {
     if (!val) continue;
     const n = B.norm(val);
     if (n.length < 3) continue;
-    if (n.includes('brij') && label === 'nom affiché') throw new HttpError(409, 'Ce nom est réservé à la plateforme. Choisissez le nom de votre entreprise ou celui que vous voulez, sans reprendre celui de la plateforme.');
+    if (PRODUCT.reservedTokens.some((tk) => n.includes(tk)) && label === 'nom affiché') throw new HttpError(409, 'Ce nom est réservé à la plateforme. Choisissez le nom de votre entreprise ou celui que vous voulez, sans reprendre celui de la plateforme.');
     const first = String(val).split(/\s+/)[0].toLowerCase().replace(/[%_]/g, '');
     const others = await db.prepare('SELECT id, name, owner_id FROM orgs WHERE id <> ? AND LOWER(name) LIKE ? LIMIT 200').all(req.org.id, `%${first}%`);
     const hit = others.find((o) => B.norm(o.name) === n && Number(o.owner_id) !== Number(req.org.owner_id));

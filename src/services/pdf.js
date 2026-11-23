@@ -4,6 +4,7 @@
 // Blocs : { type: 'heading', text } · { type: 'kv', rows: [[libellé, valeur]] } · { type: 'table', cols: [{ key, label, width, align }], rows: [{...}], totals?: [[libellé, valeur]] }
 //         · { type: 'text', text } · { type: 'note', text } · { type: 'space' }
 const PDFDocument = require('pdfkit');
+const PRODUCT = require('./product');
 
 const INK = '#111827'; const MUTED = '#6b7280'; const LINE = '#d1d5db'; const BASE_ACCENT = '#4338ca'; let ACCENT = BASE_ACCENT; // ACCENT : couleur de marque de l'entreprise pendant un rendu (le rendu est synchrone)
 
@@ -20,7 +21,7 @@ function clean(s) {
 function render(spec, options = {}) {
   const brand = require('./brand-lib').current(); // marque de l'entreprise de la requête (null hors requête : affichage d'origine)
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 48, bufferPages: true, compress: options.compress !== false, info: { Title: clean(spec.title).slice(0, 120), Author: clean(spec.org || (brand && brand.name) || 'Brij-IA').slice(0, 80), Creator: (brand && brand.name) || 'Brij-IA' } });
+    const doc = new PDFDocument({ size: 'A4', margin: 48, bufferPages: true, compress: options.compress !== false, info: { Title: clean(spec.title).slice(0, 120), Author: clean(spec.org || (brand && brand.name) || PRODUCT.name).slice(0, 80), Creator: (brand && brand.name) || PRODUCT.name } });
     const chunks = [];
     doc.on('data', (c) => chunks.push(c)); doc.on('end', () => resolve(Buffer.concat(chunks))); doc.on('error', reject);
     try { ACCENT = brand && /^#[0-9a-f]{6}$/i.test(brand.color) ? brand.color : BASE_ACCENT; build(doc, spec, brand); doc.end(); } catch (e) { reject(e); } finally { ACCENT = BASE_ACCENT; }
@@ -67,10 +68,10 @@ function build(doc, spec, brand) {
 /** Pied de page : « Entreprise · Brij-IA » par défaut ; texte de l'entreprise, « Propulsé par Brij-IA » ou rien en marque blanche selon ses réglages. */
 function footerLeft(spec, brand) {
   const org = spec.org || '';
-  if (!brand || brand.mode === 'brij' && !brand.pdfFooter) return `${org} · Brij-IA`;
+  if (!brand || brand.mode === 'brij' && !brand.pdfFooter) return `${org} · ${PRODUCT.name}`;
   const parts = [brand.pdfFooter || org];
-  if (brand.mode === 'powered') parts.push('Propulsé par Brij-IA');
-  else if (brand.mode === 'brij') parts.push('Brij-IA');
+  if (brand.mode === 'powered') parts.push(`${PRODUCT.poweredByLabel} ${PRODUCT.name}`);
+  else if (brand.mode === 'brij') parts.push(PRODUCT.name);
   return parts.filter(Boolean).join(' · ');
 }
 

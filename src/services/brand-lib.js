@@ -8,7 +8,8 @@ const crypto = require('crypto');
 const { db, nowISO } = require('../db');
 const { HttpError } = require('../util');
 
-const PLATFORM = 'Brij-IA';
+const PRODUCT = require('./product');
+const PLATFORM = PRODUCT.name; // nom du produit : défini dans services/product.js
 const DEFAULT_COLOR = '#4f46e5';
 const MODES = ['brij', 'powered', 'white']; // brij : « Brij-IA » comme aujourd'hui · powered : nom de l'entreprise + « Propulsé par Brij-IA » discret · white : marque blanche
 const THEMES = ['', 'light', 'dark'];
@@ -207,4 +208,4 @@ async function ensureRow(orgId, userId) {
   if (!row) await db.prepare("INSERT INTO org_brand (org_id, config, token, version, updated_by, updated_at) VALUES (?, '{}', ?, 0, ?, ?) ON CONFLICT (org_id) DO NOTHING").run(orgId, newToken(), userId || null, nowISO());
 }
 
-module.exports = { credit, now, pn, peek, mailParts, PLATFORM, DEFAULT_COLOR, MODES, THEMES, LANGS, NEVER_HIDE, DASH_WIDGETS, VOCAB_KEYS, LIMITS, DEFAULTS, norm, name, freeText, sanitize, contrastWithWhite, suggestColor, rowOf, of, effectiveFrom, sender, signature, publicView, identityBlock, context, current, currentOrgId, run, invalidate, clearCache, ensureRow, newToken, als };
+module.exports = { PRODUCT, credit, now, pn, peek, mailParts, PLATFORM, DEFAULT_COLOR, MODES, THEMES, LANGS, NEVER_HIDE, DASH_WIDGETS, VOCAB_KEYS, LIMITS, DEFAULTS, norm, name, freeText, sanitize, contrastWithWhite, suggestColor, rowOf, of, effectiveFrom, sender, signature, publicView, identityBlock, context, current, currentOrgId, run, invalidate, clearCache, ensureRow, newToken, als };

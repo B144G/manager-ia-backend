@@ -10,7 +10,7 @@ const crypto = require('crypto');
 const express = require('express');
 const config = require('../config');
 const BR = require('../services/brand-lib');
-const PN = (org) => BR.sender(BR.peek(org)) || (org && org.name) || 'Brij-IA'; // nom du produit choisi par l'entreprise (défaut : Brij-IA) ; la marque est chargée en amont (of)
+const PN = (org) => BR.sender(BR.peek(org)) || (org && org.name) || require('../services/product').name; // nom du produit choisi par l'entreprise (défaut : Brij-IA) ; la marque est chargée en amont (of)
 const { db, nowISO } = require('../db');
 const limits = require('../middleware/limits');
 const A = require('./access');
