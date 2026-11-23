@@ -70,7 +70,10 @@ const bigBody = (parser) => (req, res, next) => { Promise.resolve(requireUser(re
 app.use((req, res, next) => (/^\/api\/ws\/orgs\/\d+\/ai\/chat$/.test(req.path) && req.method === 'POST' ? bigBody(jsonFiles)(req, res, next) : next()));
 // Pièces jointes du module Commercial (fichier en base64, 1,4 Mo au plus) : corps de 2 Mo, lu seulement après la connexion.
 app.use((req, res, next) => (/^\/api\/ws\/orgs\/\d+\/commercial\/attachments$/.test(req.path) && req.method === 'POST' ? bigBody(jsonStatement)(req, res, next) : next()));
+// Logo et favicon de l'entreprise (corps en base64, 600 Ko au plus) : lus seulement après la connexion.
+app.use((req, res, next) => (/^\/api\/ws\/orgs\/\d+\/brand\/(image|import)$/.test(req.path) && req.method === 'POST' ? bigBody(express.json({ limit: '900kb' }))(req, res, next) : next()));
 app.use((req, res, next) => (/^\/api\/ws\/orgs\/\d+\/(accounting\/bank\/\d+\/import|data\/import\/(customers|stock))$/.test(req.path) && req.method === 'POST' ? bigBody(jsonStatement)(req, res, next) : ((/^\/api\/ws\/orgs\/\d+\/mail\/files$/.test(req.path) || /^\/api\/ws\/public\/chat\/[A-Za-z0-9]+\/voice$/.test(req.path) || /^\/api\/ws\/public\/(whatsapp|meta)\/[A-Za-z0-9]+$/.test(req.path)) && req.method === 'POST' ? next() : jsonSmall(req, res, next))));
+
 
 // Protection contre les requêtes venant d'un autre site (CSRF) : l'en-tête Origin doit être connu.
 function originCheck(req, res, next) {

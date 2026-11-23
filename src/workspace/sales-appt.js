@@ -109,7 +109,7 @@ function icsEvent(org, a) {
   const st = a.status === 'confirmed' || a.status === 'done' ? 'CONFIRMED' : a.status === 'cancelled' ? 'CANCELLED' : 'TENTATIVE';
   const lines = ['BEGIN:VEVENT', `UID:appt-${a.id}-${org.id}@manager-ia`, `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')}`, `LAST-MODIFIED:${utcStamp(a.updated_at.slice(0, 10), a.updated_at.slice(11, 16), 60)}`,
     `DTSTART:${utcStamp(a.date, a.time)}`, `DTEND:${utcStamp(a.date, a.time, a.duration)}`, `SUMMARY:${icsEsc(`Rendez-vous : ${a.customer || 'client'}${a.purpose ? ' - ' + a.purpose : ''}`)}`,
-    `DESCRIPTION:${icsEsc([a.customer && `Client : ${a.customer}`, a.phone && `Téléphone : ${a.phone}`, a.channel && `Canal : ${a.channel}`, a.note, 'Géré avec Brij-IA'].filter(Boolean).join('\n'))}`, `STATUS:${st}`, 'TRANSP:OPAQUE'];
+    `DESCRIPTION:${icsEsc([a.customer && `Client : ${a.customer}`, a.phone && `Téléphone : ${a.phone}`, a.channel && `Canal : ${a.channel}`, a.note, ((c) => (c ? 'Géré avec ' + c : ''))(require('../services/brand-lib').credit(require('../services/brand-lib').now(org)))].filter(Boolean).join('\n'))}`, `STATUS:${st}`, 'TRANSP:OPAQUE'];
   if (a.place) lines.push(`LOCATION:${icsEsc(a.place)}`);
   lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:Rendez-vous dans 1 heure', 'TRIGGER:-PT1H', 'END:VALARM', 'END:VEVENT');
   return lines.map(fold).join('\r\n');

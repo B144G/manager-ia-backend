@@ -5,7 +5,7 @@
 //         · { type: 'text', text } · { type: 'note', text } · { type: 'space' }
 const PDFDocument = require('pdfkit');
 
-const INK = '#111827'; const MUTED = '#6b7280'; const LINE = '#d1d5db'; const ACCENT = '#4338ca';
+const INK = '#111827'; const MUTED = '#6b7280'; const LINE = '#d1d5db'; const BASE_ACCENT = '#4338ca'; let ACCENT = BASE_ACCENT; // ACCENT : couleur de marque de l'entreprise pendant un rendu (le rendu est synchrone)
 
 // Les polices standard ne contiennent que le jeu « Windows-1252 » : on remplace les espaces fines et les signes absents, pour ne jamais afficher de caractère cassé.
 const CP1252_EXTRA = new Set([0x20ac, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160, 0x2039, 0x0152, 0x017d, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0x017e, 0x0178]);
@@ -18,18 +18,20 @@ function clean(s) {
 
 /** Rend le document et renvoie un Buffer. options.compress = false pour les tests (texte lisible dans le flux). */
 function render(spec, options = {}) {
+  const brand = require('./brand-lib').current(); // marque de l'entreprise de la requête (null hors requête : affichage d'origine)
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 48, bufferPages: true, compress: options.compress !== false, info: { Title: clean(spec.title).slice(0, 120), Author: clean(spec.org || 'Brij-IA').slice(0, 80), Creator: 'Brij-IA' } });
+    const doc = new PDFDocument({ size: 'A4', margin: 48, bufferPages: true, compress: options.compress !== false, info: { Title: clean(spec.title).slice(0, 120), Author: clean(spec.org || (brand && brand.name) || 'Brij-IA').slice(0, 80), Creator: (brand && brand.name) || 'Brij-IA' } });
     const chunks = [];
     doc.on('data', (c) => chunks.push(c)); doc.on('end', () => resolve(Buffer.concat(chunks))); doc.on('error', reject);
-    try { build(doc, spec); doc.end(); } catch (e) { reject(e); }
+    try { ACCENT = brand && /^#[0-9a-f]{6}$/i.test(brand.color) ? brand.color : BASE_ACCENT; build(doc, spec, brand); doc.end(); } catch (e) { reject(e); } finally { ACCENT = BASE_ACCENT; }
   });
 }
 
-function build(doc, spec) {
+function build(doc, spec, brand) {
   const L = doc.page.margins.left; const W = doc.page.width - L - doc.page.margins.right; const bottom = () => doc.page.height - doc.page.margins.bottom - 20;
   const ensure = (h) => { if (doc.y + h > bottom()) doc.addPage(); };
   // En-tête
+  if (brand && brand.pdfHeader) doc.font('Helvetica').fontSize(8.5).fillColor(MUTED).text(clean(brand.pdfHeader), L, doc.y, { width: W }).moveDown(0.3);
   doc.font('Helvetica-Bold').fontSize(10).fillColor(ACCENT).text(clean(spec.org || ''), L, doc.y, { width: W });
   doc.moveDown(0.2).font('Helvetica-Bold').fontSize(20).fillColor(INK).text(clean(spec.title), { width: W });
   if (spec.subtitle) doc.moveDown(0.1).font('Helvetica').fontSize(11).fillColor(MUTED).text(clean(spec.subtitle), { width: W });
@@ -56,10 +58,20 @@ function build(doc, spec) {
     // Le pied de page est sous la marge basse : sans ce réglage, pdfkit ajouterait une page vide à chaque ligne écrite ici.
     const mb = doc.page.margins.bottom; doc.page.margins.bottom = 0;
     doc.font('Helvetica').fontSize(8).fillColor(MUTED);
-    doc.text(clean(`${spec.org || ''} · Brij-IA`), L, y, { width: W / 2, lineBreak: false });
+    doc.text(clean(footerLeft(spec, brand)), L, y, { width: W / 2, lineBreak: false });
     doc.text(`Page ${i - range.start + 1} / ${range.count}`, L + W / 2, y, { width: W / 2, align: 'right', lineBreak: false });
     doc.page.margins.bottom = mb;
   }
+}
+
+/** Pied de page : « Entreprise · Brij-IA » par défaut ; texte de l'entreprise, « Propulsé par Brij-IA » ou rien en marque blanche selon ses réglages. */
+function footerLeft(spec, brand) {
+  const org = spec.org || '';
+  if (!brand || brand.mode === 'brij' && !brand.pdfFooter) return `${org} · Brij-IA`;
+  const parts = [brand.pdfFooter || org];
+  if (brand.mode === 'powered') parts.push('Propulsé par Brij-IA');
+  else if (brand.mode === 'brij') parts.push('Brij-IA');
+  return parts.filter(Boolean).join(' · ');
 }
 
 function kv(doc, rows, L, W) {

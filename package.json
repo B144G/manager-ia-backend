@@ -34,6 +34,7 @@
     "test:embedded": "node scripts/test-embedded.js",
     "test:waqr": "node scripts/test-waqr.js",
     "test:waportee": "node scripts/test-wa-portee.js",
+    "test:brand": "node scripts/test-brand.js",
     "test:wave1": "node scripts/test-wave1-billing.js && node scripts/test-wave1-stock.js && node scripts/test-wave1-fleet.js",
     "test:accpro": "node scripts/test-acc-pro.js",
     "test:acclot3": "node scripts/test-acc-lot3.js",

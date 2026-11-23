@@ -61,10 +61,11 @@ async function describe(org, chat, reason) {
     nego = `Négociation : ${oneLine(neg[0].item_label, 60)}${lastOffer ? `, offre du client ${money(lastOffer.price)}` : ''}${lastOurs ? `, dernier prix proposé ${money(lastOurs.price)}` : ''}${neg.some((x) => x.kind === 'refused') ? ' (une demande a été refusée par le serveur)' : ''}.`;
   }
   const l = link(org);
+  const BR = require('../services/brand-lib'); const PN = BR.sender(await BR.of(org)) || org.name; // nom du produit choisi par l'entreprise (défaut : Brij-IA)
   const HK = require('./handoff-kind');
   const commercial = chat.lead && /"intent"/.test(chat.lead); // passation de vente (commande, rendez-vous, service, prospect) : fiche détaillée
   const st = commercial ? await HK.status(org, chat) : null;
-  const head = st ? `Brij-IA · ${HK.titleOf(st)} (${org.name})` : `Brij-IA : une conversation attend un conseiller (${org.name}).`;
+  const head = st ? `${PN} · ${HK.titleOf(st)} (${org.name})` : `${PN} : une conversation attend un conseiller (${org.name}).`;
   return [head, `Client : ${oneLine((cu && cu.name) || 'visiteur non enregistré', 60)}${phone ? ` (${phone})` : ''}.`, ...(st ? HK.detailLines(st, org) : []), `Motif : ${oneLine(reason || 'demande de passage de relais', 140)}.`,
     last ? `Dernier message du client : « ${oneLine(String(last.content).replace(/^\[[^\]]*\]\s*/, ''), 200)} »` : '', nego, `Conversation n° ${chat.id} : Assistant commercial > Conversations.${l ? ' ' + l : ''}`].filter(Boolean).join('\n');
 }
@@ -106,7 +107,7 @@ async function notifyHandoff(org, chat, reason) {
       const g = await db.prepare("INSERT INTO relay_log (org_id, chat_id, dedupe_key, status, created_at) VALUES (?, NULL, ?, 'pending', ?) ON CONFLICT DO NOTHING").run(org.id, gk, nowISO());
       if (g.changes) {
         const gid = (await db.prepare('SELECT id FROM relay_log WHERE org_id = ? AND dedupe_key = ?').get(org.id, gk)).id;
-        const r = await sendWhatsApp(org, contacts, `Brij-IA (${org.name}) : plusieurs conversations attendent un conseiller. Ouvrez Assistant commercial > Conversations.${link(org) ? ' ' + link(org) : ''}`);
+        const r = await sendWhatsApp(org, contacts, `${require('../services/brand-lib').sender(await require('../services/brand-lib').of(org)) || org.name} (${org.name}) : plusieurs conversations attendent un conseiller. Ouvrez Assistant commercial > Conversations.${link(org) ? ' ' + link(org) : ''}`);
         await setLog(gid, { channel: 'whatsapp', status: r.ok ? 'grouped' : 'failed', detail: r.ok ? 'message groupé' : r.errors.join(' ; '), user: r.ok ? r.to.userId : null });
       }
       return { status: 'rate' };
@@ -170,7 +171,7 @@ router.put('/contacts', A.need('admin'), asyncHandler(async (req, res) => {
 router.post('/test', A.need('admin'), asyncHandler(async (req, res) => {
   const contacts = await contactsOf(req.org);
   if (!contacts.length) throw new HttpError(400, "Aucun responsable de relais : désignez-en un, ou connectez WhatsApp (le propriétaire est alors utilisé sur le numéro connecté).");
-  const text = `Brij-IA (${req.org.name}) : ceci est un TEST du passage de relais. Si vous le lisez, les alertes de conversations à reprendre arriveront ici.`;
+  const text = `${require('../services/brand-lib').sender(req.brand) || req.org.name} (${req.org.name}) : ceci est un TEST du passage de relais. Si vous le lisez, les alertes de conversations à reprendre arriveront ici.`;
   const r = await sendWhatsApp(req.org, contacts, text);
   const id = (await db.prepare("INSERT INTO relay_log (org_id, chat_id, dedupe_key, channel, status, detail, contact_user, created_at) VALUES (?, NULL, ?, ?, ?, ?, ?, ?) RETURNING id").get(req.org.id, `t:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`, r.ok ? 'whatsapp' : 'email', r.ok ? 'test_sent' : 'test_failed', oneLine(r.ok ? (r.self ? 'message à soi-même' : '') : r.errors.join(' ; '), 300), r.ok ? r.to.userId : null, nowISO())).id;
   res.json({ ok: r.ok, id, self: Boolean(r.self), error: r.ok ? '' : r.errors.join(' ; '), fallback: !r.ok ? "Aucun message WhatsApp n'a pu partir : en vrai relais, une notice et un e-mail seraient envoyés." : '' });

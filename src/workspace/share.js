@@ -4,6 +4,7 @@
 // chaque destinataire est prévenu dans l'application (et par e-mail si son contact en est un) et ouvre le document après connexion : pas de lien public.
 // Les bulletins de paie ne vont qu'à leur salarié (et à l'administrateur qui les envoie), jamais à d'autres destinataires.
 const express = require('express');
+const BRN = (req) => require('../services/brand-lib').pn(req.org); // nom du produit choisi par l'entreprise (défaut : Brij-IA)
 const { db, nowISO } = require('../db');
 const A = require('./access');
 const W = require('./w3');
@@ -155,7 +156,7 @@ router.post('/send', mgr, sendLimit, async (req, res) => {
   const buf = await PDF.render(built.spec);
   const message = cleanText(b.message || '', 500);
   const id = await store(req, { kind, title: built.title, buf, sourceId: Number(b.sourceId), message, recipients: aud.ids });
-  for (const uid of aud.ids) await W.push(req.org.id, uid, 'document', `${req.user.name} vous a partagé « ${oneLine(built.title, 80)} ».${message ? ' ' + oneLine(message, 120) : ''} Ouvrez Brij-IA > Tableau de bord > Documents reçus.`, 'share:' + id);
+  for (const uid of aud.ids) await W.push(req.org.id, uid, 'document', `${req.user.name} vous a partagé « ${oneLine(built.title, 80)} ».${message ? ' ' + oneLine(message, 120) : ''} Ouvrez ${BRN(req)} > Tableau de bord > Documents reçus.`, 'share:' + id);
   await W.audit(req, 'doc_share', id, 'create', null, { kind, title: built.title, recipients: aud.ids.length });
   await A.logActivity(req.org.id, req.user.id, 'documents', `« ${built.title} » partagé avec ${aud.ids.length} personne(s)`);
   res.status(201).json({ id, recipients: aud.ids.length, names: aud.names.slice(0, 20), noAccount: aud.noAccount.slice(0, 50), size: buf.length });
@@ -173,13 +174,13 @@ router.post('/payslips', A.need('admin'), sendLimit, async (req, res) => {
     const emp = await db.prepare('SELECT user_id FROM employees WHERE id = ? AND org_id = ?').get(s.employee_id, req.org.id);
     const uid = emp && emp.user_id ? Number(emp.user_id) : null;
     const mem = uid ? await db.prepare('SELECT 1 FROM org_members WHERE org_id = ? AND user_id = ?').get(req.org.id, uid) : null;
-    if (!mem) { skip("pas de compte Brij-IA lié à ce salarié : téléchargez le PDF pour le lui remettre"); continue; }
+    if (!mem) { skip(`pas de compte ${BRN(req)} lié à ce salarié : téléchargez le PDF pour le lui remettre`); continue; }
     if (uid === Number(req.user.id)) { skip("c'est vous : téléchargez le PDF"); continue; }
     if (!b.resend && await db.prepare("SELECT 1 FROM doc_shares WHERE org_id = ? AND source_type = 'payslip' AND source_id = ?").get(req.org.id, s.id)) { skip('déjà envoyé'); continue; }
     const built = await payslipPdf(req, s.id);
     const buf = await PDF.render(built.spec);
     const id = await store(req, { kind: 'payslip', title: `Bulletin de paie ${s.month}`, buf, sourceType: 'payslip', sourceId: s.id, message: '', recipients: [uid] });
-    await W.push(req.org.id, uid, 'document', `Votre bulletin de paie de ${s.month} est disponible. Ouvrez Brij-IA > Tableau de bord > Documents reçus.`, 'share:' + id);
+    await W.push(req.org.id, uid, 'document', `Votre bulletin de paie de ${s.month} est disponible. Ouvrez ${BRN(req)} > Tableau de bord > Documents reçus.`, 'share:' + id);
     await W.audit(req, 'doc_share', id, 'create', null, { kind: 'payslip', slip: s.id });
     out.sent++;
   }

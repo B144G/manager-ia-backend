@@ -58,6 +58,7 @@ pub.use('/', require('./tms').pub);
 // Localisation du client par lien secret (Transport · géolocalisation) : /api/ws/public/geo/:token
 pub.use('/', require('./tms-geo').pub);
 pub.use('/', require('./commercial').pub);
+pub.use('/', require('./brand').pub); // images de marque (jeton secret) et marque des pages publiques
 pub.use('/whatsapp', require('./whatsapp'));
 pub.use('/meta', require('./meta-channels'));
 
@@ -109,7 +110,7 @@ router.post('/orgs/join', async (req, res) => {
 });
 
 const orgRouter = express.Router({ mergeParams: true });
-router.use('/orgs/:orgId', A.loadOrg, orgRouter);
+router.use('/orgs/:orgId', A.loadOrg, require('../services/brand-lib').context, orgRouter); // la marque de l'entreprise est disponible à tout le code appelé ensuite (PDF, e-mails, invites de l'IA)
 
 orgRouter.get('/', async (req, res) => {
   const lim = A.limitsFor(await A.ownerPlan(req.org));
@@ -120,7 +121,7 @@ orgRouter.get('/', async (req, res) => {
   if (!await require('./tre-lib').hasAccess(req)) mods = mods.filter((m) => m.id !== 'treasury'); // Trésorerie : réservée au responsable, aux trésoriers et aux administrateurs
   res.json({
     org: { ...orgView(req.org), plan: await A.ownerPlan(req.org) },
-    me, branches, modules: mods,
+    me, branches, modules: mods, brand: req.brand, // marque de l'entreprise (valeurs par défaut = affichage d'origine)
     limits: { members: lim.members, branches: lim.branches, aiMonth: lim.aiMonth, aiUsed: await A.aiUsed(req.org), aiResetAt: (await A.quotaWindow(req.org)).end, membersUsed: members.length },
     intakeToken: A.can(req, 'admin') ? req.org.intake_token : undefined,
     features: { metaChannels: config.metaChannelsVisible, waQr: config.waQr.enabled },
@@ -256,6 +257,7 @@ orgRouter.use('/stock/wms', require('./wms').router);
 orgRouter.use('/stock', require('./stock'));
 orgRouter.use('/crm', require('./crm'));
 orgRouter.use('/parties', require('./parties')); // clients et fournisseurs typés (simple, temporaire, permanent, haut de gamme) : étend customers et suppliers
+orgRouter.use('/brand', require('./brand')); // marque de l'entreprise : nom, assistant, logo, couleur, menu, tableau de bord, vocabulaire
 orgRouter.use('/geo', require('./org-geo')); // position de l'entreprise, partagée volontairement avec l'administration de la plateforme
 orgRouter.use('/mail', require('./mail'));
 orgRouter.use('/sales', require('./sales').router);

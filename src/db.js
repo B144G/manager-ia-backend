@@ -3815,6 +3815,11 @@ MIGRATIONS.push(...require('./migrations/transport-geo'));
 // Portée des réponses automatiques WhatsApp (143 et suivantes) : toujours en fin de tableau.
 MIGRATIONS.push(...require('./migrations/wa-portee'));
 
+// Marque de l'entreprise (200 et suivantes) : les emplacements 146 à 199 sont réservés aux autres chantiers ; non utilisés, ils reçoivent une migration vide
+// (le numéro d'une migration est sa position, il ne doit jamais bouger).
+while (MIGRATIONS.length < 199) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1} AS reserve`);
+MIGRATIONS.push(...require('./migrations/marque-entreprise'));
+
 db.ready = db.migrate(MIGRATIONS);
 
 

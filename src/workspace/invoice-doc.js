@@ -72,7 +72,7 @@ ${p.document.creditReason ? `<p class="small">Motif : ${esc(p.document.creditRea
 ${t.vatRate === 0 ? '<p class="small">TVA non applicable ou opération exonérée (à vérifier avec votre conseil).</p>' : ''}
 ${p.org.payInfo ? `<p class="small"><b>Règlement :</b><br>${esc(p.org.payInfo).replace(/\n/g, '<br>')}</p>` : ''}
 ${p.org.footer ? `<p class="small">${esc(p.org.footer).replace(/\n/g, '<br>')}</p>` : ''}
-<div class="wd">Document de travail généré par Brij-IA : à faire valider par votre expert-comptable avant tout usage légal ou fiscal.</div></body></html>`;
+<div class="wd">Document de travail ${(() => { const c = require('../services/brand-lib').credit(require('../services/brand-lib').current()); return c ? 'généré par ' + esc(c) : 'généré'; })()} : à faire valider par votre expert-comptable avant tout usage légal ou fiscal.</div></body></html>`;
 }
 
 /** Texte court pour WhatsApp / e-mail. */

@@ -9,6 +9,8 @@
 const crypto = require('crypto');
 const express = require('express');
 const config = require('../config');
+const BR = require('../services/brand-lib');
+const PN = (org) => BR.sender(BR.peek(org)) || (org && org.name) || 'Brij-IA'; // nom du produit choisi par l'entreprise (défaut : Brij-IA) ; la marque est chargée en amont (of)
 const { db, nowISO } = require('../db');
 const limits = require('../middleware/limits');
 const A = require('./access');
@@ -72,7 +74,7 @@ async function composeMorning(req, date) {
   const first = String(req.user.name || '').trim().split(/\s+/)[0] || '';
   const head = `Bonjour${first ? ' ' + first : ''}, voici le point du matin de ${o.name} (${frDate(date)}).`;
   const body = lines.length ? lines.join('\n') : "Rien d'urgent ce matin : tout est à jour.";
-  return { text: `${head}\n${body}\nOuvrez Brij-IA pour le détail. Pour ne plus recevoir ce message : Alertes > Résumé du matin.`.slice(0, 1500), empty: !lines.length, head, lines: lines.map((l) => l.replace(/^- /, '')), none: body };
+  return { text: `${head}\n${body}\nOuvrez ${PN(o)} pour le détail. Pour ne plus recevoir ce message : Alertes > Résumé du matin.`.slice(0, 1500), empty: !lines.length, head, lines: lines.map((l) => l.replace(/^- /, '')), none: body };
 }
 
 /** Événements urgents du moment : rupture de stock, facture très en retard, conversation en attente trop longtemps. */
@@ -92,7 +94,7 @@ async function urgentEvents(req, st, date) {
   return out;
 }
 const urgentLines = (events) => [...events.slice(0, MAX_EVENTS).map((e) => e.text), ...(events.length > MAX_EVENTS ? [`… et ${events.length - MAX_EVENTS} autre(s)`] : [])];
-const composeUrgent = (org, events) => `Alerte urgente — ${org.name}\n${urgentLines(events).map((l) => `- ${l}`).join('\n')}\nOuvrez Brij-IA pour agir.`.slice(0, 1500);
+const composeUrgent = (org, events) => `Alerte urgente — ${org.name}\n${urgentLines(events).map((l) => `- ${l}`).join('\n')}\nOuvrez ${PN(org)} pour agir.`.slice(0, 1500);
 
 // ---------- Envoi : e-mail (défaut), ou WhatsApp puis e-mail de secours ----------
 // Lien de désinscription signé (un clic, sans connexion). Il pointe vers l'adresse publique de CE serveur (API_PUBLIC_URL ou SITE_URL) ; sans elle, pas de lien.
@@ -104,12 +106,12 @@ function buildEmail(org, user, msg, subject) {
   const link = unsubLink(org.id, user.id); const app = config.siteUrl || '';
   const pre = msg.prefix || '';
   const items = msg.lines && msg.lines.length ? msg.lines : [msg.none || ''];
-  const open = app ? `Ouvrez Brij-IA pour le détail : ${app}` : 'Ouvrez Brij-IA pour le détail.';
-  const stop = link ? `Pour ne plus recevoir ces e-mails, cliquez ici : ${link}` : 'Pour ne plus recevoir ces e-mails : ouvrez Brij-IA > Alertes > « Résumé du matin et alertes », puis cliquez sur « Me désabonner ».';
+  const open = app ? `Ouvrez ${PN(org)} pour le détail : ${app}` : `Ouvrez ${PN(org)} pour le détail.`;
+  const stop = link ? `Pour ne plus recevoir ces e-mails, cliquez ici : ${link}` : `Pour ne plus recevoir ces e-mails : ouvrez ${PN(org)} > Alertes > « Résumé du matin et alertes », puis cliquez sur « Me désabonner ».`;
   const text = `${pre}${msg.intro}\n\n${items.map((l) => `- ${l}`).join('\n')}\n\n${open}\n\n—\n${org.name}\n${stop}`;
   const html = `<!doctype html><html><body style="font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;line-height:1.5;max-width:600px;margin:0 auto;padding:16px">`
     + `<p>${esc(pre + msg.intro)}</p><ul style="padding-left:20px">${items.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>`
-    + `<p>${app ? `<a href="${esc(app)}">Ouvrez Brij-IA pour le détail</a>` : 'Ouvrez Brij-IA pour le détail.'}</p>`
+    + `<p>${app ? `<a href="${esc(app)}">Ouvrez ${esc(PN(org))} pour le détail</a>` : `Ouvrez ${esc(PN(org))} pour le détail.`}</p>`
     + `<hr style="border:none;border-top:1px solid #ddd"><p style="font-size:12px;color:#666">${esc(org.name)}<br>${link ? `<a href="${esc(link)}">Se désabonner de ces e-mails</a>` : esc(stop)}</p></body></html>`;
   return { subject: oneLine(`[${org.name}] ${subject}`, 150), text, html, headers: link ? { 'List-Unsubscribe': `<${link}>` } : undefined };
 }
@@ -201,6 +203,7 @@ async function tick() {
         if (!orgs.has(s.org_id)) { orgs.set(s.org_id, await db.prepare('SELECT * FROM orgs WHERE id = ?').get(s.org_id)); sets.set(s.org_id, await settingsOf(s.org_id)); }
         const org = orgs.get(s.org_id); const st = sets.get(s.org_id);
         if (!org) continue;
+        await BR.of(org); // charge la marque de l'entreprise (noms dans les messages)
         if (s.morning) { await processSub(org, st, s); n++; }
         if (s.urgent && doUrgent) { await processUrgent(org, st, s); n++; }
       } catch (e) { log.warn('Résumé / alertes :', oneLine(e.message, 160)); }
