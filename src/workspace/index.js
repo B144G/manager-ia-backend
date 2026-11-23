@@ -123,6 +123,7 @@ orgRouter.get('/', async (req, res) => {
     me, branches, modules: mods,
     limits: { members: lim.members, branches: lim.branches, aiMonth: lim.aiMonth, aiUsed: await A.aiUsed(req.org), aiResetAt: (await A.quotaWindow(req.org)).end, membersUsed: members.length },
     intakeToken: A.can(req, 'admin') ? req.org.intake_token : undefined,
+    spaces: await require('./spaces').forMember(req), // Espaces par rôle (réglage d'entreprise, désactivé par défaut)
     features: { metaChannels: config.metaChannelsVisible, waQr: config.waQr.enabled },
   });
 });
@@ -244,6 +245,9 @@ orgRouter.get('/activity', async (req, res) => {
 });
 
 // ---------- Sous-applications ----------
+// Espaces par rôle : routes de gestion, puis garde appliquée à TOUTES les routes de sous-applications ci-dessous (sans effet tant que le réglage est désactivé).
+orgRouter.use('/spaces', require('./spaces').router);
+orgRouter.use(require('./spaces').guard);
 // Vague 3 : routes plus précises déclarées AVANT celles des sous-applications existantes (qui gardent leur comportement).
 for (const [p, f] of [['', 'team-w3'], ['/hr', 'hr-w3'], ['/projects', 'projects-ro'], ['/projects', 'projects-fin'], ['/production/flows', 'production-flows'], ['/production/adv', 'production-adv-router'], ['/projects', 'projects-pro'], ['/projects', 'projects-w6'], ['/projects', 'projects-w3'], ['/legal', 'legal-w3'], ['/support', 'support-w3'], ['/marketing', 'marketing-w3'], ['/dashboard', 'dashboard-w3'], ['/data', 'data-w3'], ['/agents', 'agents-w3']]) orgRouter.use(p || '/', require('./' + f));
 orgRouter.use('/dashboard', require('./dashboard'));

@@ -3814,6 +3814,9 @@ while (MIGRATIONS.length < 139) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1}
 MIGRATIONS.push(...require('./migrations/transport-geo'));
 // Portée des réponses automatiques WhatsApp (143 et suivantes) : toujours en fin de tableau.
 MIGRATIONS.push(...require('./migrations/wa-portee'));
+// Espaces par rôle (170 et suivantes) : les emplacements 146 à 169 sont réservés aux autres sessions (une migration vide par numéro libre : le numéro est la position).
+while (MIGRATIONS.length < 169) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1} AS reserve`);
+MIGRATIONS.push(...require('./migrations/espaces'));
 
 db.ready = db.migrate(MIGRATIONS);
 

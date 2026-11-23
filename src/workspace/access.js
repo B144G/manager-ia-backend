@@ -75,11 +75,11 @@ const can = (req, min) => RANK[req.member.role] >= RANK[min];
 
 /** Filtre par antenne : les administrateurs et les personnes sans antenne voient tout ; les autres, leur antenne + le commun. */
 function scope(req, col = 'branch_id') {
-  if (can(req, 'admin') || req.member.branch_id == null) return { sql: '', args: [] };
+  if ((can(req, 'admin') && !req.member._elevated) || req.member.branch_id == null) return { sql: '', args: [] };
   return { sql: ` AND (${col} IS NULL OR ${col} = ?)`, args: [req.member.branch_id] };
 }
 /** Une fiche (avec branch_id) est-elle visible par ce membre ? */
-const visible = (req, row) => !row.branch_id || can(req, 'admin') || req.member.branch_id == null || req.member.branch_id === row.branch_id;
+const visible = (req, row) => !row.branch_id || (can(req, 'admin') && !req.member._elevated) || req.member.branch_id == null || req.member.branch_id === row.branch_id;
 
 /** Vérifie qu'une antenne appartient bien à l'organisation. */
 async function branchOf(req, v) {
