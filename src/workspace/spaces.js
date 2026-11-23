@@ -145,7 +145,7 @@ async function forMember(req) {
   const spaces = SPACES.filter((s) => eff.levels[s.id]).map((s) => ({
     id: s.id, icon: s.icon, title: s.title, desc: s.desc, level: eff.levels[s.id], via: eff.via[s.id],
     // Un visiteur ou un responsable peut ouvrir des écrans que son rôle d'organisation ne montre pas (le serveur relève ses droits dans l'espace).
-    modules: s.modules.filter((m) => visible.has(m) || LV[eff.levels[s.id]] >= LV.view && !NO_ELEVATE.has(s.id) && m !== 'billing' && m !== 'integrations'),
+    modules: s.modules.filter((m) => visible.has(m) || (LV[eff.levels[s.id]] >= LV.view && !NO_ELEVATE.has(s.id))).map((m) => ({ id: m, title: (modules.find((x) => x.id === m) || {}).title || m })),
   }));
   const l = landing(eff, last);
   return { enabled: true, openRead: eff.openRead, spaces, funcRoles: eff.funcs, last, landing: l.space, choose: l.choose };
