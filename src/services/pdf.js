@@ -19,7 +19,7 @@ function clean(s) {
 
 /** Rend le document et renvoie un Buffer. options.compress = false pour les tests (texte lisible dans le flux). */
 function render(spec, options = {}) {
-  const brand = require('./brand-lib').current(); // marque de l'entreprise de la requête (null hors requête : affichage d'origine)
+  const brand = require('./brand-context').current(); // marque de l'entreprise de la requête (null hors requête : affichage d'origine)
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margin: 48, bufferPages: true, compress: options.compress !== false, info: { Title: clean(spec.title).slice(0, 120), Author: clean(spec.org || (brand && brand.name) || PRODUCT.name).slice(0, 80), Creator: (brand && brand.name) || PRODUCT.name } });
     const chunks = [];

@@ -3,7 +3,6 @@
 // tant qu'une entreprise n'a rien personnalisé, `effective()` renvoie exactement ces valeurs et rien ne change.
 // Contexte de requête (AsyncLocalStorage) : sous /orgs/:orgId, tout code (PDF, e-mails, invites de l'IA…) peut lire la marque de l'entreprise courante
 // sans que chaque appel ait à la transmettre ; en dehors d'une requête, appelez `of(org)` explicitement.
-const { AsyncLocalStorage } = require('async_hooks');
 const crypto = require('crypto');
 const { db, nowISO } = require('../db');
 const { HttpError } = require('../util');
@@ -27,7 +26,7 @@ const DEFAULTS = Object.freeze({
   menu: { order: [], hidden: [] }, dashboard: { order: [], hidden: [] }, vocab: {},
 });
 
-const als = new AsyncLocalStorage();
+const { als, current, currentOrgId } = require('./brand-context');
 const last = new Map(); // dernière valeur connue (sans expiration), pour les textes construits sans pouvoir attendre ; vidé à chaque enregistrement
 const cache = new Map(); // org_id -> { at, row } (30 s ; invalidé à chaque enregistrement)
 const TTL = 30000;
@@ -197,8 +196,6 @@ async function context(req, res, next) {
   req.brand = b;
   als.run({ orgId: req.org.id, brand: b }, next);
 }
-const current = () => { const s = als.getStore(); return s ? s.brand : null; };
-const currentOrgId = () => { const s = als.getStore(); return s ? s.orgId : null; };
 /** Exécute `fn` avec la marque d'une entreprise (tâches d'arrière-plan, envois programmés). */
 async function run(org, fn) { const b = await of(org); return als.run({ orgId: org.id, brand: b }, fn); }
 
