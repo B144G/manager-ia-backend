@@ -11,16 +11,38 @@ const TYPES = ['direction', 'team', 'site', 'client', 'committee', 'other'];
 const ASSIGNABLE_ROLES = ['member', 'manager', 'admin'];
 const RESPONSES = ['pending', 'present', 'absent', 'excused'];
 const ATTENDED = ['unknown', 'yes', 'no'];
-const FREQS = ['weekly', 'biweekly', 'monthly'];
+const FREQS = ['weekly', 'biweekly', 'monthly', 'quarterly'];
 const REMINDERS = [0, 15, 30, 60, 120, 1440, 2880];
-const MAX_PARTICIPANTS = 60;
+const MAX_PARTICIPANTS = 60; // valeur par défaut ; le propriétaire peut la régler (10 à 500) dans les réglages
+const MAX_PARTICIPANTS_CAP = 500;
 const MAX_AGENDA = 40;
 const MAX_SERIES = 26;
 const EDITABLE_MINUTES = ['none', 'draft'];
 
 // ---------- Réglages de droits ----------
 const emptyRule = () => ({ users: [], roles: [] });
-const emptyCfg = () => ({ convene: { default: emptyRule(), types: {} }, validate: { default: emptyRule(), types: {} }, distinct: false, tz: 60 });
+const emptyCfg = () => ({ convene: { default: emptyRule(), types: {} }, validate: { default: emptyRule(), types: {} }, distinct: false, tz: 60, quorum: {}, noticeH: { ...DEFAULT_NOTICE_H }, blockConflicts: false, signOrdered: false, maxParticipants: MAX_PARTICIPANTS });
+
+// ---------- Réglages avancés : quorum par catégorie, préavis par niveau d'urgence, conflits bloquants, signatures ordonnées ----------
+const DEFAULT_NOTICE_H = { normal: 24, urgent: 2, critical: 0 };
+const int = (v, min, max, def) => { const n = Number(v); return Number.isInteger(n) && n >= min && n <= max ? n : def; };
+function normQuorum(q) {
+  if (!q || typeof q !== 'object') return null;
+  const roles = {};
+  for (const r of ['member', 'manager', 'admin', 'owner']) { const n = int(q.roles && q.roles[r], 0, 100, 0); if (n) roles[r] = n; }
+  const rd = q.reduced && typeof q.reduced === 'object' ? q.reduced : {};
+  const out = { minCount: int(q.minCount, 0, 100, 0), minPercent: int(q.minPercent, 0, 100, 0), roles,
+    reduced: { allowed: rd.allowed === true, minCount: int(rd.minCount, 0, 100, 0), minPercent: int(rd.minPercent, 0, 100, 0), delayDays: int(rd.delayDays, 1, 60, 7) } };
+  return out.minCount || out.minPercent || Object.keys(roles).length ? out : null;
+}
+function normAdv(c) {
+  const quorum = {};
+  for (const t of TYPES) { const q = normQuorum(c && c.quorum && c.quorum[t]); if (q) quorum[t] = q; }
+  const nh = (c && c.noticeH) || {};
+  return { quorum, noticeH: { normal: int(nh.normal, 0, 720, DEFAULT_NOTICE_H.normal), urgent: int(nh.urgent, 0, 720, DEFAULT_NOTICE_H.urgent), critical: int(nh.critical, 0, 720, DEFAULT_NOTICE_H.critical) },
+    blockConflicts: Boolean(c && c.blockConflicts), signOrdered: Boolean(c && c.signOrdered), maxParticipants: int(c && c.maxParticipants, 10, MAX_PARTICIPANTS_CAP, MAX_PARTICIPANTS) };
+}
+
 
 function normRule(r) {
   const users = [...new Set((Array.isArray(r && r.users) ? r.users : []).map(Number).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 100);
@@ -35,7 +57,7 @@ function normSide(s) {
 function normCfg(raw) {
   const c = raw && typeof raw === 'object' ? raw : {};
   const tz = Number.isInteger(Number(c.tz)) && Math.abs(Number(c.tz)) <= 14 * 60 ? Number(c.tz) : 60;
-  return { convene: normSide(c.convene), validate: normSide(c.validate), distinct: Boolean(c.distinct), tz };
+  return { convene: normSide(c.convene), validate: normSide(c.validate), distinct: Boolean(c.distinct), tz, ...normAdv(c) };
 }
 async function getConfig(orgId) {
   const r = await db.prepare('SELECT config FROM mtg_settings WHERE org_id = ?').get(orgId);
@@ -88,7 +110,7 @@ function link(v) {
   if (!['https:', 'http:'].includes(u.protocol)) throw new HttpError(400, 'Lien invalide : seules les adresses http(s) sont acceptées.');
   const h = u.hostname.toLowerCase();
   const kind = /(^|\.)meet\.google\.com$/.test(h) ? 'meet' : /(^|\.)zoom\.us$/.test(h) || /(^|\.)zoom\.com$/.test(h) ? 'zoom' : /(^|\.)teams\.(microsoft|live)\.com$/.test(h) ? 'teams'
-    : /(^|\.)(wa\.me|whatsapp\.com)$/.test(h) ? 'whatsapp' : 'other';
+    : /(^|\.)(meet\.jit\.si|8x8\.vc)$/.test(h) ? 'jitsi' : /(^|\.)(wa\.me|whatsapp\.com)$/.test(h) ? 'whatsapp' : 'other';
   return { link: u.toString().slice(0, 500), kind };
 }
 const wholeNumber = (v, min, max, msg) => { const n = Number(v); if (!Number.isInteger(n) || n < min || n > max) throw new HttpError(400, msg); return n; };
@@ -101,7 +123,7 @@ function occurrence(start, freq, n) {
   if (freq === 'weekly') return addDays(start, 7 * n);
   if (freq === 'biweekly') return addDays(start, 14 * n);
   const [y, m, d] = start.split('-').map(Number);
-  const idx = (m - 1) + n;
+  const idx = (m - 1) + (freq === 'quarterly' ? 3 * n : n);
   const yy = y + Math.floor(idx / 12); const mm = idx % 12;
   const last = new Date(Date.UTC(yy, mm + 1, 0)).getUTCDate();
   return `${yy}-${String(mm + 1).padStart(2, '0')}-${String(Math.min(d, last)).padStart(2, '0')}`;
@@ -172,11 +194,13 @@ function needNotCancelled(m) { if (m.status === 'cancelled') throw new HttpError
 function needWrite(ctx) { if (!ctx.write) throw new HttpError(403, "Vous n'avez pas le droit de modifier cette réunion."); }
 
 // ---------- Participants ----------
+const voteWeight = (v) => { if (v === undefined || v === null || v === '') return null; const n = Number(v); if (!Number.isFinite(n) || n < 0 || n > 100) throw new HttpError(400, 'Poids de vote invalide (0 à 100).'); return n; };
 /** Normalise la liste fournie : membres de l'organisation et invités externes (nom + e-mail ou numéro). */
 async function cleanParticipants(req, list) {
   if (list === undefined) return undefined;
   if (!Array.isArray(list)) throw new HttpError(400, 'Liste de participants invalide.');
-  if (list.length > MAX_PARTICIPANTS) throw new HttpError(400, `Pas plus de ${MAX_PARTICIPANTS} participants par réunion.`);
+  const max = (await getConfig(req.org.id)).maxParticipants;
+  if (list.length > max) throw new HttpError(400, `Pas plus de ${max} participants par réunion (limite réglable par le responsable du compte, jusqu'à ${MAX_PARTICIPANTS_CAP}).`);
   const seenU = new Set(); const seenG = new Set(); const out = [];
   for (const p of list) {
     if (!p || typeof p !== 'object') throw new HttpError(400, 'Participant invalide.');
@@ -185,7 +209,7 @@ async function cleanParticipants(req, list) {
       const uid = await A.memberOf(req, p.userId);
       if (seenU.has(uid)) continue;
       seenU.add(uid);
-      out.push({ userId: uid, name: '', email: '', phone: '', required });
+      out.push({ userId: uid, name: '', email: '', phone: '', required, voteWeight: voteWeight(p.voteWeight) });
     } else {
       const name = A.text(p.name, 100, { required: true, msg: "Indiquez le nom de l'invité." });
       const email = mail(p.email); const ph = phone(p.phone);
@@ -193,7 +217,7 @@ async function cleanParticipants(req, list) {
       const key = email || digitsOf(ph);
       if (seenG.has(key)) continue;
       seenG.add(key);
-      out.push({ userId: null, name, email, phone: ph, required });
+      out.push({ userId: null, name, email, phone: ph, required, voteWeight: voteWeight(p.voteWeight) });
     }
   }
   return out;
@@ -201,8 +225,8 @@ async function cleanParticipants(req, list) {
 async function addParticipants(orgId, meetingId, list) {
   const now = nowISO();
   for (const p of list) {
-    await db.prepare('INSERT INTO mtg_participants (org_id, meeting_id, user_id, name, email, phone, required, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(orgId, meetingId, p.userId, p.name, p.email, p.phone, p.required, now);
+    await db.prepare('INSERT INTO mtg_participants (org_id, meeting_id, user_id, name, email, phone, required, vote_weight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(orgId, meetingId, p.userId, p.name, p.email, p.phone, p.required, p.voteWeight === undefined ? null : p.voteWeight, now);
   }
 }
 
@@ -217,7 +241,7 @@ async function cleanAgenda(req, list) {
     const title = A.text(it.title, 200, { required: true, msg: 'Chaque point de l’ordre du jour doit avoir un titre.' });
     const ownerId = await A.memberOf(req, it.ownerId);
     const d = it.durationMin === undefined || it.durationMin === null || it.durationMin === '' ? 0 : wholeNumber(it.durationMin, 0, 600, 'Durée d’un point invalide (0 à 600 minutes).');
-    out.push({ id: it.id ? A.id(it.id) : null, title, ownerId, ownerName: ownerId ? '' : A.text(it.ownerName, 100), durationMin: d });
+    out.push({ id: it.id ? A.id(it.id) : null, title, ownerId, ownerName: ownerId ? '' : A.text(it.ownerName, 100), durationMin: d, kind: A.oneOf(it.kind, ['info', 'discuss', 'decide'], 'discuss', 'Nature du point inconnue (information, discussion ou décision).') });
   }
   return out;
 }
@@ -226,7 +250,7 @@ async function cleanAgenda(req, list) {
 const partView = (p, seeContact) => ({
   id: Number(p.id), userId: p.user_id == null ? null : Number(p.user_id), name: p.uname || p.name || '', kind: p.user_id == null ? 'guest' : 'member',
   email: seeContact ? p.email : undefined, phone: seeContact ? p.phone : undefined,
-  required: Boolean(Number(p.required)), response: p.response, reason: p.reason, attended: p.attended, invited: Boolean(p.invited_at), respondedAt: p.responded_at || null,
+  required: Boolean(Number(p.required)), response: p.response, reason: p.reason, attended: p.attended, lateMin: Number(p.late_min || 0), voteWeight: p.vote_weight === null || p.vote_weight === undefined ? (p.user_id == null ? 0 : 1) : Number(p.vote_weight), invited: Boolean(p.invited_at), respondedAt: p.responded_at || null,
 });
 const meetingRow = (m, extra = {}) => ({
   id: Number(m.id), title: m.title, type: m.type, date: m.date, time: m.start_time, endTime: endTime(m), durationMin: Number(m.duration_min),
@@ -234,7 +258,10 @@ const meetingRow = (m, extra = {}) => ({
   status: m.status, cancelReason: m.cancel_reason, minutesStatus: m.minutes_status, minutesVersion: Number(m.minutes_version),
   organizerId: m.organizer_id == null ? null : Number(m.organizer_id), secretaryId: m.secretary_id == null ? null : Number(m.secretary_id),
   projectId: m.project_id == null ? null : Number(m.project_id), seriesId: m.series_id == null ? null : Number(m.series_id), seriesFreq: m.series_freq || '',
-  reminderMin: Number(m.reminder_min), ...extra,
+  reminderMin: Number(m.reminder_min),
+  branchId: m.branch_id == null ? null : Number(m.branch_id), departmentId: m.department_id == null ? null : Number(m.department_id), typeId: m.type_id == null ? null : Number(m.type_id),
+  urgency: m.urgency || 'normal', chairId: m.chair_id == null ? null : Number(m.chair_id), startedAt: m.started_at || null, endedAt: m.ended_at || null, quorumMode: m.quorum_mode || 'normal',
+  parentId: m.parent_id == null ? null : Number(m.parent_id), archivedAt: m.archived_at || null, noQuorumReason: m.no_quorum_reason || '', seriesExceptions: m.series_exceptions ? String(m.series_exceptions).split(',').filter(Boolean) : [], ...extra,
 });
 
 /** Statut d'une action : celui de la tâche de Projets quand elle existe (le statut « remonte » dans la réunion), sinon celui de l'action. */
@@ -267,8 +294,8 @@ function buildIcs(org, meetings, tz, { cancelled = false } = {}) {
     const s = startMs(m, tz);
     const desc = [m.objective, m.link ? `Lien : ${m.link}` : ''].filter(Boolean).join('\n');
     lines.push('BEGIN:VEVENT', `UID:mtg-${m.id}-${org.id}@brij-ia`, `DTSTAMP:${icsDate(Date.now())}`, `DTSTART:${icsDate(s)}`, `DTEND:${icsDate(s + Number(m.duration_min) * 60000)}`,
-      `SUMMARY:${icsEsc(m.title)}`, m.place || m.link ? `LOCATION:${icsEsc(m.place || m.link)}` : null, desc ? `DESCRIPTION:${icsEsc(desc)}` : null,
-      m.link ? `URL:${icsEsc(m.link)}` : null, `STATUS:${m.status === 'cancelled' || cancelled ? 'CANCELLED' : 'CONFIRMED'}`, 'END:VEVENT');
+      `SUMMARY:${icsEsc((m.urgency && m.urgency !== 'normal' ? '[URGENT] ' : '') + m.title)}`, m.place || m.link ? `LOCATION:${icsEsc(m.place || m.link)}` : null, desc ? `DESCRIPTION:${icsEsc(desc)}` : null,
+      m.link ? `URL:${icsEsc(m.link)}` : null, m.urgency && m.urgency !== 'normal' ? 'PRIORITY:1' : null, `STATUS:${m.status === 'cancelled' || cancelled ? 'CANCELLED' : 'CONFIRMED'}`, 'END:VEVENT');
   }
   lines.push('END:VCALENDAR');
   return lines.filter(Boolean).map(fold).join('\r\n') + '\r\n';
@@ -319,7 +346,7 @@ async function notice(orgId, userId, kind, text, ref = '') {
 }
 
 module.exports = {
-  TYPES, RESPONSES, ATTENDED, FREQS, REMINDERS, ASSIGNABLE_ROLES, MAX_SERIES, TYPE_FR, EDITABLE_MINUTES,
+  TYPES, RESPONSES, ATTENDED, MAX_PARTICIPANTS_CAP, int, normQuorum, normAdv, DEFAULT_NOTICE_H, FREQS, REMINDERS, ASSIGNABLE_ROLES, MAX_SERIES, TYPE_FR, EDITABLE_MINUTES,
   emptyCfg, normCfg, normRule, getConfig, ruleFor, allowed, allowedTypes,
   time, duration, type, mail, phone, link, wholeNumber, today, addDays, occurrence, startMs, endTime, dateFr, whenLine, whereLine,
   mlog, activity, participantsOf, contextFor, load, visibleSql, needOpen, needNotCancelled, needWrite, lockedMsg,

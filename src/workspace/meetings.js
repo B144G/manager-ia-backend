@@ -6,6 +6,7 @@ const { db, nowISO } = require('../db');
 const limits = require('../middleware/limits');
 const A = require('./access');
 const M = require('./meetings-lib');
+const X = require('./meetings-adv-lib');
 const W = require('./w3');
 const { HttpError, isEmail, digitsOf } = require('../util');
 
@@ -16,6 +17,7 @@ const inviteLimit = limits.make(10 * 60 * 1000, 40, "Trop d'envois d'invitations
 // Les routes fixes (réglages, tableau de bord, recherche, exports, modèles, IA) passent avant « /:id ».
 router.use('/', require('./meetings-reports').router);
 router.use('/', require('./meetings-ai').router);
+router.use('/', require('./meetings-adv').router); // avancé : types, quorum, résolutions, votes, PV, signatures, statistiques, conflits
 
 // ---------- Réglages des réunions : qui convoque, qui valide (le propriétaire décide) ----------
 router.get('/settings', async (req, res) => {
@@ -25,7 +27,7 @@ router.get('/settings', async (req, res) => {
     types: M.TYPES, roles: M.ASSIGNABLE_ROLES,
     me: { isOwner: owner, convene: M.allowedTypes(req, cfg, 'convene'), validate: M.allowedTypes(req, cfg, 'validate') },
     config: owner ? cfg : undefined,
-    distinct: cfg.distinct,
+    distinct: cfg.distinct, quorum: cfg.quorum, noticeH: cfg.noticeH, blockConflicts: cfg.blockConflicts, signOrdered: cfg.signOrdered, maxParticipants: cfg.maxParticipants, urgency: X.URGENCY,
   });
 });
 
@@ -42,7 +44,14 @@ router.put('/settings', A.need('owner'), async (req, res) => {
       if (typeof r !== 'object' || (r.roles !== undefined && (!Array.isArray(r.roles) || r.roles.some((x) => !M.ASSIGNABLE_ROLES.includes(x)))) || (r.users !== undefined && !Array.isArray(r.users))) throw new HttpError(400, 'Rôle ou personne invalide dans les réglages.');
     }
   }
-  const cfg = M.normCfg({ convene: b.convene, validate: b.validate, distinct: b.distinct, tz: b.tz });
+  const before = await M.getConfig(req.org.id);
+  if (b.quorum !== undefined && (!b.quorum || typeof b.quorum !== 'object' || Object.keys(b.quorum).some((t) => !M.TYPES.includes(t)))) throw new HttpError(400, 'Règle de quorum invalide.');
+  if (b.noticeH !== undefined && (!b.noticeH || typeof b.noticeH !== 'object')) throw new HttpError(400, 'Délais de préavis invalides.');
+  const cfg = M.normCfg({ convene: b.convene, validate: b.validate, distinct: b.distinct, tz: b.tz,
+    quorum: b.quorum === undefined ? before.quorum : b.quorum, noticeH: b.noticeH === undefined ? before.noticeH : b.noticeH,
+    blockConflicts: b.blockConflicts === undefined ? before.blockConflicts : b.blockConflicts, signOrdered: b.signOrdered === undefined ? before.signOrdered : b.signOrdered,
+    maxParticipants: b.maxParticipants === undefined ? before.maxParticipants : b.maxParticipants });
+  if (b.maxParticipants !== undefined && cfg.maxParticipants !== Number(b.maxParticipants)) throw new HttpError(400, `Nombre maximal de participants invalide (entre 10 et ${M.MAX_PARTICIPANTS_CAP}).`);
   if (b.tz !== undefined && cfg.tz !== Number(b.tz)) throw new HttpError(400, 'Décalage horaire invalide.');
   for (const side of ['convene', 'validate']) {
     for (const r of [cfg[side].default, ...Object.values(cfg[side].types)]) r.users = r.users.filter((u) => u !== req.user.id);
@@ -52,7 +61,6 @@ router.put('/settings', A.need('owner'), async (req, res) => {
     const ok = new Set((await db.prepare(`SELECT user_id FROM org_members WHERE org_id = ? AND user_id IN (${ids.map(() => '?').join(',')})`).all(req.org.id, ...ids)).map((r) => Number(r.user_id)));
     if (ids.some((u) => !ok.has(u))) throw new HttpError(400, "Une personne désignée ne fait pas partie de l'organisation.");
   }
-  const before = await M.getConfig(req.org.id);
   await db.prepare('INSERT INTO mtg_settings (org_id, config, updated_by, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (org_id) DO UPDATE SET config = EXCLUDED.config, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at')
     .run(req.org.id, JSON.stringify(cfg), req.user.id, nowISO());
   await M.mlog(req, null, 'settings', 'Droits de convocation et de validation modifiés');
@@ -79,7 +87,15 @@ router.get('/', async (req, res) => {
   if (q.from) { where.push('m.date >= ?'); args.push(A.date(q.from)); }
   if (q.to) { where.push('m.date <= ?'); args.push(A.date(q.to)); }
   if (q.type) { where.push('m.type = ?'); args.push(M.type(q.type)); }
-  if (q.status) { where.push('m.status = ?'); args.push(A.oneOf(q.status, ['planned', 'held', 'cancelled'], undefined, 'Statut inconnu.')); }
+  if (q.status) { where.push('m.status = ?'); args.push(A.oneOf(q.status, X.MEETING_STATUS, undefined, 'Statut inconnu.')); }
+  if (q.branchId) { where.push("(m.branch_id = ? OR EXISTS (SELECT 1 FROM mtg_scope s WHERE s.meeting_id = m.id AND s.kind = 'site' AND s.ref_id = ?))"); const b = A.id(q.branchId); args.push(b, b); }
+  if (q.departmentId) { where.push("(m.department_id = ? OR EXISTS (SELECT 1 FROM mtg_scope s WHERE s.meeting_id = m.id AND s.kind = 'dept' AND s.ref_id = ?))"); const d = A.id(q.departmentId); args.push(d, d); }
+  if (q.urgency) { where.push('m.urgency = ?'); args.push(A.oneOf(q.urgency, X.URGENCY, undefined, "Niveau d'urgence inconnu.")); }
+  if (q.typeId) { where.push('m.type_id = ?'); args.push(A.id(q.typeId)); }
+  if (q.archived === '1') where.push('m.archived_at IS NOT NULL'); else if (q.archived === '0') where.push('m.archived_at IS NULL');
+  if (q.urgent === '1') where.push("m.urgency <> 'normal'");
+  if (q.interService === '1') where.push("(SELECT COUNT(DISTINCT z.s) FROM (SELECT ref_id AS s FROM mtg_scope WHERE meeting_id = m.id AND kind = 'dept' UNION SELECT m.department_id AS s WHERE m.department_id IS NOT NULL) z) > 1");
+  if (q.multiSite === '1') where.push("(SELECT COUNT(DISTINCT z.s) FROM (SELECT ref_id AS s FROM mtg_scope WHERE meeting_id = m.id AND kind = 'site' UNION SELECT m.branch_id AS s WHERE m.branch_id IS NOT NULL) z) > 1");
   if (q.minutes) { where.push('m.minutes_status = ?'); args.push(A.oneOf(q.minutes, ['none', 'draft', 'submitted', 'validated'], undefined, 'Statut inconnu.')); }
   if (q.mine) { where.push('EXISTS (SELECT 1 FROM mtg_participants mp WHERE mp.meeting_id = m.id AND mp.user_id = ?)'); args.push(req.user.id); }
   const rows = await db.prepare(`SELECT m.*,
@@ -122,59 +138,103 @@ async function checkDocs(req, ids) {
 async function insertMeeting(req, f, orgCfgTz) {
   void orgCfgTz;
   const now = nowISO();
-  const id = Number((await db.prepare(`INSERT INTO mtg_meetings (org_id, series_id, series_idx, series_freq, title, type, date, start_time, duration_min, place, link, link_kind, objective, confidential, organizer_id, secretary_id, project_id, reminder_min, created_by, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(req.org.id, f.seriesId || null, f.idx || 0, f.freq || '', f.title, f.type, f.date, f.time, f.durationMin, f.place, f.link, f.linkKind, f.objective,
-    f.confidential ? 1 : 0, f.organizerId, f.secretaryId, f.projectId, f.reminderMin, req.user.id, now, now)).lastInsertRowid);
+  const id = Number((await db.prepare(`INSERT INTO mtg_meetings (org_id, series_id, series_idx, series_freq, title, type, date, start_time, duration_min, place, link, link_kind, objective, confidential, organizer_id, secretary_id, project_id, reminder_min, created_by, created_at, updated_at, branch_id, department_id, type_id, urgency, chair_id, series_exceptions)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(req.org.id, f.seriesId || null, f.idx || 0, f.freq || '', f.title, f.type, f.date, f.time, f.durationMin, f.place, f.link, f.linkKind, f.objective,
+    f.confidential ? 1 : 0, f.organizerId, f.secretaryId, f.projectId, f.reminderMin, req.user.id, now, now, f.branchId || null, f.departmentId || null, f.typeId || null, f.urgency || 'normal', f.chairId || null, f.exceptions || '')).lastInsertRowid);
   return id;
+}
+
+/** Salle de visioconférence Jitsi Meet (gratuite, sans compte) : nom aléatoire non devinable. Le partage d'écran est celui de la salle, pour tous les participants. */
+const newRoomUrl = (orgId) => `https://meet.jit.si/BrijIA-${orgId}-${require('crypto').randomBytes(9).toString('hex')}`;
+/** Type choisi : un type personnalisé de l'organisation (catégorie de droits + valeurs par défaut) ou l'une des six catégories. */
+async function resolveType(req, b) {
+  if (b.typeId !== undefined && b.typeId !== null && b.typeId !== '') {
+    const t = await X.typeRow(req.org.id, A.id(b.typeId, 'Type invalide.'));
+    if (!t || !Number(t.active)) throw new HttpError(400, 'Type de réunion inconnu ou désactivé.');
+    return { type: t.base, preset: t };
+  }
+  return { type: M.type(b.type), preset: null };
+}
+/** Dates d'une série : fréquence (hebdomadaire, toutes les 2 semaines, mensuelle, trimestrielle), dates d'exception sautées, jours fériés sautés si demandé. */
+async function seriesDates(req, date, rec) {
+  const skip = new Set(rec.exceptions);
+  const hol = rec.skipHolidays ? new Set((await db.prepare('SELECT date FROM hr_holidays WHERE org_id = ?').all(req.org.id)).map((h) => h.date)) : new Set();
+  const out = []; const skipped = [];
+  for (let k = 0; out.length < rec.count && k < rec.count * 4 + 12; k++) {
+    const d = M.occurrence(date, rec.freq, k);
+    if (skip.has(d) || hol.has(d)) { skipped.push(d); continue; }
+    out.push(d);
+  }
+  return { dates: out, skipped };
 }
 
 router.post('/', async (req, res) => {
   const b = req.body || {};
   const cfg = await M.getConfig(req.org.id);
-  const type = M.type(b.type);
+  const { type, preset } = await resolveType(req, b);
   if (!M.allowed(req, cfg, 'convene', type)) throw new HttpError(403, "Vous n'avez pas le droit de convoquer une réunion de ce type. Le responsable du compte peut vous l'accorder dans les réglages des réunions.");
   const title = A.text(b.title, 160, { required: true, msg: 'Indiquez le titre de la réunion.' });
   const date = A.date(b.date);
   if (!date) throw new HttpError(400, 'Indiquez la date de la réunion.');
-  const lk = M.link(b.link);
+  const lk = b.autoRoom === true && !b.link ? M.link(newRoomUrl(req.org.id)) : M.link(b.link);
   const organizerId = b.organizerId === undefined || b.organizerId === null || b.organizerId === '' ? req.user.id : await A.memberOf(req, b.organizerId);
   const secretaryId = await A.memberOf(req, b.secretaryId);
-  const reminderMin = b.reminderMin === undefined || b.reminderMin === null || b.reminderMin === '' ? 0 : Number(b.reminderMin);
+  const chairId = await A.memberOf(req, b.chairId);
+  const urgency = A.oneOf(b.urgency, X.URGENCY, 'normal', "Niveau d'urgence inconnu.");
+  const blank = (v) => v === undefined || v === null || v === '';
+  let reminderMin = blank(b.reminderMin) ? (preset ? Number(preset.reminder_min) : (urgency === 'normal' ? 0 : 15)) : Number(b.reminderMin);
   if (!M.REMINDERS.includes(reminderMin)) throw new HttpError(400, 'Rappel invalide.');
-  const f = { title, type, date, time: M.time(b.time), durationMin: M.duration(b.durationMin), place: A.text(b.place, 200), link: lk.link, linkKind: lk.kind, objective: A.text(b.objective, 2000),
-    confidential: b.confidential === true || b.confidential === 1 || b.confidential === '1', organizerId, secretaryId, projectId: await checkProject(req, b.projectId), reminderMin };
+  const f = { title, type, typeId: preset ? Number(preset.id) : null, date, time: M.time(b.time), durationMin: blank(b.durationMin) && preset ? Number(preset.duration_min) : M.duration(b.durationMin), place: A.text(b.place, 200), link: lk.link, linkKind: lk.kind, objective: A.text(b.objective, 2000),
+    confidential: b.confidential === undefined && preset ? Boolean(Number(preset.confidential)) : (b.confidential === true || b.confidential === 1 || b.confidential === '1'), organizerId, secretaryId, chairId, projectId: await checkProject(req, b.projectId), reminderMin,
+    branchId: await X.checkBranch(req, b.branchId), departmentId: await X.checkDept(req, b.departmentId), urgency };
   let rec = null;
   if (b.recurrence && typeof b.recurrence === 'object' && b.recurrence.freq) {
-    rec = { freq: A.oneOf(b.recurrence.freq, M.FREQS, undefined, 'Récurrence inconnue.'), count: M.wholeNumber(b.recurrence.count || 2, 2, M.MAX_SERIES, `Une série compte entre 2 et ${M.MAX_SERIES} réunions.`) };
+    const exc = Array.isArray(b.recurrence.exceptions) ? [...new Set(b.recurrence.exceptions.slice(0, 60).map((d) => A.date(d)).filter(Boolean))] : [];
+    rec = { freq: A.oneOf(b.recurrence.freq, M.FREQS, undefined, 'Récurrence inconnue.'), count: M.wholeNumber(b.recurrence.count || 2, 2, M.MAX_SERIES, `Une série compte entre 2 et ${M.MAX_SERIES} réunions.`), exceptions: exc, skipHolidays: b.recurrence.skipHolidays === true };
   }
   const parts = (await M.cleanParticipants(req, b.participants)) || [];
-  for (const uid of [organizerId, secretaryId]) if (uid && !parts.some((p) => p.userId === uid)) parts.push({ userId: uid, name: '', email: '', phone: '', required: 1 });
-  if (parts.length > 60) throw new HttpError(400, 'Pas plus de 60 participants par réunion.');
+  for (const uid of [organizerId, secretaryId, chairId]) if (uid && !parts.some((p) => p.userId === uid)) parts.push({ userId: uid, name: '', email: '', phone: '', required: 1, voteWeight: null });
+  if (parts.length > cfg.maxParticipants) throw new HttpError(400, `Pas plus de ${cfg.maxParticipants} participants par réunion (limite réglable par le responsable du compte).`);
   const agenda = (await M.cleanAgenda(req, b.agenda)) || [];
   const docs = await checkDocs(req, b.attachments);
+  const series = rec ? await seriesDates(req, date, rec) : { dates: [date], skipped: [] };
+  if (!series.dates.length) throw new HttpError(400, 'Toutes les dates de la série sont des exceptions : aucune réunion à créer.');
+  f.exceptions = rec ? series.skipped.join(',') : '';
+
+  // Conflits d'agenda (participants déjà pris, lieu occupé, congés) : avertissement ; bloquant seulement si le propriétaire l'a décidé (réglage).
+  const conflicts = await X.conflictsFor(req, cfg, { date, time: f.time, durationMin: f.durationMin, place: f.place, userIds: parts.filter((p) => p.userId).map((p) => p.userId) });
+  if (conflicts.count && cfg.blockConflicts && b.force !== true) return res.status(409).json({ error: "Conflit d'agenda : des participants, le lieu ou des congés sont concernés. Choisissez un autre créneau ou confirmez.", code: 'conflict', conflicts });
+  const notice = X.noticeCheck(cfg, urgency, date, f.time, cfg.tz);
+  const scope = { sites: b.sites, depts: b.departments };
 
   const ids = await db.transaction(async () => {
     const out = [];
-    const n = rec ? rec.count : 1;
+    const n = series.dates.length;
     let seriesId = null;
     for (let i = 0; i < n; i++) {
-      const id = await insertMeeting(req, { ...f, date: rec ? M.occurrence(date, rec.freq, i) : date, seriesId, idx: i, freq: rec ? rec.freq : '' });
+      const id = await insertMeeting(req, { ...f, date: series.dates[i], seriesId, idx: i, freq: rec ? rec.freq : '' });
       if (rec && i === 0) { seriesId = id; await db.prepare('UPDATE mtg_meetings SET series_id = ? WHERE id = ?').run(id, id); }
       await M.addParticipants(req.org.id, id, parts);
       await db.prepare("UPDATE mtg_participants SET response = 'present', responded_at = ? WHERE meeting_id = ? AND user_id = ?").run(nowISO(), id, organizerId);
       let pos = 0;
-      for (const it of agenda) await db.prepare('INSERT INTO mtg_agenda (org_id, meeting_id, position, title, owner_id, owner_name, duration_min) VALUES (?, ?, ?, ?, ?, ?, ?)').run(req.org.id, id, pos++, it.title, it.ownerId, it.ownerName, it.durationMin);
+      for (const it of agenda) await db.prepare('INSERT INTO mtg_agenda (org_id, meeting_id, position, title, owner_id, owner_name, duration_min, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, id, pos++, it.title, it.ownerId, it.ownerName, it.durationMin, it.kind);
+      if (!agenda.length && preset && preset.template_id) {
+        const tpl = await db.prepare('SELECT items FROM mtg_templates WHERE id = ? AND org_id = ?').get(preset.template_id, req.org.id);
+        if (tpl) for (const it of JSON.parse(tpl.items)) await db.prepare('INSERT INTO mtg_agenda (org_id, meeting_id, position, title, duration_min) VALUES (?, ?, ?, ?, ?)').run(req.org.id, id, pos++, it.title, it.durationMin || 0);
+      }
       for (const d of docs) await db.prepare('INSERT INTO mtg_attachments (org_id, meeting_id, doc_id, name, added_by, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(req.org.id, id, d.id, d.name, req.user.id, nowISO());
-      await M.mlog(req, id, 'convened', rec ? `Convoquée (série ${i + 1}/${n})` : 'Réunion convoquée');
+      await X.setScope(req, id, scope);
+      for (const [uid, role] of [[organizerId, 'organizer'], [secretaryId, 'secretary'], [chairId, 'chair']]) if (uid) await X.resp(req, { id, confidential: f.confidential }, { kind: 'role', refId: id, userId: uid, role, subject: title });
+      await M.mlog(req, id, 'convened', rec ? `Convoquée (série ${i + 1}/${n})` : urgency === 'normal' ? 'Réunion convoquée' : `Réunion convoquée (${urgency === 'critical' ? 'urgence critique' : 'urgente'})`);
       out.push(id);
     }
     return out;
   })();
   const first = await db.prepare('SELECT * FROM mtg_meetings WHERE id = ?').get(ids[0]);
-  await M.activity(req, first, rec ? `Série de ${ids.length} réunions « ${title} » convoquée` : `Réunion « ${title} » convoquée`);
+  await M.activity(req, first, rec ? `Série de ${ids.length} réunions « ${title} » convoquée` : urgency === 'normal' ? `Réunion « ${title} » convoquée` : `Réunion urgente « ${title} » convoquée`);
   let invite = null;
-  if (b.send === true) invite = await sendInvitations(req, first, cfg, { all: true });
-  res.status(201).json({ id: ids[0], ids, invite });
+  if (b.send === true || (urgency !== 'normal' && b.send !== false)) invite = await sendInvitations(req, first, cfg, { all: true });
+  res.status(201).json({ id: ids[0], ids, invite, conflicts: conflicts.count ? conflicts : null, notice, skipped: series.skipped });
 });
 
 // ---------- Une réunion ----------
@@ -205,7 +265,12 @@ router.get('/:id', async (req, res) => {
     attachments: atts.map((a) => ({ id: Number(a.id), docId: a.doc_id == null ? null : Number(a.doc_id), name: a.name })),
     minutes: { status: m.minutes_status, version: Number(m.minutes_version), returnReason: m.return_reason,
       versions: versions.map((v) => ({ version: Number(v.version), status: v.status, reason: v.reason, submittedAt: v.submitted_at, submittedBy: v.submitted_by, decidedAt: v.decided_at, decidedBy: v.decided_by })) },
-    rights, distinctRequired: cfg.distinct, blockedByDistinct,
+    rights: { ...rights, run: ctx.write && m.status !== 'cancelled' && m.status !== 'no_quorum', vote: ctx.manage || Number(m.chair_id) === req.user.id, pv: ctx.write, archive: (ctx.validate || ctx.owner) && !m.archived_at && m.minutes_status === 'validated', unarchive: (ctx.validate || ctx.owner) && Boolean(m.archived_at) },
+    distinctRequired: cfg.distinct, blockedByDistinct, maxParticipants: cfg.maxParticipants,
+    quorum: await X.quorumState(req, m, parts, cfg), perimeter: await X.perimeter(m, parts), scope: await X.scopeOf(m.id),
+    typeName: m.type_id ? ((await X.typeRow(req.org.id, m.type_id)) || {}).name || null : null,
+    proposals: ctx.manage ? (await db.prepare('SELECT g.id, g.title, g.kind, g.proposed_by, u.name AS pname FROM mtg_agenda g LEFT JOIN users u ON u.id = g.proposed_by WHERE g.meeting_id = ? AND g.accepted = 0 ORDER BY g.id').all(m.id)).map((g) => ({ id: Number(g.id), title: g.title, kind: g.kind, by: g.pname || '' })) : [],
+    child: await db.prepare('SELECT id, date, start_time FROM mtg_meetings WHERE parent_id = ? AND org_id = ? ORDER BY id LIMIT 1').get(m.id, req.org.id).then((c) => (c ? { id: Number(c.id), date: c.date, time: c.start_time } : null)),
   });
 });
 
@@ -228,16 +293,31 @@ router.put('/:id', async (req, res) => {
     secretary_id: b.secretaryId === undefined ? m.secretary_id : await A.memberOf(req, b.secretaryId),
     project_id: b.projectId === undefined ? m.project_id : await checkProject(req, b.projectId),
     reminder_min: b.reminderMin === undefined ? Number(m.reminder_min) : Number(b.reminderMin),
+    branch_id: b.branchId === undefined ? m.branch_id : await X.checkBranch(req, b.branchId),
+    department_id: b.departmentId === undefined ? m.department_id : await X.checkDept(req, b.departmentId),
+    urgency: b.urgency === undefined ? (m.urgency || 'normal') : A.oneOf(b.urgency, X.URGENCY, undefined, "Niveau d'urgence inconnu."),
+    chair_id: b.chairId === undefined ? m.chair_id : await A.memberOf(req, b.chairId),
   };
   if (!M.REMINDERS.includes(n.reminder_min)) throw new HttpError(400, 'Rappel invalide.');
   if (n.confidential !== Number(m.confidential) && !(ctx.owner || ctx.organizer)) throw new HttpError(403, "Seul l'organisateur ou le propriétaire change la confidentialité.");
   const newParts = await M.cleanParticipants(req, b.participants);
   const agenda = await M.cleanAgenda(req, b.agenda);
   const timeChanged = n.date !== m.date || n.start_time !== m.start_time;
+  const placeChanged = n.place !== m.place || n.duration_min !== Number(m.duration_min);
+  let conflicts = null;
+  if (timeChanged || placeChanged) {
+    const ids = (newParts ? newParts.filter((p) => p.userId).map((p) => p.userId) : parts.filter((p) => p.user_id).map((p) => Number(p.user_id)));
+    conflicts = await X.conflictsFor(req, cfg, { date: n.date, time: n.start_time, durationMin: n.duration_min, place: n.place, userIds: ids, excludeId: m.id });
+    if (conflicts.count && cfg.blockConflicts && b.force !== true) return res.status(409).json({ error: "Conflit d'agenda : des participants, le lieu ou des congés sont concernés. Choisissez un autre créneau ou confirmez.", code: 'conflict', conflicts });
+    if (!conflicts.count) conflicts = null;
+  }
   const keyChanged = KEY_FIELDS.some((k) => String(n[k]) !== String(m[k]));
   await db.transaction(async () => {
-    await db.prepare(`UPDATE mtg_meetings SET title = ?, type = ?, date = ?, start_time = ?, duration_min = ?, place = ?, link = ?, link_kind = ?, objective = ?, confidential = ?, organizer_id = ?, secretary_id = ?, project_id = ?, reminder_min = ?, reminded_at = ?, updated_at = ? WHERE id = ?`)
-      .run(n.title, n.type, n.date, n.start_time, n.duration_min, n.place, n.link, n.link_kind, n.objective, n.confidential, n.organizer_id, n.secretary_id, n.project_id, n.reminder_min, timeChanged ? null : m.reminded_at, nowISO(), m.id);
+    await db.prepare(`UPDATE mtg_meetings SET title = ?, type = ?, date = ?, start_time = ?, duration_min = ?, place = ?, link = ?, link_kind = ?, objective = ?, confidential = ?, organizer_id = ?, secretary_id = ?, project_id = ?, reminder_min = ?, reminded_at = ?, updated_at = ?, branch_id = ?, department_id = ?, urgency = ?, chair_id = ?, quorum_alerted_at = ? WHERE id = ?`)
+      .run(n.title, n.type, n.date, n.start_time, n.duration_min, n.place, n.link, n.link_kind, n.objective, n.confidential, n.organizer_id, n.secretary_id, n.project_id, n.reminder_min, timeChanged ? null : m.reminded_at, nowISO(), n.branch_id, n.department_id, n.urgency, n.chair_id, timeChanged ? null : m.quorum_alerted_at, m.id);
+    await X.setScope(req, m.id, { sites: b.sites, depts: b.departments });
+    for (const [role, before, after] of [['organizer', m.organizer_id, n.organizer_id], ['secretary', m.secretary_id, n.secretary_id], ['chair', m.chair_id, n.chair_id]]) await X.respChange(req, m, { kind: 'role', refId: m.id, role, subject: n.title, before, after });
+    if (n.chair_id && !(newParts || parts.map((p) => ({ userId: p.user_id == null ? null : Number(p.user_id) }))).some((p) => p.userId === Number(n.chair_id))) await M.addParticipants(req.org.id, m.id, [{ userId: Number(n.chair_id), name: '', email: '', phone: '', required: 1, voteWeight: null }]);
     if (newParts) await syncParticipants(req, m, parts, newParts, n);
     if (agenda) await syncAgenda(req, m.id, agenda);
     if (timeChanged) await db.prepare("UPDATE mtg_participants SET response = 'pending', reason = '', responded_at = NULL WHERE meeting_id = ? AND (user_id IS NULL OR user_id <> ?)").run(m.id, n.organizer_id || 0);
@@ -250,7 +330,7 @@ router.put('/:id', async (req, res) => {
   await M.activity(req, { ...m, confidential: n.confidential }, `Réunion « ${n.title} » modifiée`);
   let invite = null;
   if (keyChanged && b.notify === true) invite = await sendInvitations(req, { ...m, ...n }, cfg, { all: true, update: true });
-  res.json({ ok: true, invite });
+  res.json({ ok: true, invite, conflicts, notice: X.noticeCheck(cfg, n.urgency, n.date, n.start_time, cfg.tz) });
 });
 
 async function syncParticipants(req, m, current, wanted, n) {
@@ -259,9 +339,9 @@ async function syncParticipants(req, m, current, wanted, n) {
   for (const c of current) {
     const w = wantedKeys.get(keyOf(c));
     if (!w) {
-      if (c.user_id != null && (Number(c.user_id) === Number(n.organizer_id) || Number(c.user_id) === Number(n.secretary_id))) continue; // l'organisateur reste convoqué
+      if (c.user_id != null && (Number(c.user_id) === Number(n.organizer_id) || Number(c.user_id) === Number(n.secretary_id) || Number(c.user_id) === Number(n.chair_id))) continue; // l'organisateur reste convoqué
       await db.prepare('DELETE FROM mtg_participants WHERE id = ?').run(c.id);
-    } else await db.prepare('UPDATE mtg_participants SET required = ? WHERE id = ?').run(w.required, c.id);
+    } else await db.prepare('UPDATE mtg_participants SET required = ?, vote_weight = COALESCE(?, vote_weight) WHERE id = ?').run(w.required, w.voteWeight === undefined ? null : w.voteWeight, c.id);
   }
   const have = new Set(current.map(keyOf));
   const add = [...wantedKeys.entries()].filter(([k]) => !have.has(k)).map(([, p]) => p);
@@ -272,11 +352,11 @@ async function syncAgenda(req, meetingId, items) {
   const cur = await db.prepare('SELECT id FROM mtg_agenda WHERE meeting_id = ?').all(meetingId);
   const curIds = new Set(cur.map((r) => Number(r.id)));
   const keep = new Set(items.filter((i) => i.id && curIds.has(i.id)).map((i) => i.id));
-  for (const id of curIds) if (!keep.has(id)) await db.prepare('DELETE FROM mtg_agenda WHERE id = ?').run(id);
+  for (const id of curIds) if (!keep.has(id)) await db.prepare('DELETE FROM mtg_agenda WHERE id = ? AND accepted = 1').run(id); // les propositions en attente ne sont jamais effacées par une modification de l'ordre du jour
   let pos = 0;
   for (const it of items) {
-    if (it.id && curIds.has(it.id)) await db.prepare('UPDATE mtg_agenda SET position = ?, title = ?, owner_id = ?, owner_name = ?, duration_min = ? WHERE id = ? AND meeting_id = ?').run(pos++, it.title, it.ownerId, it.ownerName, it.durationMin, it.id, meetingId);
-    else await db.prepare('INSERT INTO mtg_agenda (org_id, meeting_id, position, title, owner_id, owner_name, duration_min) VALUES (?, ?, ?, ?, ?, ?, ?)').run(req.org.id, meetingId, pos++, it.title, it.ownerId, it.ownerName, it.durationMin);
+    if (it.id && curIds.has(it.id)) await db.prepare('UPDATE mtg_agenda SET position = ?, title = ?, owner_id = ?, owner_name = ?, duration_min = ?, kind = ? WHERE id = ? AND meeting_id = ?').run(pos++, it.title, it.ownerId, it.ownerName, it.durationMin, it.kind || 'discuss', it.id, meetingId);
+    else await db.prepare('INSERT INTO mtg_agenda (org_id, meeting_id, position, title, owner_id, owner_name, duration_min, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(req.org.id, meetingId, pos++, it.title, it.ownerId, it.ownerName, it.durationMin, it.kind || 'discuss');
   }
 }
 
@@ -312,10 +392,22 @@ router.post('/:id/cancel', async (req, res) => {
   res.json({ ok: true, cancelled: targets.length, invite });
 });
 
+router.post('/:id/room', async (req, res) => {
+  const { m, ctx } = await M.load(req, req.params.id);
+  if (!ctx.manage) throw new HttpError(403, "Vous n'avez pas le droit de créer la salle de cette réunion.");
+  M.needNotCancelled(m);
+  if (m.link && !(req.body || {}).replace) throw new HttpError(409, 'Cette réunion a déjà un lien de visioconférence.');
+  const lk = M.link(newRoomUrl(req.org.id));
+  await db.prepare('UPDATE mtg_meetings SET link = ?, link_kind = ?, updated_at = ? WHERE id = ?').run(lk.link, lk.kind, nowISO(), m.id);
+  await M.mlog(req, m.id, 'room', 'Salle de visioconférence créée');
+  for (const p of await M.participantsOf(m.id)) if (p.user_id && Number(p.user_id) !== req.user.id) await M.notice(req.org.id, p.user_id, 'meeting', `Salle de visioconférence disponible pour ${Number(m.confidential) ? 'une réunion confidentielle' : `« ${m.title} »`} : ouvrez la réunion pour rejoindre et partager votre écran.`, `meeting:${m.id}`);
+  res.json({ ok: true, link: lk.link, kind: lk.kind });
+});
+
 router.post('/:id/hold', async (req, res) => {
   const { m, ctx } = await M.load(req, req.params.id);
   M.needWrite(ctx); M.needNotCancelled(m);
-  if (m.status !== 'held') {
+  if (m.status !== 'held' && m.status !== 'no_quorum') {
     await db.prepare("UPDATE mtg_meetings SET status = 'held', updated_at = ? WHERE id = ?").run(nowISO(), m.id);
     await M.mlog(req, m.id, 'held', 'Réunion tenue');
   }
@@ -367,7 +459,8 @@ router.post('/:id/participants', async (req, res) => {
   if (!list || !list.length) throw new HttpError(400, 'Indiquez au moins un participant.');
   const have = new Set(parts.map((p) => (p.user_id != null ? `u${p.user_id}` : `g${p.email || digitsOf(p.phone)}`)));
   const add = list.filter((p) => !have.has(p.userId != null ? `u${p.userId}` : `g${p.email || digitsOf(p.phone)}`));
-  if (parts.length + add.length > 60) throw new HttpError(400, 'Pas plus de 60 participants par réunion.');
+  const maxP = (await M.getConfig(req.org.id)).maxParticipants;
+  if (parts.length + add.length > maxP) throw new HttpError(400, `Pas plus de ${maxP} participants par réunion (limite réglable par le responsable du compte).`);
   await M.addParticipants(req.org.id, m.id, add);
   await M.mlog(req, m.id, 'participants', `${add.length} participant(s) ajouté(s)`);
   res.status(201).json({ added: add.length });
@@ -408,7 +501,7 @@ function inviteText(req, m, agenda, who, { update = false, cancelled = false } =
   const lines = [`Bonjour ${who || ''},`.replace(' ,', ','), ''];
   if (cancelled) lines.push(`La réunion « ${m.title} » du ${M.dateFr(m.date)} est annulée.`, m.cancel_reason ? `Motif : ${m.cancel_reason}` : '');
   else {
-    lines.push(`${req.user.name} ${update ? 'vous informe d’un changement pour' : 'vous convoque à'} la réunion « ${m.title} » (${M.TYPE_FR[m.type] || ''}).`, '',
+    lines.push(...(m.urgency && m.urgency !== 'normal' ? ['*** CONVOCATION URGENTE — merci de répondre dès que possible ***', ''] : []), `${req.user.name} ${update ? 'vous informe d’un changement pour' : 'vous convoque à'} la réunion « ${m.title} » (${M.TYPE_FR[m.type] || ''}).`, '',
       `Quand : ${M.whenLine(m)}`, `Où : ${M.whereLine(m)}`);
     if (m.objective) lines.push('', `Objet : ${m.objective}`);
     if (agenda.length) lines.push('', 'Ordre du jour :', ...agenda.map((a, i) => `${i + 1}. ${a.title}${a.duration_min ? ` (${a.duration_min} min)` : ''}`));
@@ -420,7 +513,8 @@ function inviteText(req, m, agenda, who, { update = false, cancelled = false } =
 
 async function sendInvitations(req, m, cfg, { all = false, update = false, cancelled = false } = {}) {
   const parts = await M.participantsOf(m.id);
-  const agenda = await db.prepare('SELECT title, duration_min FROM mtg_agenda WHERE meeting_id = ? ORDER BY position').all(m.id);
+  const agenda = await db.prepare('SELECT title, duration_min FROM mtg_agenda WHERE meeting_id = ? AND accepted = 1 ORDER BY position').all(m.id);
+  const urgent = m.urgency && m.urgency !== 'normal';
   const targets = parts.filter((p) => (all || !p.invited_at) && !(Number(p.user_id) === req.user.id));
   const contacts = await memberContacts(targets.filter((p) => p.user_id).map((p) => Number(p.user_id)));
   let series = [m];
@@ -432,13 +526,13 @@ async function sendInvitations(req, m, cfg, { all = false, update = false, cance
     if (p.user_id) {
       const u = contacts.get(Number(p.user_id));
       name = u ? u.name : '';
-      if (!cancelled) { await M.notice(req.org.id, p.user_id, 'meeting', `${update ? 'Réunion modifiée' : 'Convocation'} : « ${m.title} », ${M.dateFr(m.date)} à ${m.start_time.replace(':', 'h')}. Merci de répondre.`, `meeting:${m.id}`); notices++; }
+      if (!cancelled) { await M.notice(req.org.id, p.user_id, urgent ? 'meeting_urgent' : 'meeting', `${urgent ? 'URGENT — ' : ''}${update ? 'Réunion modifiée' : 'Convocation'} : « ${m.title} », ${M.dateFr(m.date)} à ${m.start_time.replace(':', 'h')}. Merci de répondre.`, `meeting:${m.id}`); notices++; }
       if (u && isEmail(u.contact)) email = u.contact;
     } else email = p.email;
     if (email) recipients.push({ email, name, id: p.id });
     else if (!p.user_id) { if (p.phone) whatsappOnly++; else noContact++; }
   }
-  const subject = cancelled ? `Réunion annulée : ${m.title}` : `${update ? 'Réunion modifiée' : 'Convocation'} : ${m.title} — ${M.dateFr(m.date)}`;
+  const subject = cancelled ? `Réunion annulée : ${m.title}` : `${urgent ? '[URGENT] ' : ''}${update ? 'Réunion modifiée' : 'Convocation'} : ${m.title} — ${M.dateFr(m.date)}`;
   const mailRes = await M.sendMany(req, m.id, recipients, (r) => ({
     subject, text: inviteText(req, m, agenda, r.name, { update, cancelled }),
     attachments: [{ filename: 'reunion.ics', content: ics, contentType: `text/calendar; charset=utf-8; method=${cancelled ? 'CANCEL' : 'PUBLISH'}` }],
@@ -472,8 +566,8 @@ function waNumber(s) {
 router.get('/:id/whatsapp', async (req, res) => {
   const { m, ctx, parts } = await M.load(req, req.params.id);
   if (!ctx.manage) throw new HttpError(403, "Vous n'avez pas le droit de préparer les messages.");
-  const agenda = await db.prepare('SELECT title, duration_min FROM mtg_agenda WHERE meeting_id = ? ORDER BY position').all(m.id);
-  const text = [`*Convocation : ${m.title}*`, `📅 ${M.whenLine(m)}`, `📍 ${M.whereLine(m)}`, m.objective ? `Objet : ${m.objective}` : '',
+  const agenda = await db.prepare('SELECT title, duration_min FROM mtg_agenda WHERE meeting_id = ? AND accepted = 1 ORDER BY position').all(m.id);
+  const text = [`${m.urgency && m.urgency !== 'normal' ? '🚨 *URGENT* ' : ''}*Convocation : ${m.title}*`, `📅 ${M.whenLine(m)}`, `📍 ${M.whereLine(m)}`, m.objective ? `Objet : ${m.objective}` : '',
     agenda.length ? `Ordre du jour :\n${agenda.map((a, i) => `${i + 1}. ${a.title}`).join('\n')}` : '', 'Merci de confirmer votre présence.', `— ${req.org.name}`].filter(Boolean).join('\n');
   const contacts = await memberContacts(parts.filter((p) => p.user_id).map((p) => Number(p.user_id)));
   const targets = [];

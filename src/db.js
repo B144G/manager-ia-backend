@@ -3814,6 +3814,8 @@ while (MIGRATIONS.length < 139) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1}
 MIGRATIONS.push(...require('./migrations/transport-geo'));
 // Portée des réponses automatiques WhatsApp (143 et suivantes) : toujours en fin de tableau.
 MIGRATIONS.push(...require('./migrations/wa-portee'));
+// Réunions avancées (quorum, résolutions, votes, procès-verbaux, signatures, historique des responsabilités) : migrations 146 et suivantes.
+MIGRATIONS.push(...require('./migrations/reunions-avance'));
 
 db.ready = db.migrate(MIGRATIONS);
 
