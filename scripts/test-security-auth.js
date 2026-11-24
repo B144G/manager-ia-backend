@@ -55,7 +55,7 @@ run('Sécurité : comptes, sessions, double authentification, en-têtes', async 
   check('cookie de session : HttpOnly + SameSite + Path=/', sc && /HttpOnly/i.test(sc) && /SameSite=(Lax|Strict)/i.test(sc) && /Path=\//.test(sc), sc && sc.replace(/mia_token=[^;]+/, 'mia_token=…'));
   const h = (await fetch(base + '/api/health')).headers;
   check('en-têtes : nosniff, no-store, HSTS, Referrer-Policy, Permissions-Policy, X-Request-Id',
-    h.get('x-content-type-options') === 'nosniff' && /no-store/.test(h.get('cache-control') || '') && /max-age=\d+/.test(h.get('strict-transport-security') || '') && h.get('referrer-policy') === 'no-referrer' && /camera=\(\)/.test(h.get('permissions-policy') || '') && Boolean(h.get('x-request-id')),
+    h.get('x-content-type-options') === 'nosniff' && /no-store/.test(h.get('cache-control') || '') && /max-age=\d+/.test(h.get('strict-transport-security') || '') && h.get('referrer-policy') === 'no-referrer' && /camera=\(self\).*payment=\(\)/.test(h.get('permissions-policy') || '') && Boolean(h.get('x-request-id')),
     Object.fromEntries(['x-content-type-options', 'cache-control', 'strict-transport-security', 'referrer-policy', 'permissions-policy'].map((k) => [k, h.get(k)])));
   check("en-têtes : l'API porte une politique de contenu restrictive et ne se laisse pas encadrer", /default-src 'none'/.test(h.get('content-security-policy') || '') && /frame-ancestors 'none'/.test(h.get('content-security-policy') || ''), h.get('content-security-policy'));
   check('en-têtes : X-Powered-By absent', !h.get('x-powered-by'));

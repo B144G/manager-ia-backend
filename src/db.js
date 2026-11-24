@@ -3825,6 +3825,10 @@ MIGRATIONS.push(...require('./migrations/espaces'));
 while (MIGRATIONS.length < 199) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1} AS reserve`);
 MIGRATIONS.push(...require('./migrations/marque-entreprise'));
 
+// Chat interne (tables chat_) : numéros 300 et suivants (146 à 299 réservés aux autres modules). Toujours en fin de tableau.
+while (MIGRATIONS.length < 299) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1} AS reserve`);
+MIGRATIONS.push(...require('./migrations/chat-interne'));
+
 db.ready = db.migrate(MIGRATIONS);
 
 

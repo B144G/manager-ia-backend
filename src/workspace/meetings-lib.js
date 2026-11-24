@@ -140,6 +140,11 @@ const endTime = (m) => { const [h, mi] = m.start_time.split(':').map(Number); co
 async function mlog(req, meetingId, action, detail = '', n = 0) {
   await db.prepare('INSERT INTO mtg_log (org_id, meeting_id, user_id, action, detail, n, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .run(req.org.id, meetingId || null, req.user ? req.user.id : null, action, oneLine(detail, 300), n, nowISO());
+  // Chat interne : l'ordre du jour, les décisions, les actions et le compte rendu sont aussi publiés dans le fil de discussion de la réunion (s'il existe).
+  if (meetingId && ['agenda', 'decision', 'action', 'submitted', 'validated', 'returned'].includes(action)) {
+    const t = setTimeout(() => require('./chat-objects').meetingEvent(req.org, meetingId, action, detail, req.user).catch(() => {}), 400); // après la validation de la transaction en cours
+    if (t.unref) t.unref();
+  }
 }
 /** Journal général de l'organisation : le titre d'une réunion confidentielle n'y figure jamais (le fil d'activité est lu par toute l'équipe). */
 async function activity(req, m, text) {

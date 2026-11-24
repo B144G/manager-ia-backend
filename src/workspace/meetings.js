@@ -231,6 +231,7 @@ router.post('/', async (req, res) => {
     return out;
   })();
   const first = await db.prepare('SELECT * FROM mtg_meetings WHERE id = ?').get(ids[0]);
+  require('./chat-objects').ensureMeetingThread(req, ids[0], { title, date, time: f.time, place: f.place, agenda: agenda.map((a) => a.title) }); // fil de discussion de la réunion (chat interne)
   await M.activity(req, first, rec ? `Série de ${ids.length} réunions « ${title} » convoquée` : urgency === 'normal' ? `Réunion « ${title} » convoquée` : `Réunion urgente « ${title} » convoquée`);
   let invite = null;
   if (b.send === true || (urgency !== 'normal' && b.send !== false)) invite = await sendInvitations(req, first, cfg, { all: true });

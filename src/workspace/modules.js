@@ -29,6 +29,7 @@ const modules = [
   { id: 'purchasing', title: 'Achats', min: 'member', ai: false },
   { id: 'parties', title: 'Clients et fournisseurs', min: 'member', ai: false }, // clients / fournisseurs typés (simple, temporaire, permanent, haut de gamme) : étend customers et suppliers
   { id: 'meetings', title: 'Réunions', min: 'member', ai: false },
+  { id: 'chat', title: 'Chat interne', min: 'member', ai: false, perm: 'chat' }, // clé de permission dédiée « chat » (espaces par rôle : à rattacher à cette clé)
   { id: 'structure', title: 'Organisation', min: 'member', ai: true },
   { id: 'processes', title: 'Fonctionnement', min: 'member', ai: true },
   { id: 'team', title: 'Équipe et antennes', min: 'member', ai: true },
