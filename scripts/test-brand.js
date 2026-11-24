@@ -98,7 +98,7 @@ async function main() {
     console.log('1. Valeurs par défaut (comportement actuel inchangé)');
     const tabs = (await db.prepare("SELECT table_name FROM information_schema.tables WHERE table_name IN ('org_brand','org_brand_log')").all()).map((x) => x.table_name);
     check('migrations 200 et 201 : tables org_brand et org_brand_log', tabs.length === 2, tabs);
-    const nmig = Number((await db.prepare('SELECT COUNT(*) c FROM schema_migrations WHERE version >= 200').get()).c);
+    const nmig = Number((await db.prepare('SELECT COUNT(*) c FROM schema_migrations WHERE version BETWEEN 200 AND 201').get()).c); // 202 à 299 : réservées ; 300 et suivantes : Chat interne
     check('les migrations de marque portent les numéros 200 et 201', nmig === 2, nmig);
     r = await owner('GET', `${O}/brand`);
     check('GET marque : mode MABAH, nom MABAH, non personnalisée', r.status === 200 && r.json.brand.mode === 'brij' && r.json.brand.name === 'MABAH' && r.json.brand.customized === false && r.json.brand.assistantName === '' && r.json.brand.color === '', r.json && r.json.brand);
