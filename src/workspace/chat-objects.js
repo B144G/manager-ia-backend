@@ -195,7 +195,8 @@ async function meetingEvent(org, meetingId, action, detail, user) {
   if (action === 'agenda') data.items = (await db.prepare('SELECT title FROM mtg_agenda WHERE meeting_id = ? ORDER BY position, id LIMIT 12').all(meetingId)).map((r) => r.title);
   else if (action === 'decision') data.items = (await db.prepare('SELECT text FROM mtg_decisions WHERE meeting_id = ? ORDER BY id DESC LIMIT 5').all(meetingId)).map((r) => oneLine(r.text, 160)).reverse();
   else if (action === 'action') data.items = (await db.prepare('SELECT text, assignee_name, due FROM mtg_actions WHERE meeting_id = ? ORDER BY id DESC LIMIT 5').all(meetingId)).map((r) => `${oneLine(r.text, 140)}${r.assignee_name ? ` — ${r.assignee_name}` : ''}${r.due ? ` (${r.due})` : ''}`).reverse();
-  else if (!['submitted', 'validated', 'returned'].includes(action)) return;
+  else if (['vote_open', 'vote_close', 'pv_signed'].includes(action)) data.items = [oneLine(detail || '', 200)]; // Réunions avancées : le détail (numéro de résolution, résultat) est affiché sous le message
+  else if (!['submitted', 'validated', 'returned', 'started', 'ended', 'no_quorum', 'pv_locked'].includes(action)) return; // Réunions avancées : séance, quorum, votes, procès-verbal
   await notify(org, 'meeting', meetingId, `meeting_${action}`, { ...data, actorName: user ? user.name : '' }, user);
 }
 

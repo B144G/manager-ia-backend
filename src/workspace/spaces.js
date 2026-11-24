@@ -27,7 +27,7 @@ const SPACES = [
   { id: 'stock', icon: 'stock', title: 'Stock et achats', desc: 'Stock, entrepôt, achats, fournisseurs.', modules: ['stock', 'purchasing'] },
   { id: 'rh', icon: 'hr', title: 'Ressources humaines', desc: 'Personnel, congés, paie, talents et compétences.', modules: ['hr', 'talents', 'payroll'] },
   { id: 'operations', icon: 'production', title: 'Opérations', desc: 'Production, logistique, chantiers, maintenance.', modules: ['production', 'logistics', 'construction', 'maintenance'] },
-  { id: 'projets', icon: 'projects', title: 'Projets et réunions', desc: 'Mes tâches, projets, réunions, bibliothèque. Ouvert à tout le monde.', modules: ['projects', 'meetings', 'library'], baseline: true },
+  { id: 'projets', icon: 'projects', title: 'Projets et réunions', desc: 'Mes tâches, projets, réunions, bibliothèque. Ouvert à tout le monde.', modules: ['projects', 'meetings', 'chat', 'library'], baseline: true },
   { id: 'gestion', icon: 'legal', title: 'Administration et juridique', desc: 'Documents administratifs, contrats, conformité.', modules: ['administration', 'legal'] },
   { id: 'compte', icon: 'team', title: 'Administration du compte', desc: 'Équipe, sécurité, intégrations, abonnement.', modules: ['team', 'integrations', 'billing'] },
 ];
@@ -74,7 +74,7 @@ const SEG = {
   dashboard: null, decisions: null, share: null, geo: null, mail: null, feedback: null, profile: null, ai: null, data: null, notices: null, spaces: null,
   support: 'support', projects: 'projects', budget: 'budget', stock: 'stock', crm: 'crm', parties: 'parties', sales: 'sales', 'sales-mine': 'sales', commercial: 'commercial',
   aifollow: 'aifollow', 'wa-scope': 'sales', hr: 'hr', talents: 'talents', accounting: 'accounting', treasury: 'treasury', library: 'library', history: 'history',
-  purchasing: 'purchasing', meetings: 'meetings', integrations: 'integrations', payroll: 'payroll', fiscal: 'fiscal', marketing: 'marketing', logistics: 'logistics',
+  purchasing: 'purchasing', meetings: 'meetings', chat: 'chat', integrations: 'integrations', payroll: 'payroll', fiscal: 'fiscal', marketing: 'marketing', logistics: 'logistics',
   production: 'production', construction: 'construction', maintenance: 'maintenance', legal: 'legal', memory: 'memory', agents: 'agents', structure: 'structure',
   administration: 'administration', audit: 'team', 'ownership-transfer': 'team',
 };
