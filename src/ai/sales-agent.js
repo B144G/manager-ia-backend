@@ -35,8 +35,8 @@ const stable = () => {
   return k ? `${RULES}\n\nÉducation (fournie par Brij-IA) :\n${k}` : RULES;
 };
 
-function dataBlock({ org, catalog, chat, customer, today, busy, weekday, negotiation, profile, restrict }) {
-  const lines = [`Organisation : ${org.name}${org.sector ? ` (secteur : ${org.sector})` : ''}. Monnaie : ${org.currency}.`];
+function dataBlock({ org, catalog, chat, customer, today, busy, weekday, negotiation, profile, restrict, identity }) {
+  const lines = [...(identity ? [identity] : []), `Organisation : ${org.name}${org.sector ? ` (secteur : ${org.sector})` : ''}. Monnaie : ${org.currency}.`];
   if (org.description) lines.push(`Présentation : ${oneLine(org.description, 600)}`);
   if (profile) lines.push(profile);
   if (org.sales_info) lines.push(`Informations pratiques (horaires, livraison, paiement, conditions) :\n${String(org.sales_info).slice(0, 2500)}`);

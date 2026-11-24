@@ -30,7 +30,7 @@ const addrOf = (v) => String(v || '').replace(/^.*<|>.*$/g, '').trim();
 async function sendViaApi({ to, subject, text, html, headers, replyTo, fromName, attachments }) {
   const sender = addrOf(config.smtp.from || config.smtp.user);
   if (!isEmail(sender)) throw new Error("Adresse d'expéditeur absente : renseignez SMTP_FROM (adresse validée chez Brevo).");
-  const name = String(fromName || (/^\s*"?([^"<]+?)"?\s*</.exec(config.smtp.from || '') || [])[1] || 'Brij-IA').replace(/["<>\r\n]/g, '').slice(0, 80);
+  const name = String(fromName || (/^\s*"?([^"<]+?)"?\s*</.exec(config.smtp.from || '') || [])[1] || require('./product').mailFromName).replace(/["<>\r\n]/g, '').slice(0, 80);
   const body = { sender: { name, email: sender }, to: [{ email: addrOf(to) }], subject: String(subject || '').slice(0, 300), textContent: String(text || '') };
   if (html) body.htmlContent = String(html);
   if (headers && Object.keys(headers).length) body.headers = headers;

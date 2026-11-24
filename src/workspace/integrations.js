@@ -72,7 +72,7 @@ router.post('/deliveries/:id/retry', asyncHandler(async (req, res) => {
 router.post('/webhooks/:id/test', asyncHandler(async (req, res) => {
   const h = await db.prepare('SELECT * FROM webhooks_out WHERE id = ? AND org_id = ?').get(A.id(req.params.id), req.org.id);
   if (!h) throw new HttpError(404, 'Webhook introuvable.');
-  const r = await wh.deliver(h, 'test', { message: 'Test depuis Brij-IA', organisation: req.org.name });
+  const r = await wh.deliver(h, 'test', { message: 'Test depuis ' + require('../services/brand-lib').pn(req.org), organisation: req.org.name });
   res.json({ ok: r.ok, status: r.status });
 }));
 

@@ -81,11 +81,12 @@ router.post('/send', limits.make(60 * 1000, 8, 'Vous envoyez trop vite. Patiente
   if (used >= lim) throw new HttpError(429, `Limite de ${lim} e-mails par jour atteinte pour votre offre. Réessayez demain ou passez à une offre supérieure à la fin de votre abonnement.`);
 
   const owner = await db.prepare('SELECT contact FROM users WHERE id = ?').get(req.org.owner_id);
-  const replyTo = [req.user.contact, owner && owner.contact].find((c) => isEmail(c));
-  const text = `${body}\n\n—\n${req.org.name}\nMessage envoyé avec Brij-IA`;
+  const MB = require('../services/brand-lib').mailParts(req.brand, req.org); // expéditeur et signature choisis par l'entreprise (défaut : historique)
+  const replyTo = [MB.replyTo, req.user.contact, owner && owner.contact].find((c) => isEmail(c));
+  const text = `${body}\n\n—\n${req.org.name}${MB.sig ? '\n' + MB.sig : ''}`;
   let status = 'sent'; let error = '';
   try {
-    await sendMail({ to: cu.email, subject, text, replyTo, fromName: req.org.name, attachments: files.map((f) => ({ filename: f.name, content: f.data, contentType: f.mime })) });
+    await sendMail({ to: cu.email, subject, text, replyTo, fromName: MB.fromName, attachments: files.map((f) => ({ filename: f.name, content: f.data, contentType: f.mime })) });
   } catch (e) {
     status = 'failed'; error = oneLine(e.message, 200);
     log.warn('E-mail client non envoyé :', error);

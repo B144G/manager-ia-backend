@@ -154,7 +154,7 @@ router.get('/monthly.pdf', A.need('manager'), async (req, res) => {
   const blocks = [{ type: 'heading', text: 'À traiter en priorité' }];
   blocks.push(r.todo.length ? { type: 'table', cols: [{ key: 'a', label: 'Sujet', width: 4 }, { key: 'b', label: 'Nombre', width: 1, align: 'right' }], rows: r.todo.map((t) => ({ a: t.label, b: t.count })) } : { type: 'text', text: 'Rien de urgent : tout est à jour.' });
   for (const s of r.sections) { blocks.push({ type: 'heading', text: s.title }); blocks.push({ type: 'table', cols: [{ key: 'a', label: 'Indicateur', width: 4 }, { key: 'b', label: 'Valeur', width: 1, align: 'right' }], rows: s.rows.map(([a, b]) => ({ a, b: String(b) })) }); }
-  const buf = await require('../services/pdf').render({ title: 'Rapport administratif mensuel', subtitle: r.month, org: r.org, blocks, footer: 'Généré par Brij-IA le ' + r.generatedAt.slice(0, 10) });
+  const buf = await require('../services/pdf').render({ title: 'Rapport administratif mensuel', subtitle: r.month, org: r.org, blocks, footer: 'Généré' + ((c) => (c ? ' par ' + c : ''))(require('../services/brand-lib').credit(req.brand)) + ' le ' + r.generatedAt.slice(0, 10) });
   res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="rapport-administratif-${r.month}.pdf"`, 'Cache-Control': 'private, no-store' }).send(buf);
 });
 router.get('/monthly.xlsx', A.need('manager'), async (req, res) => {

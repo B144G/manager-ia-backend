@@ -183,11 +183,13 @@ async function buildData(req, module) {
 
 // Renvoie { stable, system } : « stable » (règles + connaissances) est identique pour tous les appels d'un même module, donc mis en cache ;
 // « system » contient les données propres à l'organisation.
+/** Identité réglée par l'entreprise (nom de l'assistant, produit) : vide par défaut, donc aucun changement tant que rien n'est personnalisé. */
+const identityOf = (req) => { const t = req.brand ? require('../services/brand-lib').identityBlock(req.brand, req.org.name) : ''; return t ? t + '\n\n' : ''; };
 async function buildParts(req, module, extra) {
   const k = knowledge.load('workspace', module);
   return {
     stable: [P.BASE, P.MODULE[module] || extPrompt(module), extra || '', k ? `Connaissances de référence (fournies par Brij-IA) :\n${k}` : ''].filter(Boolean).join('\n\n'),
-    system: `<donnees>\n${await buildData(req, module)}\n</donnees>`,
+    system: `${identityOf(req)}<donnees>\n${await buildData(req, module)}\n</donnees>`,
   };
 }
 const buildSystem = async (req, module, extra) => { const p = await buildParts(req, module, extra); return `${p.stable}\n\n${p.system}`; };
