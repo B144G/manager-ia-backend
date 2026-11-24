@@ -16,7 +16,7 @@
 | **MTN / Orange operators** | Execution of the payment | Number, amount | Cameroon | — |
 | **Google Fonts** (if fonts are not hosted locally) | Display of fonts | Visitor's IP address | United States | [TO COMPLETE: host the fonts to remove this transfer] |
 
-**Services chosen by the organisation (not Brij-IA processors):** tools linked by webhook or API key (Zapier, Make, n8n, own server). The organisation is responsible for them.
+**Services chosen by the organisation (not MABAH processors):** tools linked by webhook or API key (Zapier, Make, n8n, own server). The organisation is responsible for them.
 
 **Changes:** any addition or replacement is announced in the application with [TO COMPLETE: 30] days' notice.
 

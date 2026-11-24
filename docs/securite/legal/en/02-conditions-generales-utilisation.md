@@ -4,7 +4,7 @@
 
 ## 1. Purpose
 
-Brij-IA is an online service (ERP and artificial intelligence sales agent) intended for businesses, shops, associations and teams: management of customers, stock, invoicing, purchasing, human resources and payroll, accounting, projects, AI assistant, and replies to customers on WhatsApp, Messenger and Instagram. The service is provided by [TO COMPLETE: company name, legal form, address] ("Brij-IA", "we"). By creating an account or using the service, you accept these terms.
+MABAH is an online service (ERP and artificial intelligence sales agent) intended for businesses, shops, associations and teams: management of customers, stock, invoicing, purchasing, human resources and payroll, accounting, projects, AI assistant, and replies to customers on WhatsApp, Messenger and Instagram. The service is provided by [TO COMPLETE: company name, legal form, address] ("MABAH", "we"). By creating an account or using the service, you accept these terms.
 
 ## 2. Account and security
 
@@ -16,7 +16,7 @@ The **Free** plan is limited (number of domains, organisations, members, AI mess
 
 ## 4. Your organisation and your data
 
-The data you enter or receive in Brij-IA (customers, employees, invoices, messages) remains **yours**: you are responsible for its lawfulness and for informing the data subjects. We process it as a **processor**, solely to provide the service, in accordance with the data processing agreement (document 06), which forms part of these terms. You may at any time export your organisation's data (owner: Privacy → Export the organisation) and delete it; deletion erases the data and closes the WhatsApp sessions.
+The data you enter or receive in MABAH (customers, employees, invoices, messages) remains **yours**: you are responsible for its lawfulness and for informing the data subjects. We process it as a **processor**, solely to provide the service, in accordance with the data processing agreement (document 06), which forms part of these terms. You may at any time export your organisation's data (owner: Privacy → Export the organisation) and delete it; deletion erases the data and closes the WhatsApp sessions.
 
 ## 5. Acceptable use
 
@@ -36,7 +36,7 @@ We use reasonable means to keep the service available, but without any commitmen
 
 ## 9. Intellectual property
 
-Brij-IA, its code, its texts and its trademarks remain our property. We grant you a personal, non-exclusive and non-transferable right to use the service for the duration of your subscription. Your content remains yours; you authorise us to process it solely to provide the service.
+MABAH, its code, its texts and its trademarks remain our property. We grant you a personal, non-exclusive and non-transferable right to use the service for the duration of your subscription. Your content remains yours; you authorise us to process it solely to provide the service.
 
 ## 10. Liability
 

@@ -4,7 +4,7 @@
 
 ## In brief
 
-Brij-IA uses **no advertising cookies and no third-party trackers**. It uses only **strictly necessary** cookies and storage for operation, plus — **only if you accept it** — an anonymous visit counter. You express your choice in the banner displayed on your first visit; **refusing is as easy as accepting**, and you can change it at any time via "Manage my cookies" (at the bottom of every page).
+MABAH uses **no advertising cookies and no third-party trackers**. It uses only **strictly necessary** cookies and storage for operation, plus — **only if you accept it** — an anonymous visit counter. You express your choice in the banner displayed on your first visit; **refusing is as easy as accepting**, and you can change it at any time via "Manage my cookies" (at the bottom of every page).
 
 ## What we use
 

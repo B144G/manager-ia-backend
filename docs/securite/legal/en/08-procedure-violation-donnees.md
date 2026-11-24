@@ -18,8 +18,8 @@ A breach is a security incident resulting in the destruction, loss, alteration, 
 |---|---|
 | Detection → qualification (severity) | 4 business hours |
 | Containment (cut access, revoke sessions and keys, close the blocked address) | Immediate |
-| Information of the **customer organisations** whose data is concerned (Brij-IA as processor) | **At the latest 72 h** after becoming aware, as soon as possible |
-| Notification to the **data protection authority** (Brij-IA as controller) | Within the time limit set by the applicable law [TO COMPLETE: exact time limit] and targeted at **72 h** |
+| Information of the **customer organisations** whose data is concerned (MABAH as processor) | **At the latest 72 h** after becoming aware, as soon as possible |
+| Notification to the **data protection authority** (MABAH as controller) | Within the time limit set by the applicable law [TO COMPLETE: exact time limit] and targeted at **72 h** |
 | Information of the **data subjects** if high risk | Without undue delay |
 | Post-incident review | 10 business days |
 
@@ -36,7 +36,7 @@ A breach is a security incident resulting in the destruction, loss, alteration, 
 Date/time of detection · Detected by · Description · Data and categories of individuals · Number of individuals (estimated) · Organisations concerned · Probable cause · Measures taken · Assessed risk (low/medium/high) and justification · Notifications made (who, when) · Corrective actions.
 
 ## 6. Template message to a customer organisation
-> **Subject: Security incident concerning your Brij-IA data**
+> **Subject: Security incident concerning your MABAH data**
 > On [date] at [time], we detected [nature of the incident]. It concerns [categories of data] of [approximate number] people in your organisation. Known cause: [cause or "under analysis"]. Measures already taken: [measures]. What we recommend: [actions]. We will keep you informed at the latest on [date]. Contact: [contact person].
 
 ## 7. Template message to data subjects

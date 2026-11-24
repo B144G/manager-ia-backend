@@ -101,7 +101,7 @@ function assertNotSuspended(row) {
   if (row && row.suspended_at) { const e = new HttpError(403, SUSPENDED_MSG); e.errorCode = 'suspended'; throw e; }
 }
 
-const MAIL_FOOTER = "\n\nL'équipe Brij-IA";
+const MAIL_FOOTER = "\n\nL'équipe MABAH";
 
 /** Suspend un compte : connexion refusée, appareils déconnectés, WhatsApp (QR) des organisations coupé, notice, e-mail, journal. */
 async function suspend(userId, reason, req) {
@@ -121,7 +121,7 @@ async function suspend(userId, reason, req) {
   }
   await recordEvent(u.id, 'compte_suspendu', why);
   await addNotice(u.id, 'account_suspended', { title: 'Compte suspendu', text: `Votre compte est suspendu. Motif : ${why}. Contactez le support pour le réactiver.`, data: { reason: why } });
-  if (isEmail(u.contact)) require('./notify').mailUser(u.contact, 'Votre compte Brij-IA est suspendu', `Bonjour ${u.name},\n\nVotre compte Brij-IA a été suspendu.\nMotif : ${why}\n\nPour le réactiver, contactez le support (WhatsApp +237 653 62 13 88).${MAIL_FOOTER}`);
+  if (isEmail(u.contact)) require('./notify').mailUser(u.contact, 'Votre compte MABAH est suspendu', `Bonjour ${u.name},\n\nVotre compte MABAH a été suspendu.\nMotif : ${why}\n\nPour le réactiver, contactez le support (WhatsApp +237 653 62 13 88).${MAIL_FOOTER}`);
   await central.audit.record(req || null, 'admin.user_suspend', { target: `user:${u.id}`, severity: 'warn', detail: why.slice(0, 200), actor: { type: 'admin', id: null } });
   return { ok: true, sessionsClosed: closed, whatsappStopped: wa };
 }
@@ -134,7 +134,7 @@ async function reactivate(userId, req) {
   await db.prepare("UPDATE users SET suspended_at = NULL, suspended_reason = '' WHERE id = ?").run(u.id);
   await recordEvent(u.id, 'compte_reactive');
   await addNotice(u.id, 'account_reactivated', { title: 'Compte réactivé', text: 'Votre compte est de nouveau actif. Vous pouvez vous reconnecter.' });
-  if (isEmail(u.contact)) require('./notify').mailUser(u.contact, 'Votre compte Brij-IA est de nouveau actif', `Bonjour ${u.name},\n\nVotre compte Brij-IA est de nouveau actif. Vous pouvez vous reconnecter.${MAIL_FOOTER}`);
+  if (isEmail(u.contact)) require('./notify').mailUser(u.contact, 'Votre compte MABAH est de nouveau actif', `Bonjour ${u.name},\n\nVotre compte MABAH est de nouveau actif. Vous pouvez vous reconnecter.${MAIL_FOOTER}`);
   await require('../security').audit.record(req || null, 'admin.user_reactivate', { target: `user:${u.id}`, severity: 'warn', actor: { type: 'admin', id: null } });
   return { ok: true };
 }

@@ -4,7 +4,7 @@
 
 ## 1. Objet
 
-Brij-IA est un service en ligne (ERP et agent commercial par intelligence artificielle) destiné aux entreprises, commerces, associations et équipes : gestion des clients, du stock, de la facturation, des achats, des ressources humaines et de la paie, de la comptabilité, des projets, assistant IA, et réponse aux clients sur WhatsApp, Messenger et Instagram. Le service est fourni par [À COMPLÉTER : dénomination sociale, forme juridique, adresse] (« Brij-IA », « nous »). En créant un compte ou en utilisant le service, vous acceptez ces conditions.
+MABAH est un service en ligne (ERP et agent commercial par intelligence artificielle) destiné aux entreprises, commerces, associations et équipes : gestion des clients, du stock, de la facturation, des achats, des ressources humaines et de la paie, de la comptabilité, des projets, assistant IA, et réponse aux clients sur WhatsApp, Messenger et Instagram. Le service est fourni par [À COMPLÉTER : dénomination sociale, forme juridique, adresse] (« MABAH », « nous »). En créant un compte ou en utilisant le service, vous acceptez ces conditions.
 
 ## 2. Compte et sécurité
 
@@ -16,7 +16,7 @@ L'offre **Gratuite** est limitée (nombre de domaines, d'organisations, de membr
 
 ## 4. Votre organisation et vos données
 
-Les données que vous saisissez ou recevez dans Brij-IA (clients, employés, factures, messages) restent **les vôtres** : vous êtes responsable de leur licéité et d'informer les personnes concernées. Nous les traitons comme **sous-traitant**, uniquement pour fournir le service, selon l'accord de sous-traitance (document 06) qui fait partie des présentes. Vous pouvez à tout moment exporter les données de votre organisation (propriétaire : Confidentialité → Exporter l'organisation) et la supprimer ; la suppression efface les données et ferme les sessions WhatsApp.
+Les données que vous saisissez ou recevez dans MABAH (clients, employés, factures, messages) restent **les vôtres** : vous êtes responsable de leur licéité et d'informer les personnes concernées. Nous les traitons comme **sous-traitant**, uniquement pour fournir le service, selon l'accord de sous-traitance (document 06) qui fait partie des présentes. Vous pouvez à tout moment exporter les données de votre organisation (propriétaire : Confidentialité → Exporter l'organisation) et la supprimer ; la suppression efface les données et ferme les sessions WhatsApp.
 
 ## 5. Utilisation acceptable
 
@@ -36,7 +36,7 @@ Nous mettons en œuvre des moyens raisonnables pour que le service soit disponib
 
 ## 9. Propriété intellectuelle
 
-Brij-IA, son code, ses textes et ses marques restent notre propriété. Nous vous accordons un droit personnel, non exclusif et non transférable d'utiliser le service pendant la durée de votre abonnement. Vos contenus restent les vôtres ; vous nous autorisez à les traiter uniquement pour fournir le service.
+MABAH, son code, ses textes et ses marques restent notre propriété. Nous vous accordons un droit personnel, non exclusif et non transférable d'utiliser le service pendant la durée de votre abonnement. Vos contenus restent les vôtres ; vous nous autorisez à les traiter uniquement pour fournir le service.
 
 ## 10. Responsabilité
 

@@ -45,6 +45,7 @@ async function sendViaApi({ to, subject, text, html, headers, replyTo, fromName,
 
 /** Envoie un e-mail (texte, et HTML en option ; en-têtes facultatifs, ex. List-Unsubscribe). Renvoie true si envoyé, false si aucun envoi n'est configuré. Peut lancer une erreur. */
 async function sendMail({ to, subject, text, html, headers, replyTo, fromName, attachments }) {
+  if (!html && !fromName && text) html = require('./mail-html').platform(subject, text); // e-mail de la plateforme : version HTML avec le logo
   if (apiMailOn()) { await sendViaApi({ to, subject, text, html, headers, replyTo, fromName, attachments }); return true; }
   const t = getTransporter();
   if (!t) return false;
@@ -70,7 +71,7 @@ function mailUser(contact, subject, text) {
 
 async function run(type, text) {
   const channels = [];
-  const subject = `[Brij-IA] ${text}`.slice(0, 150);
+  const subject = `[MABAH] ${text}`.slice(0, 150);
 
   try {
     if (await sendMail({ to: config.admin.email, subject, text })) channels.push('email');

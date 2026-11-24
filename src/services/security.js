@@ -11,7 +11,7 @@ const LOCK_MS = 15 * 60 * 1000;            // durée du verrouillage
 
 // Mots de passe très courants (liste réduite, comparée après retrait des chiffres et symboles de fin et des substitutions « leet »).
 const COMMON_WORDS = new Set(('password motdepasse passw0rd azerty azertyuiop qwerty qwertyuiop qwertz abcdef abcdefgh admin administrateur administrator root login welcome bienvenue bonjour bonsoir salut soleil dragon master monkey football foot ' +
-  'letmein iloveyou jetaime chocolat doudou princesse cheri cherie camerounais cameroun cameroon douala yaounde bafoussam garoua bamenda limbe kribi lions lionsindomptables brijia brij manager secret secrets super superman batman azur ' +
+  'letmein iloveyou jetaime chocolat doudou princesse cheri cherie camerounais cameroun cameroon douala yaounde bafoussam garoua bamenda limbe kribi lions lionsindomptables brijia brij mabah mabahia manager secret secrets super superman batman azur ' +
   'trustno1 sunshine shadow michael jordan hunter ranger buster thomas robert jessica matthieu nicolas marie maria sandra').split(' '));
 const COMMON = new Set(['12345678', '123456789', '1234567890', '0123456789', '987654321', '87654321', 'password', 'password1', 'password123', 'motdepasse', 'motdepasse1', 'azertyui', 'azerty123', 'azerty1234', 'qwertyui', 'qwerty123', 'abcd1234', '11111111', '00000000', 'iloveyou', 'admin123', 'administrateur', 'bienvenue1', 'bonjour123', 'cameroun1', 'cameroun237', 'camer237', 'brijia123', 'welcome1', 'welcome123', 'changeme', 'changez-moi', 'passw0rd']);
 const WALKS = ['qwerty', 'azerty', 'wxcvbn', 'asdfgh', 'qsdfgh', 'zxcvbn', '123456', '234567', '345678', '456789', '654321', 'abcdef', 'bcdefg', 'cdefgh'];

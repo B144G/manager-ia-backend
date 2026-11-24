@@ -29,7 +29,7 @@ async function main() {
   for (const k of ['ALLOWED_ORIGINS', 'COOKIE_SAMESITE', 'COOKIE_SECURE', 'WHATSAPP_PHONE_ID', 'WHATSAPP_TOKEN', 'CAMPAY_USERNAME', 'CAMPAY_PASSWORD', 'BUSINESS_FILE', 'KNOWLEDGE_DIR', 'META_APP_ID', 'META_APP_SECRET', 'SMTP_HOST']) process.env[k] = '';
   Object.assign(process.env, { NODE_ENV: 'test', JWT_SECRET: 'secret-de-test-assez-long-123456', DATABASE_URL: pgt.url, ANTHROPIC_API_KEY: 'cle-de-test', SIGNUP_VERIFY: 'off', TRUST_PROXY: '0',
     ADMIN_USERNAME: 'admin-test', ADMIN_PASSWORD: 'mot-de-passe-admin-test', ADMIN_EMAIL: 'fondateur@exemple.com',
-    BREVO_API_KEY: 'cle-de-test', MAIL_API_URL: `http://127.0.0.1:${mport}/v3`, SMTP_FROM: 'Brij-IA <contact@exemple.com>',
+    BREVO_API_KEY: 'cle-de-test', MAIL_API_URL: `http://127.0.0.1:${mport}/v3`, SMTP_FROM: 'MABAH <contact@exemple.com>',
     ALERT_LOGIN_FAILS: '3', ALERT_SESSION_IPS: '5', ALERT_SIGNUPS_PER_IP: '5', ALERT_AI_PER_HOUR: '120', ALERT_AI_PER_DAY: '800', ALERT_PAY_REJECTS: '3' });
   const { app } = require('../src/server');
   const { db, nowISO } = require('../src/db');

@@ -31,7 +31,7 @@ async function main() {
   await new Promise((ok) => fakeMail.listen(mport, '127.0.0.1', ok));
   for (const k of ['ALLOWED_ORIGINS', 'COOKIE_SAMESITE', 'COOKIE_SECURE', 'WHATSAPP_PHONE_ID', 'WHATSAPP_TOKEN', 'CAMPAY_USERNAME', 'CAMPAY_PASSWORD', 'CAMPAY_APP_USERNAME', 'CAMPAY_APP_PASSWORD', 'CAMPAY_APP_TOKEN', 'CAMPAY_WEBHOOK_KEY', 'MTN_NUMBER', 'ORANGE_NUMBER', 'BUSINESS_FILE', 'KNOWLEDGE_DIR', 'META_APP_ID', 'META_APP_SECRET', 'SMTP_HOST']) process.env[k] = '';
   Object.assign(process.env, { NODE_ENV: 'test', JWT_SECRET: 'secret-de-test-assez-long-123456', DATABASE_URL: pgt.url, ANTHROPIC_API_KEY: 'cle-de-test', SIGNUP_VERIFY: 'off', TRUST_PROXY: '0',
-    ADMIN_USERNAME: 'admin-test', ADMIN_PASSWORD: 'mot-de-passe-admin-test', ADMIN_EMAIL: 'fondateur@exemple.com', BREVO_API_KEY: 'cle-de-test', MAIL_API_URL: `http://127.0.0.1:${mport}/v3`, SMTP_FROM: 'Brij-IA <contact@exemple.com>',
+    ADMIN_USERNAME: 'admin-test', ADMIN_PASSWORD: 'mot-de-passe-admin-test', ADMIN_EMAIL: 'fondateur@exemple.com', BREVO_API_KEY: 'cle-de-test', MAIL_API_URL: `http://127.0.0.1:${mport}/v3`, SMTP_FROM: 'MABAH <contact@exemple.com>',
     MANUAL_PAY_MTN_NUMBER: '670000001', MANUAL_PAY_ORANGE_NUMBER: '690000002', MANUAL_PAY_ACCOUNT_NAME: 'Société Test SARL', MANUAL_PAY_MAX_ATTEMPTS: '3', PAYMENTS_INIT_RATE: '500' });
   const { app } = require('../src/server');
   const { db } = require('../src/db');
@@ -70,7 +70,7 @@ async function main() {
     console.log('2. Création de la commande');
     const U = await reg('Awa Manuel');
     r = await U.c('POST', '/api/payments/initiate', { plan: 'unl_month', operator: 'mtn', amount: 5, priceXAF: 5 });
-    check('commande « en attente » avec code BRIJ-NNNNNN, montant du catalogue (le prix du client est ignoré)', r.status === 200 && /^BRIJ-\d{6}$/.test(r.json.reference) && r.json.mode === 'manual' && r.json.status === 'pending' && r.json.amountXAF === price, r.json);
+    check('commande « en attente » avec code MABAH-NNNNNN, montant du catalogue (le prix du client est ignoré)', r.status === 200 && /^MABAH-\d{6}$/.test(r.json.reference) && r.json.mode === 'manual' && r.json.status === 'pending' && r.json.amountXAF === price, r.json);
     check('l\'écran reçoit les numéros de réception, le nom du compte et le montant', r.json.payTo.mtn === '670000001' && r.json.payTo.orange === '690000002' && r.json.payTo.holder === 'Société Test SARL' && /670000001/.test(r.json.instructions));
     const ref = r.json.reference;
     const again = await U.c('POST', '/api/payments/initiate', { plan: 'unl_month', operator: 'mtn' });

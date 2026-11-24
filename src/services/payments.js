@@ -20,7 +20,7 @@ const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&':
 function receiptOf(p, user) {
   const when = p.paid_at || nowISO();
   return { number: `R-${when.slice(0, 4)}-${String(p.id).padStart(5, '0')}`, reference: p.reference, plan: custom.label((planOf(p.plan) || {}).name || p.plan), amountXAF: Number(p.amount_xaf), operator: p.operator || '', mode: p.mode, paidAt: when,
-    customer: { name: user.name, contact: user.contact }, durationDays: (planOf(p.plan) || {}).days || config.durationDays, issuer: config.payment.holder || 'Brij-IA', test: Boolean(Number(p.test_mode)), note: Number(p.test_mode) ? "REÇU DE TEST (mode démonstration) : aucun argent réel n'a été débité. Ce document n'a aucune valeur comptable." : "Reçu de paiement d'abonnement Brij-IA. Document de travail : il ne tient pas lieu de facture fiscale." };
+    customer: { name: user.name, contact: user.contact }, durationDays: (planOf(p.plan) || {}).days || config.durationDays, issuer: config.payment.holder || 'MABAH', test: Boolean(Number(p.test_mode)), note: Number(p.test_mode) ? "REÇU DE TEST (mode démonstration) : aucun argent réel n'a été débité. Ce document n'a aucune valeur comptable." : "Reçu de paiement d'abonnement MABAH. Document de travail : il ne tient pas lieu de facture fiscale." };
 }
 function receiptHtml(r) {
   return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Reçu ${esc(r.number)}</title><style>body{font-family:Arial,sans-serif;max-width:640px;margin:32px auto;color:#111}h1{font-size:22px}table{width:100%;border-collapse:collapse}td{padding:8px 0;border-bottom:1px solid #ddd}td:last-child{text-align:right}.n{color:#555;font-size:12px;margin-top:24px}</style></head><body>
@@ -79,8 +79,8 @@ async function markPaid(paymentId, opts = {}) {
   });
   if (isEmail(r.user.contact)) setImmediate(async () => {
     try {
-      await sendMail({ to: r.user.contact, subject: `${Number(r.payment.test_mode) ? '[TEST] ' : ''}Votre offre ${r.planLabel} est active - Brij-IA`, text: `Bonjour ${r.user.name},\n\nVotre paiement ${r.payment.reference} (${r.payment.amount_xaf} FCFA) est confirmé.\n` +
-      `Votre offre ${r.planLabel} est active jusqu'au ${fmtDate(r.expires)}.\n\nMerci pour votre confiance.\nL'équipe Brij-IA\n\nVotre reçu ${receipt.number} est joint à ce message (vous pouvez aussi le retrouver dans « Abonnement »).`,
+      await sendMail({ to: r.user.contact, subject: `${Number(r.payment.test_mode) ? '[TEST] ' : ''}Votre offre ${r.planLabel} est active - MABAH`, text: `Bonjour ${r.user.name},\n\nVotre paiement ${r.payment.reference} (${r.payment.amount_xaf} FCFA) est confirmé.\n` +
+      `Votre offre ${r.planLabel} est active jusqu'au ${fmtDate(r.expires)}.\n\nMerci pour votre confiance.\nL'équipe MABAH\n\nVotre reçu ${receipt.number} est joint à ce message (vous pouvez aussi le retrouver dans « Abonnement »).`,
         attachments: [{ filename: `recu-${receipt.number}.html`, content: Buffer.from(receiptHtml(receipt), 'utf8'), contentType: 'text/html' }] });
     } catch (e) { log.warn('Reçu non envoyé :', oneLine(e.message, 160)); }
   });
@@ -111,8 +111,8 @@ async function rejectPayment(paymentId, reason) {
   });
   if (isEmail(user.contact)) setImmediate(async () => {
     try {
-      await sendMail({ to: user.contact, subject: `Votre paiement ${p.reference} n'a pas pu être validé - Brij-IA`, text: `Bonjour ${user.name},\n\nNous n'avons pas pu valider votre paiement ${p.reference} (${p.amount_xaf} FCFA, offre ${planLabel}).\nMotif : ${why}\n\n` +
-        `Aucune offre n'a été activée. Vous pouvez refaire un paiement depuis « Abonnement », ou nous écrire sur WhatsApp (+237 653 62 13 88) en indiquant la référence ${p.reference}.\n\nL'équipe Brij-IA` });
+      await sendMail({ to: user.contact, subject: `Votre paiement ${p.reference} n'a pas pu être validé - MABAH`, text: `Bonjour ${user.name},\n\nNous n'avons pas pu valider votre paiement ${p.reference} (${p.amount_xaf} FCFA, offre ${planLabel}).\nMotif : ${why}\n\n` +
+        `Aucune offre n'a été activée. Vous pouvez refaire un paiement depuis « Abonnement », ou nous écrire sur WhatsApp (+237 653 62 13 88) en indiquant la référence ${p.reference}.\n\nL'équipe MABAH` });
     } catch (e) { log.warn('E-mail de refus non envoyé :', oneLine(e.message, 160)); }
   });
   return { payment: p, user, planLabel };

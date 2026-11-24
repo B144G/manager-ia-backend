@@ -111,7 +111,7 @@ router.post('/reset', A.need('admin'), async (req, res) => {
 router.get('/export', A.need('admin'), async (req, res) => {
   const row = await db.prepare('SELECT config, logo_mime, logo_data, favicon_mime, favicon_data FROM org_brand WHERE org_id = ?').get(req.org.id);
   const cfg = B.sanitize(row ? JSON.parse(row.config || '{}') : {}, { moduleIds });
-  const out = { format: 'brij-ia-marque', version: 1, exportedAt: nowISO(), config: cfg };
+  const out = { format: 'mabah-marque', version: 1, exportedAt: nowISO(), config: cfg };
   if (row && row.logo_mime) out.logo = { mime: row.logo_mime, data: Buffer.from(row.logo_data).toString('base64') };
   if (row && row.favicon_mime) out.favicon = { mime: row.favicon_mime, data: Buffer.from(row.favicon_data).toString('base64') };
   audit(req, 'brand.export', '');
@@ -120,7 +120,7 @@ router.get('/export', A.need('admin'), async (req, res) => {
 
 router.post('/import', A.need('admin'), async (req, res) => {
   const b = req.body || {};
-  if (b.format !== 'brij-ia-marque' || b.version !== 1 || !b.config) throw new HttpError(400, "Ce fichier n'est pas une configuration d'entreprise exportée.");
+  if (b.format !== 'mabah-marque' || b.version !== 1 || !b.config) throw new HttpError(400, "Ce fichier n'est pas une configuration d'entreprise exportée.");
   const cfg = B.sanitize(b.config, { moduleIds }); // tout est revalidé : un fichier modifié à la main ne peut rien introduire de dangereux
   const imgs = {};
   for (const kind of ['logo', 'favicon']) if (b[kind] && b[kind].data) imgs[kind] = IMG.check(b[kind].data, kind, { maxBytes: B.LIMITS[kind], maxSide: kind === 'favicon' ? 512 : 2048 });

@@ -124,7 +124,7 @@
   const LEAD_STATUS = [['new', 'Nouveau'], ['contacted', 'Contacté'], ['trial', 'En essai'], ['client', 'Client'], ['lost', 'Perdu']];
   function contactLinks(contact, text) {
     const c = String(contact || '');
-    if (c.includes('@')) return h('a', { class: 'btn sm', href: 'mailto:' + c + '?subject=' + encodeURIComponent('Brij-IA') + '&body=' + encodeURIComponent(text) }, icon('contacts', 'sm'), 'E-mail');
+    if (c.includes('@')) return h('a', { class: 'btn sm', href: 'mailto:' + c + '?subject=' + encodeURIComponent('MABAH') + '&body=' + encodeURIComponent(text) }, icon('contacts', 'sm'), 'E-mail');
     if (A.digits(c).length >= 8) return h('a', { class: 'btn sm', target: '_blank', rel: 'noopener', href: 'https://wa.me/' + A.digits(c) + '?text=' + encodeURIComponent(text) }, 'WhatsApp');
     return null;
   }

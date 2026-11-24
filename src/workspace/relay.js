@@ -61,7 +61,7 @@ async function describe(org, chat, reason) {
     nego = `Négociation : ${oneLine(neg[0].item_label, 60)}${lastOffer ? `, offre du client ${money(lastOffer.price)}` : ''}${lastOurs ? `, dernier prix proposé ${money(lastOurs.price)}` : ''}${neg.some((x) => x.kind === 'refused') ? ' (une demande a été refusée par le serveur)' : ''}.`;
   }
   const l = link(org);
-  const BR = require('../services/brand-lib'); const PN = BR.sender(await BR.of(org)) || org.name; // nom du produit choisi par l'entreprise (défaut : Brij-IA)
+  const BR = require('../services/brand-lib'); const PN = BR.sender(await BR.of(org)) || org.name; // nom du produit choisi par l'entreprise (défaut : MABAH)
   const HK = require('./handoff-kind');
   const commercial = chat.lead && /"intent"/.test(chat.lead); // passation de vente (commande, rendez-vous, service, prospect) : fiche détaillée
   const st = commercial ? await HK.status(org, chat) : null;

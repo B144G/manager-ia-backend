@@ -1,11 +1,11 @@
 # Data Processing Agreement (template)
 
-*Version 2026-11-16 — template to be signed or accepted online between a customer organisation (the "Controller") and Brij-IA (the "Processor"). It forms part of the terms of use.*
+*Version 2026-11-16 — template to be signed or accepted online between a customer organisation (the "Controller") and MABAH (the "Processor"). It forms part of the terms of use.*
 
-**Between** [TO COMPLETE: customer organisation, address, representative] **and** [TO COMPLETE: name of Brij-IA, address, representative].
+**Between** [TO COMPLETE: customer organisation, address, representative] **and** [TO COMPLETE: name of MABAH, address, representative].
 
 ## 1. Purpose and duration
-The Processor processes personal data on behalf of the Controller in order to provide the Brij-IA service. The agreement lasts as long as the service is provided.
+The Processor processes personal data on behalf of the Controller in order to provide the MABAH service. The agreement lasts as long as the service is provided.
 
 ## 2. Nature of the processing, data, data subjects
 Hosting, storage, consultation, computation, AI-assisted automatic reply, sending of messages. Categories of data and data subjects: see the record of processing activities (document 05, part B). The Controller undertakes not to enter special categories of data (health, opinions, etc.) that are not necessary, and remains the sole judge of the lawfulness of its processing.

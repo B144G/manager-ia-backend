@@ -1,7 +1,7 @@
 'use strict';
 // Droits des personnes et conservation des données : export (portabilité / accès), demande de suppression avec anonymisation après un délai de réflexion,
 // consentements datés et versionnés, durées de conservation configurables par organisation, export complet d'une organisation.
-// Brij-IA est responsable de traitement pour les comptes (users) et sous-traitant pour les données saisies par les organisations (clients, employés…) :
+// MABAH est responsable de traitement pour les comptes (users) et sous-traitant pour les données saisies par les organisations (clients, employés…) :
 // la personne concernée par une donnée d'organisation s'adresse à cette organisation (voir docs/securite/).
 const crypto = require('crypto');
 const { db, nowISO } = require('../db');
@@ -63,7 +63,7 @@ async function exportUser(userId) {
   const by = await schema();
   const u = await db.prepare('SELECT id, name, contact, plan, plan_expires, interests, progress, project, created_at, last_login_at, suspended_at FROM users WHERE id = ?').get(userId);
   if (!u) throw new HttpError(404, 'Compte introuvable.');
-  const out = { format: 'brij-ia-export', version: 1, exportedAt: nowISO(), person: u, tables: {}, notes: [
+  const out = { format: 'mabah-export', version: 1, exportedAt: nowISO(), person: u, tables: {}, notes: [
     "Les données saisies par les organisations dont vous êtes membre (clients, factures, employés…) appartiennent à ces organisations : demandez-leur directement.",
     'Les mots de passe, secrets et clés ne sont jamais exportés.'] };
   for (const [table, cols] of Object.entries(by)) {
@@ -83,7 +83,7 @@ async function exportUser(userId) {
 async function exportOrg(orgId) {
   const by = await schema();
   const org = await db.prepare('SELECT id, name, sector, description, currency, created_at FROM orgs WHERE id = ?').get(orgId);
-  const out = { format: 'brij-ia-org-export', version: 1, exportedAt: nowISO(), org, tables: {}, notes: ['Fichiers binaires (photos du catalogue, médias) et secrets non inclus.', 'Limite de 50 000 lignes par table.'] };
+  const out = { format: 'mabah-org-export', version: 1, exportedAt: nowISO(), org, tables: {}, notes: ['Fichiers binaires (photos du catalogue, médias) et secrets non inclus.', 'Limite de 50 000 lignes par table.'] };
   for (const [table, cols] of Object.entries(by)) {
     if (table === 'orgs' || ORG_EXPORT_SKIP.has(table) || !cols.some((x) => x.c === 'org_id')) continue;
     const sel = safeCols(cols); if (!sel.length) continue;

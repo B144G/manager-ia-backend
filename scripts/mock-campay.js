@@ -7,7 +7,7 @@
 // Pilotage manuel : POST /__mock/resolve {reference, status:"SUCCESSFUL"|"FAILED"}, POST /__mock/webhook {reference, forged?, amount?}, GET /__mock/state
 const http = require('http');
 const crypto = require('crypto');
-// JWT HS256 fabriqué ici (le faux serveur ne dépend d'aucun code de Brij-IA : il se comporte comme Campay, indépendamment).
+// JWT HS256 fabriqué ici (le faux serveur ne dépend d'aucun code de MABAH : il se comporte comme Campay, indépendamment).
 const b64u = (v) => Buffer.from(v).toString('base64url');
 const signJwtHS256 = (payload, key) => { const h = b64u(JSON.stringify({ alg: 'HS256', typ: 'JWT' })); const p = b64u(JSON.stringify(payload)); return `${h}.${p}.${crypto.createHmac('sha256', key).update(`${h}.${p}`).digest('base64url')}`; };
 
@@ -106,7 +106,7 @@ if (require.main === module) {
   const port = Number(process.env.MOCK_CAMPAY_PORT) || 4010;
   start({ port, webhookUrl: process.env.MOCK_WEBHOOK_URL || '', confirmMs: Number(process.env.MOCK_CONFIRM_MS) || 8000 }).then((m) => {
     console.log(`FAUX Campay prêt : ${m.url}`);
-    console.log('Variables à donner au serveur Brij-IA :');
+    console.log('Variables à donner au serveur MABAH :');
     console.log(`  CAMPAY_MODE=test CAMPAY_BASE_URL=${m.url} CAMPAY_APP_USERNAME=${m.creds.username} CAMPAY_APP_PASSWORD=${m.creds.password} CAMPAY_WEBHOOK_KEY=${m.creds.webhookKey}`);
     console.log('Numéros : 677777777 (MTN réussit) · 677777770 (MTN échoue) · 699999999 (Orange réussit) · 699999990 (Orange échoue) · autre 6XXXXXXXX = reste en attente');
   });

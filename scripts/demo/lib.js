@@ -1,5 +1,5 @@
 'use strict';
-// Démonstration Brij-IA — socle commun : connexion au serveur (local jetable ou en ligne), comptes de l'équipe, journal des fonctions utilisées.
+// Démonstration MABAH — socle commun : connexion au serveur (local jetable ou en ligne), comptes de l'équipe, journal des fonctions utilisées.
 // Chaque fichier de groupe exporte `async (ctx) => {}` et appelle ctx.do(...) pour chaque fonction du site qu'il utilise.
 const { spawn } = require('child_process');
 const path = require('path');

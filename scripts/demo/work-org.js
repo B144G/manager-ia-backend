@@ -61,7 +61,7 @@ module.exports = async function org(ctx) {
 
   // ---------- Fonctionnement : procédures ----------
   const proc = async (key, body) => { O[key] = (await ctx.do(`Procédures : « ${body.title} »`, 'POST', '/structure/processes', body)).id; return O[key]; };
-  await proc('reception', { title: "Réception d'une livraison fournisseur", category: 'Stock', ownerId: U('storekeeper'), reviewMonths: 12, steps: ['Vérifier le bon de commande et le bon de livraison', 'Compter les sacs / barres et contrôler la casse', 'Saisir la réception dans Brij-IA (scanner)', 'Signer le bon de livraison avec réserves éventuelles', 'Ranger selon le plan du dépôt (premier entré, premier sorti)'] });
+  await proc('reception', { title: "Réception d'une livraison fournisseur", category: 'Stock', ownerId: U('storekeeper'), reviewMonths: 12, steps: ['Vérifier le bon de commande et le bon de livraison', 'Compter les sacs / barres et contrôler la casse', 'Saisir la réception dans MABAH (scanner)', 'Signer le bon de livraison avec réserves éventuelles', 'Ranger selon le plan du dépôt (premier entré, premier sorti)'] });
   await proc('livraison', { title: 'Livraison sur chantier', category: 'Logistique', ownerId: U('manager'), reviewMonths: 6, steps: ['Préparer la commande et le bon de livraison', 'Charger le camion (poids maximum 10 t)', 'Appeler le client 30 minutes avant', 'Faire signer le bon et photographier le déchargement'] });
   await proc('caisse', { title: 'Clôture de caisse du soir', category: 'Finance', ownerId: U('accountant'), reviewMonths: 3, steps: ['Compter les espèces', 'Rapprocher les paiements Mobile Money', 'Déposer le surplus au coffre', 'Signer la feuille de caisse'] });
   await proc('tmp', { title: 'Procédure en double', steps: ['Étape'] });
@@ -96,7 +96,7 @@ module.exports = async function org(ctx) {
   memIds.push(await mem1({ kind: 'procedure', title: 'Prix plancher sur le fer à béton', date: ctx.day(-45), tags: 'prix, fer, remise', restricted: true, content: 'Ne jamais descendre sous 4 450 FCFA la barre de HA 10 et 6 300 FCFA la barre de HA 12, même pour les grands comptes. Réservé aux responsables.' }));
   const tmpM = await mem1({ kind: 'other', title: 'Note en double', content: 'à supprimer' });
   if (has('seller')) await ctx.do('Droits : un membre ne peut pas réserver une note aux responsables (refusé)', 'POST', '/memory', { title: 'Secret', content: 'x', restricted: true }, { as: 'seller', expect: 403 });
-  const up1 = await ctx.do('Mémoire : compléter une entrée (nouvelle version)', 'PUT', `/memory/${memIds[1]}`, { content: "L'usine de Bonabéri a arrêté une ligne pour maintenance sans prévenir. 4 jours sans ciment, environ 3 200 sacs de ventes perdues. Leçon : garder 5 jours de stock de sécurité et un second fournisseur (Dangote). Seuil minimum du ciment relevé à 200 sacs dans Brij-IA." });
+  const up1 = await ctx.do('Mémoire : compléter une entrée (nouvelle version)', 'PUT', `/memory/${memIds[1]}`, { content: "L'usine de Bonabéri a arrêté une ligne pour maintenance sans prévenir. 4 jours sans ciment, environ 3 200 sacs de ventes perdues. Leçon : garder 5 jours de stock de sécurité et un second fournisseur (Dangote). Seuil minimum du ciment relevé à 200 sacs dans MABAH." });
   ctx.check('Mémoire : version 2', up1.version === 2, up1);
   await ctx.do('Mémoire : détail et versions', 'GET', `/memory/${memIds[1]}`, undefined, { as: 'seller' });
   if (has('seller')) {

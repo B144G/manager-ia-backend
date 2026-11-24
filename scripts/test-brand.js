@@ -64,7 +64,7 @@ async function main() {
   const pgt = await startTestPg();
   for (const k of ['ALLOWED_ORIGINS', 'COOKIE_SAMESITE', 'COOKIE_SECURE', 'SMTP_HOST', 'WHATSAPP_PHONE_ID', 'WHATSAPP_TOKEN', 'CAMPAY_USERNAME', 'CAMPAY_PASSWORD', 'BUSINESS_FILE', 'KNOWLEDGE_DIR', 'META_APP_ID', 'META_EMBEDDED_CONFIG_ID', 'META_VERIFY_TOKEN', 'MAIL_API_KEY', 'STT_API_KEY']) process.env[k] = '';
   Object.assign(process.env, { NODE_ENV: 'test', JWT_SECRET: 'secret-de-test-assez-long-123456', DATABASE_URL: pgt.url, ANTHROPIC_API_KEY: 'cle-de-test', ANTHROPIC_BASE_URL: `http://127.0.0.1:${ai.port}`, WA_QR_ENABLED: '1', SIGNUP_VERIFY: 'off',
-    BREVO_API_KEY: 'cle-de-test', MAIL_API_URL: `http://127.0.0.1:${mailSrv.port}/v3`, SMTP_FROM: 'Brij-IA <contact@exemple.com>', ADMIN_USERNAME: 'admin-test', ADMIN_PASSWORD: 'mot-de-passe-admin-test', REPLY_DELAY_SCALE: '400' });
+    BREVO_API_KEY: 'cle-de-test', MAIL_API_URL: `http://127.0.0.1:${mailSrv.port}/v3`, SMTP_FROM: 'MABAH <contact@exemple.com>', ADMIN_USERNAME: 'admin-test', ADMIN_PASSWORD: 'mot-de-passe-admin-test', REPLY_DELAY_SCALE: '400' });
   const { app } = require('../src/server');
   const { db } = require('../src/db');
   await db.ready;
@@ -101,17 +101,17 @@ async function main() {
     const nmig = Number((await db.prepare('SELECT COUNT(*) c FROM schema_migrations WHERE version >= 200').get()).c);
     check('les migrations de marque portent les numéros 200 et 201', nmig === 2, nmig);
     r = await owner('GET', `${O}/brand`);
-    check('GET marque : mode Brij-IA, nom Brij-IA, non personnalisée', r.status === 200 && r.json.brand.mode === 'brij' && r.json.brand.name === 'Brij-IA' && r.json.brand.customized === false && r.json.brand.assistantName === '' && r.json.brand.color === '', r.json && r.json.brand);
+    check('GET marque : mode MABAH, nom MABAH, non personnalisée', r.status === 200 && r.json.brand.mode === 'brij' && r.json.brand.name === 'MABAH' && r.json.brand.customized === false && r.json.brand.assistantName === '' && r.json.brand.color === '', r.json && r.json.brand);
     check('aucun logo, aucun vocabulaire, menu et tableau de bord sans réglage', !r.json.brand.hasLogo && Object.keys(r.json.brand.vocab).length === 0 && r.json.brand.menu.hidden.length === 0 && r.json.brand.dashboard.hidden.length === 0);
     r = await owner('GET', O);
-    check("l'information d'organisation porte la marque effective (défaut)", r.json.brand && r.json.brand.name === 'Brij-IA' && r.json.brand.customized === false);
+    check("l'information d'organisation porte la marque effective (défaut)", r.json.brand && r.json.brand.name === 'MABAH' && r.json.brand.customized === false);
     const pdf0 = pdfText(await B.run(orgRow, () => PDF.render({ title: 'Essai', org: 'Boutique Awa', blocks: [{ type: 'text', text: 'Bonjour' }] }, { compress: false })));
-    check('PDF par défaut : pied « Boutique Awa · Brij-IA »', /Boutique Awa . Brij-IA/.test(pdf0), pdf0.slice(-200));
+    check('PDF par défaut : pied « Boutique Awa · MABAH »', /Boutique Awa . MABAH/.test(pdf0), pdf0.slice(-200));
     r = await owner('POST', `${O}/crm/customers`, { name: 'Client Test', email: 'client@exemple.com' }); const cust = r.json.id;
     r = await owner('POST', `${O}/mail/send`, { customerId: cust, subject: 'Bonjour', body: 'Voici votre offre.' });
     await until(() => mails.length >= 1);
     let m = mails[mails.length - 1];
-    check('e-mail par défaut : signature « Message envoyé avec Brij-IA », expéditeur = nom de l\'entreprise', r.status < 300 && m && /Voici votre offre\.\n\n—\nBoutique Awa\nMessage envoyé avec Brij-IA$/.test(m.textContent) && m.sender.name === 'Boutique Awa', m && m.textContent);
+    check('e-mail par défaut : signature « Message envoyé avec MABAH », expéditeur = nom de l\'entreprise', r.status < 300 && m && /Voici votre offre\.\n\n—\nBoutique Awa\nMessage envoyé avec MABAH$/.test(m.textContent) && m.sender.name === 'Boutique Awa', m && m.textContent);
     r = await owner('POST', `${O}/ai/chat`, { module: 'general', message: 'Fais le point' });
     const sys0 = aiBodies[aiBodies.length - 1] || '';
     check("invite de l'IA par défaut : aucun bloc d'identité", r.status === 200 && !/IDENTITÉ \(réglée/.test(sys0), r.status);
@@ -125,7 +125,7 @@ async function main() {
     await until(async () => (await owner('GET', `${O}/sales/wa-qr/status`)).json.status === 'open');
     r = await owner('POST', `${O}/sales/relay/test`, {});
     const wa0 = sock.sent.map((x) => (x.content && (x.content.text || x.content.conversation)) || '').join('\n');
-    check('message WhatsApp de relais par défaut : « Brij-IA (Boutique Awa) : … »', r.status === 200 && /Brij-IA \(Boutique Awa\) : ceci est un TEST/.test(wa0), wa0.slice(0, 200));
+    check('message WhatsApp de relais par défaut : « MABAH (Boutique Awa) : … »', r.status === 200 && /MABAH \(Boutique Awa\) : ceci est un TEST/.test(wa0), wa0.slice(0, 200));
 
     // ---------- 2. Droits ----------
     console.log('2. Droits');
@@ -215,14 +215,14 @@ async function main() {
     // ---------- 5. Marque appliquée partout ----------
     console.log('5. Personnalisation appliquée (PDF, e-mails, WhatsApp, IA, pages publiques)');
     const pdf1 = pdfText(await B.run(orgRow, () => PDF.render({ title: 'Essai', org: 'Boutique Awa', blocks: [{ type: 'text', text: 'Bonjour' }] }, { compress: false })));
-    check('PDF : en-tête, pied de page de l\'entreprise et « Propulsé par Brij-IA »', pdf1.includes('Awa Shop - Douala') && pdf1.includes('Awa Shop SARL - Douala') && pdf1.includes('Propulsé par Brij-IA') && !/Boutique Awa . Brij-IA/.test(pdf1), pdf1.slice(-200));
+    check('PDF : en-tête, pied de page de l\'entreprise et « Propulsé par MABAH »', pdf1.includes('Awa Shop - Douala') && pdf1.includes('Awa Shop SARL - Douala') && pdf1.includes('Propulsé par MABAH') && !/Boutique Awa . MABAH/.test(pdf1), pdf1.slice(-200));
     const pdf1b = pdfText(await PDF.render({ title: 'Essai', org: 'Boutique Awa', blocks: [] }, { compress: false }));
-    check('PDF hors contexte d\'entreprise : affichage d\'origine', /Boutique Awa . Brij-IA/.test(pdf1b));
+    check('PDF hors contexte d\'entreprise : affichage d\'origine', /Boutique Awa . MABAH/.test(pdf1b));
     const n0 = mails.length;
     r = await owner('POST', `${O}/mail/send`, { customerId: cust, subject: 'Bonjour', body: 'Voici votre offre.' });
     await until(() => mails.length > n0);
     m = mails[mails.length - 1];
-    check("e-mail : expéditeur « Awa Shop », réponse à l'adresse de l'entreprise, signature personnalisée", m.sender.name === 'Awa Shop' && m.replyTo && m.replyTo.email === 'contact@awashop.cm' && /Message envoyé avec Awa Shop, propulsé par Brij-IA$/.test(m.textContent) && !/avec Brij-IA$/.test(m.textContent), m);
+    check("e-mail : expéditeur « Awa Shop », réponse à l'adresse de l'entreprise, signature personnalisée", m.sender.name === 'Awa Shop' && m.replyTo && m.replyTo.email === 'contact@awashop.cm' && /Message envoyé avec Awa Shop, propulsé par MABAH$/.test(m.textContent) && !/avec MABAH$/.test(m.textContent), m);
     const aiN = aiBodies.length;
     r = await owner('POST', `${O}/ai/chat`, { module: 'general', message: 'Qui es-tu ?' });
     const sys1 = aiBodies.slice(aiN).join('\n');
@@ -232,33 +232,33 @@ async function main() {
     const waN = sock.sent.length;
     r = await owner('POST', `${O}/sales/relay/test`, {});
     const wa1 = sock.sent.slice(waN).map((x) => (x.content && (x.content.text || x.content.conversation)) || '').join('\n');
-    check('message WhatsApp envoyé : nom du produit choisi, plus « Brij-IA »', /Awa Shop \(Boutique Awa\) : ceci est un TEST/.test(wa1) && !/Brij-IA/.test(wa1), wa1.slice(0, 200));
+    check('message WhatsApp envoyé : nom du produit choisi, plus « MABAH »', /Awa Shop \(Boutique Awa\) : ceci est un TEST/.test(wa1) && !/MABAH/.test(wa1), wa1.slice(0, 200));
     r = await owner('GET', O);
     check("l'information d'organisation renvoie la marque personnalisée", r.json.brand.name === 'Awa Shop' && r.json.brand.poweredBy === true && r.json.brand.vocab.Clients.fr === 'Adhérents' && r.json.brand.menu.hidden[0] === 'hr');
     const row = await db.prepare('SELECT intake_token FROM orgs WHERE id = ?').get(org);
     r = await anon('GET', `/api/ws/public/brand-of/intake/${row.intake_token}`);
     check('page publique (formulaire / discussion) : marque de l\'entreprise, sans donnée interne', r.json.brand.name === 'Awa Shop' && r.json.brand.poweredBy === true && r.json.brand.orgName === 'Boutique Awa' && r.json.brand.logoUrl && r.json.brand.vocab === undefined && r.json.brand.mailReplyTo === undefined, r.json);
     r = await anon('GET', '/api/ws/public/brand-of/intake/inconnu');
-    check('jeton inconnu : marque d\'origine, jamais d\'erreur visible', r.status === 200 && r.json.brand.name === 'Brij-IA');
+    check('jeton inconnu : marque d\'origine, jamais d\'erreur visible', r.status === 200 && r.json.brand.name === 'MABAH');
     r = await anon('GET', '/api/ws/public/brand-of/csat/' + 'a'.repeat(24));
-    check('jeton de satisfaction inconnu : marque d\'origine', r.json.brand.name === 'Brij-IA');
+    check('jeton de satisfaction inconnu : marque d\'origine', r.json.brand.name === 'MABAH');
     // marque blanche
     r = await owner('PUT', `${O}/brand`, { ...cfgA, mode: 'white' });
     check('marque blanche acceptée', r.status === 200 && r.json.brand.whiteLabel === true);
     const pdfW = pdfText(await B.run(orgRow, () => PDF.render({ title: 'Essai', org: 'Boutique Awa', blocks: [] }, { compress: false })));
-    check('marque blanche : aucun « Brij-IA » dans le PDF', !/Brij/.test(pdfW) && pdfW.includes('Awa Shop SARL - Douala'), pdfW.slice(-160));
+    check('marque blanche : aucun « MABAH » dans le PDF', !/MABAH/.test(pdfW) && pdfW.includes('Awa Shop SARL - Douala'), pdfW.slice(-160));
     const nW = mails.length;
     await owner('POST', `${O}/mail/send`, { customerId: cust, subject: 'Bonjour', body: 'Voici votre offre.' });
     await until(() => mails.length > nW);
-    check('marque blanche : e-mail sans « Brij-IA » dans la signature', !/Brij/.test(mails[mails.length - 1].textContent) && /Message envoyé avec Awa Shop$/.test(mails[mails.length - 1].textContent), mails[mails.length - 1].textContent);
+    check('marque blanche : e-mail sans « MABAH » dans la signature', !/MABAH/.test(mails[mails.length - 1].textContent) && /Message envoyé avec Awa Shop$/.test(mails[mails.length - 1].textContent), mails[mails.length - 1].textContent);
     const aiW = aiBodies.length;
     await owner('POST', `${O}/ai/chat`, { module: 'general', message: 'Bonjour' });
     const sysW = aiBodies.slice(aiW).join('\n');
-    check("marque blanche : l'IA ne cite pas la plateforme de sa propre initiative, sans mentir si on lui demande", /Ne cite pas le nom « Brij-IA » de toi-même/.test(sysW) && /ne mens pas/.test(sysW));
+    check("marque blanche : l'IA ne cite pas la plateforme de sa propre initiative, sans mentir si on lui demande", /Ne cite pas le nom « MABAH » de toi-même/.test(sysW) && /ne mens pas/.test(sysW));
     const waW = sock.sent.length;
     await owner('POST', `${O}/sales/relay/test`, {});
     const wa2 = sock.sent.slice(waW).map((x) => (x.content && (x.content.text || x.content.conversation)) || '').join('\n');
-    check('marque blanche : message WhatsApp sans « Brij-IA »', /Awa Shop \(Boutique Awa\)/.test(wa2) && !/Brij/.test(wa2), wa2.slice(0, 160));
+    check('marque blanche : message WhatsApp sans « MABAH »', /Awa Shop \(Boutique Awa\)/.test(wa2) && !/MABAH/.test(wa2), wa2.slice(0, 160));
     await owner('PUT', `${O}/brand`, cfgA);
 
     // ---------- 6. Usurpation ----------
@@ -267,10 +267,10 @@ async function main() {
     check("nom déjà utilisé comme marque par une autre entreprise : refusé", r.status === 409, r.json);
     r = await owner2('PUT', `${OB}/brand`, { productName: 'boutique  AWA', mode: 'powered' });
     check("nom d'une autre entreprise (casse et espaces différents) : refusé", r.status === 409, r.json);
-    r = await owner2('PUT', `${OB}/brand`, { productName: 'Brij-IA Officiel', mode: 'powered' });
+    r = await owner2('PUT', `${OB}/brand`, { productName: 'MABAH Officiel', mode: 'powered' });
     check('nom contenant celui de la plateforme : refusé', r.status === 409, r.json);
-    r = await owner2('PUT', `${OB}/brand`, { productName: 'Brij IA', mode: 'powered' });
-    check('variante « Brij IA » refusée', r.status === 409);
+    r = await owner2('PUT', `${OB}/brand`, { productName: 'MABAH', mode: 'powered' });
+    check('variante « MABAH » refusée', r.status === 409);
     r = await owner2('PUT', `${OB}/brand`, { mailFromName: 'Boutique Awa' });
     check("expéditeur d'e-mails imitant une autre entreprise : refusé", r.status === 409);
     const refused = await db.prepare("SELECT COUNT(*) c FROM org_brand_log WHERE org_id = ? AND action = 'refused'").get(orgB);
@@ -292,7 +292,7 @@ async function main() {
     r = await anon('GET', `/api/ws/public/brand-of/intake/${rowB.intake_token}`);
     check('page publique de B : jamais le nom, le logo ni la couleur de A', r.json.brand.name === 'Atelier Zoe Création' && !r.json.brand.logoUrl && r.json.brand.color === '' && !JSON.stringify(r.json).includes('Awa'), r.json);
     const pdfB = pdfText(await B.run(orgRowB, () => PDF.render({ title: 'Essai', org: 'Atelier Zoe', blocks: [] }, { compress: false })));
-    check('PDF de B : ni en-tête ni pied de A', !pdfB.includes('Awa') && pdfB.includes('Propulsé par Brij-IA'), pdfB.slice(-200));
+    check('PDF de B : ni en-tête ni pied de A', !pdfB.includes('Awa') && pdfB.includes('Propulsé par MABAH'), pdfB.slice(-200));
     const pdfMix = pdfText(await B.run(orgRow, async () => B.run(orgRowB, () => PDF.render({ title: 'Essai', org: 'Atelier Zoe', blocks: [] }, { compress: false }))));
     check('contexte imbriqué : la marque de l\'entreprise la plus proche l\'emporte', !pdfMix.includes('Awa'));
     const nB = mails.length;
@@ -325,17 +325,17 @@ async function main() {
     console.log('9. Export / import / retour à la configuration de base');
     r = await owner('GET', `${O}/brand/export`);
     const exp = r.json;
-    check("export : format, configuration et images", exp.format === 'brij-ia-marque' && exp.config.productName === 'Awa Shop' && exp.logo && exp.favicon, Object.keys(exp));
+    check("export : format, configuration et images", exp.format === 'mabah-marque' && exp.config.productName === 'Awa Shop' && exp.logo && exp.favicon, Object.keys(exp));
     r = await owner('POST', `${O}/brand/reset`, {});
     check('retour à la base : demande de confirmation', r.status === 400);
     r = await owner('POST', `${O}/brand/reset`, { confirm: true });
-    check("retour à la base : affichage d'origine rétabli", r.status === 200 && r.json.brand.name === 'Brij-IA' && r.json.brand.mode === 'brij' && r.json.brand.customized === false && !r.json.brand.hasLogo && !r.json.brand.hasFavicon && r.json.brand.assistantName === '', r.json && r.json.brand);
+    check("retour à la base : affichage d'origine rétabli", r.status === 200 && r.json.brand.name === 'MABAH' && r.json.brand.mode === 'brij' && r.json.brand.customized === false && !r.json.brand.hasLogo && !r.json.brand.hasFavicon && r.json.brand.assistantName === '', r.json && r.json.brand);
     const pdfR = pdfText(await B.run(orgRow, () => PDF.render({ title: 'Essai', org: 'Boutique Awa', blocks: [] }, { compress: false })));
-    check('après le retour : PDF comme au départ', /Boutique Awa . Brij-IA/.test(pdfR) && !pdfR.includes('Awa Shop'));
+    check('après le retour : PDF comme au départ', /Boutique Awa . MABAH/.test(pdfR) && !pdfR.includes('Awa Shop'));
     const nR = mails.length;
     await owner('POST', `${O}/mail/send`, { customerId: cust, subject: 'Bonjour', body: 'Voici votre offre.' });
     await until(() => mails.length > nR);
-    check('après le retour : e-mail comme au départ', /Message envoyé avec Brij-IA$/.test(mails[mails.length - 1].textContent) && !mails[mails.length - 1].replyTo || (mails[mails.length - 1].replyTo || {}).email !== 'contact@awashop.cm');
+    check('après le retour : e-mail comme au départ', /Message envoyé avec MABAH$/.test(mails[mails.length - 1].textContent) && !mails[mails.length - 1].replyTo || (mails[mails.length - 1].replyTo || {}).email !== 'contact@awashop.cm');
     r = await anon('GET', logoUrl);
     check('après le retour : l\'ancien logo n\'est plus servi', r.status === 404, r.status);
     r = await member('POST', `${O}/brand/reset`, { confirm: true }); check('un membre ne peut pas rétablir la base', r.status === 403);
@@ -357,7 +357,7 @@ async function main() {
     console.log('10. Textes de conformité');
     r = await owner('PUT', `${O}/brand`, { ...cfgA, mode: 'white', footerText: 'Mon pied de page' });
     check('la configuration ne contient aucun champ qui masquerait conditions / confidentialité / éditeur', r.status === 200 && !('legal' in r.json.config) && !JSON.stringify(Object.keys(r.json.config)).match(/legal|terms|privacy|conditions|confidential/i), Object.keys(r.json.config));
-    check("l'API publique renvoie toujours le nom de la plateforme pour le lien légal discret", (await anon('GET', `/api/ws/public/brand-of/intake/${row.intake_token}`)).json.brand.platformName === 'Brij-IA');
+    check("l'API publique renvoie toujours le nom de la plateforme pour le lien légal discret", (await anon('GET', `/api/ws/public/brand-of/intake/${row.intake_token}`)).json.brand.platformName === 'MABAH');
     await owner('POST', `${O}/brand/reset`, { confirm: true });
   } finally {
     try { await waWeb.shutdown(); } catch { /* */ }

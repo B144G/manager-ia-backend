@@ -78,7 +78,7 @@ async function createPush({ req, user, plan, operator, phone }) {
 
   let c = null; let lastErr = null;
   for (let i = 0; i < 2 && !c; i++) { // un seul nouvel essai, uniquement sur panne réseau : la référence externe rend la demande idempotente chez Campay
-    try { c = await client.collect({ amount, from: phone, externalReference: extRef, externalUser: String(user.id), description: `Brij-IA ${custom.label(plan.name)} ${reference}` }); }
+    try { c = await client.collect({ amount, from: phone, externalReference: extRef, externalUser: String(user.id), description: `MABAH ${custom.label(plan.name)} ${reference}` }); }
     catch (e) { lastErr = e; if (!e.network) break; }
   }
   if (!c) {

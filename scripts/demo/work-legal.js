@@ -59,8 +59,8 @@ module.exports = async function legal(ctx) {
 
   // ---------- Données personnelles ----------
   const pv = [];
-  for (const b of [{ dataKind: 'Nom, téléphone et adresse de chantier des clients', people: 'Clients', storedWhere: 'Brij-IA (Clients et ventes)', purpose: 'Livrer, facturer, relancer', retention: '10 ans (pièces comptables)', sharedWith: 'Chauffeurs-livreurs' },
-    { dataKind: 'Dossier du personnel (CNI, contrat, salaire, CNPS)', people: 'Employés', storedWhere: 'Brij-IA (RH, paie) et classeur RH', purpose: 'Gestion du personnel et paie', retention: 'Durée du contrat + 5 ans', sharedWith: 'Cabinet comptable' },
+  for (const b of [{ dataKind: 'Nom, téléphone et adresse de chantier des clients', people: 'Clients', storedWhere: 'MABAH (Clients et ventes)', purpose: 'Livrer, facturer, relancer', retention: '10 ans (pièces comptables)', sharedWith: 'Chauffeurs-livreurs' },
+    { dataKind: 'Dossier du personnel (CNI, contrat, salaire, CNPS)', people: 'Employés', storedWhere: 'MABAH (RH, paie) et classeur RH', purpose: 'Gestion du personnel et paie', retention: 'Durée du contrat + 5 ans', sharedWith: 'Cabinet comptable' },
     { dataKind: 'Images de vidéosurveillance des dépôts', people: 'Clients, employés, visiteurs', storedWhere: 'Enregistreur du poste de garde', purpose: 'Sécurité des marchandises', retention: '30 jours' },
     { dataKind: 'Ligne en double', people: '—' }]) pv.push((await ctx.do(`Juridique : registre des données « ${b.dataKind.slice(0, 40)} »`, 'POST', '/legal/privacy', b, { as: 'manager' })).id);
   await ctx.do('Juridique : modifier une ligne du registre des données', 'PUT', `/legal/privacy/${pv[2]}`, { notes: 'Panneau d\'information à l\'entrée du dépôt.' }, { as: 'manager' });

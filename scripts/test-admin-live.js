@@ -154,7 +154,7 @@ run('Administration : comptes en direct, inscriptions en attente, recherche', as
     const mails = []; const port = await freePort();
     const srv = http.createServer((req, res) => { let b = ''; req.on('data', (d) => { b += d; }); req.on('end', () => { try { mails.push(JSON.parse(b || '{}')); } catch { /* ignoré */ } res.statusCode = 201; res.end('{"messageId":"x"}'); }); });
     await new Promise((ok) => srv.listen(port, '127.0.0.1', ok));
-    return { env: { SIGNUP_VERIFY: 'on', BREVO_API_KEY: 'cle-de-test', MAIL_API_URL: `http://127.0.0.1:${port}/v3`, SMTP_FROM: 'Brij-IA <contact@exemple.com>' }, mails, srv };
+    return { env: { SIGNUP_VERIFY: 'on', BREVO_API_KEY: 'cle-de-test', MAIL_API_URL: `http://127.0.0.1:${port}/v3`, SMTP_FROM: 'MABAH <contact@exemple.com>' }, mails, srv };
   },
   teardown: async (extra) => { extra.srv.close(); },
 });

@@ -25,7 +25,7 @@ Les champs entre crochets doivent être complétés avant publication : ils ne p
 
 ## Propriété intellectuelle
 
-Le nom Brij-IA, le logo, le code, les textes et les éléments graphiques sont protégés. Toute reproduction non autorisée est interdite.
+Le nom MABAH, le logo, le code, les textes et les éléments graphiques sont protégés. Toute reproduction non autorisée est interdite.
 
 ## Données personnelles
 

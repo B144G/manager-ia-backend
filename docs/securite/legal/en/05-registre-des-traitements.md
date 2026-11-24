@@ -1,10 +1,10 @@
 # Record of Processing Activities
 
-*Version 2026-11-16 — record kept by Brij-IA as **data controller** (part A) and as **processor** on behalf of its customers (part B).*
+*Version 2026-11-16 — record kept by MABAH as **data controller** (part A) and as **processor** on behalf of its customers (part B).*
 
 Controller: [TO COMPLETE: name, address] · Data protection contact: [TO COMPLETE].
 
-## A. Processing for which Brij-IA is the controller
+## A. Processing for which MABAH is the controller
 
 | No. | Processing | Purpose | Data subjects | Data | Basis | Recipients | Transfers | Retention | Security |
 |---|---|---|---|---|---|---|---|---|---|
@@ -16,9 +16,9 @@ Controller: [TO COMPLETE: name, address] · Data protection contact: [TO COMPLET
 | A6 | Contact and trials | Answer requests | Prospects | Name, contact details, message | Pre-contractual measures | E-mail | See doc 07 | 3 years | — |
 | A7 | Audience measurement | Visit statistics | Visitors (if consent) | Page, origin, device — no IP or identifier | Consent | — | — | 13 months | Aggregation |
 
-## B. Processing on behalf of organisations (Brij-IA = processor)
+## B. Processing on behalf of organisations (MABAH = processor)
 
-The organisation (controller) decides the purposes; Brij-IA provides the tool. Categories of data and data subjects:
+The organisation (controller) decides the purposes; MABAH provides the tool. Categories of data and data subjects:
 
 | No. | Module | Data subjects | Data (examples) | Sensitivity | Specific protection |
 |---|---|---|---|---|---|

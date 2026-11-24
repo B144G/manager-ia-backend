@@ -40,7 +40,7 @@ run('Fusion : export et suppression complète d\'une organisation multi-modules'
   r = await owner('GET', `/api/privacy/orgs/${org}/export`);
   const ex = r.json || {};
   const tables = Object.keys(ex.tables || {});
-  check('export d\'organisation : 200 et format Brij-IA', r.status === 200 && ex.format, [r.status, ex.format]);
+  check('export d\'organisation : 200 et format MABAH', r.status === 200 && ex.format, [r.status, ex.format]);
   for (const t of ['stock_items', 'pur_requests', 'suppliers', 'wms_warehouses', 'lib_blocks', 'employees']) {
     check(`export d'organisation : contient ${t}`, tables.includes(t), tables.length);
   }

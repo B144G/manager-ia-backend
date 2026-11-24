@@ -23,7 +23,7 @@ run('Confidentialité : droits des personnes, conservation, suppression', async 
   // Export de toutes les données de la personne
   r = await mem('GET', '/api/privacy/export');
   const j = r.json;
-  check("export : JSON ouvert avec le profil, les consentements et les messages de la personne", r.status === 200 && j.format === 'brij-ia-export' && j.person.name === 'Paul' && j.tables.consents && j.tables.org_members, j && Object.keys(j.tables || {}));
+  check("export : JSON ouvert avec le profil, les consentements et les messages de la personne", r.status === 200 && j.format === 'mabah-export' && j.person.name === 'Paul' && j.tables.consents && j.tables.org_members, j && Object.keys(j.tables || {}));
   check("export : aucun mot de passe, empreinte ni secret", !/\$2[aby]\$|pass_hash|totp_secret|recovery_codes|token_hash/.test(r.text), null);
   check("export : aucune donnée d'une autre personne (e-mail d'Awa absent)", !/awa\d+@exemple\.com/.test(r.text));
   check("export : l'en-tête propose un téléchargement et interdit la mise en cache", /attachment/.test(r.headers.get('content-disposition')) && /no-store/.test(r.headers.get('cache-control')));

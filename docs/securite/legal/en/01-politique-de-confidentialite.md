@@ -2,17 +2,17 @@
 
 *Version 2026-11-16 · Last updated: 16 November 2026*
 
-This policy explains what data Brij-IA collects, why, how long we keep it, with whom it is shared and how to exercise your rights. It is based on the principles of the General Data Protection Regulation (GDPR) and on applicable Cameroonian law, in particular Law No. 2010/012 of 21 December 2010 on cybersecurity and cybercrime and the Cameroonian personal data protection law adopted at the end of 2024.
+This policy explains what data MABAH collects, why, how long we keep it, with whom it is shared and how to exercise your rights. It is based on the principles of the General Data Protection Regulation (GDPR) and on applicable Cameroonian law, in particular Law No. 2010/012 of 21 December 2010 on cybersecurity and cybercrime and the Cameroonian personal data protection law adopted at the end of 2024.
 
 ## 1. Who is responsible?
 
-**Brij-IA** — [TO COMPLETE: company name, legal form, registered office address, RCCM, NIU].
+**MABAH** — [TO COMPLETE: company name, legal form, registered office address, RCCM, NIU].
 "Privacy" contact: [TO COMPLETE: dedicated e-mail address] · Telephone/WhatsApp: [TO COMPLETE].
 
 Two situations must be clearly distinguished:
 
-- **Your Brij-IA account** (name, contact details, password, subscription, security log): Brij-IA is the **data controller**.
-- **The data your organisation enters or receives in Brij-IA** (customers, employees, payslips, invoices, WhatsApp conversations with your customers, etc.): **your organisation** is the controller; Brij-IA acts as a **processor** and uses the data only to provide the service, in accordance with the data processing agreement (document 06). If you are a customer or an employee of an organisation that uses Brij-IA, please address your requests to that organisation.
+- **Your MABAH account** (name, contact details, password, subscription, security log): MABAH is the **data controller**.
+- **The data your organisation enters or receives in MABAH** (customers, employees, payslips, invoices, WhatsApp conversations with your customers, etc.): **your organisation** is the controller; MABAH acts as a **processor** and uses the data only to provide the service, in accordance with the data processing agreement (document 06). If you are a customer or an employee of an organisation that uses MABAH, please address your requests to that organisation.
 
 ## 2. What data, why, on what basis, for how long?
 
@@ -32,13 +32,13 @@ Two situations must be clearly distinguished:
 
 ## 3. Artificial intelligence
 
-Brij-IA's assistant sends to an **AI provider** (see document 07) the messages you write and, in order to answer accurately, a limited summary of **your** organisation's data (filtered according to your role and your branch). One organisation's data is never mixed with another's.
-Brij-IA does not use your data to train models. The AI provider applies its own processing terms: [TO COMPLETE: recall the commitments of the selected provider].
+MABAH's assistant sends to an **AI provider** (see document 07) the messages you write and, in order to answer accurately, a limited summary of **your** organisation's data (filtered according to your role and your branch). One organisation's data is never mixed with another's.
+MABAH does not use your data to train models. The AI provider applies its own processing terms: [TO COMPLETE: recall the commitments of the selected provider].
 The AI **proposes**; sensitive actions (prices, orders, payments, accounting entries, outgoing messages) remain subject to validation by a person. An AI response may be inaccurate: check it before making a decision.
 
 ## 4. WhatsApp, Messenger, Instagram
 
-If your organisation links a messaging channel, its customers' messages pass through Brij-IA (and through Meta). Two modes exist: Meta's **official API**, and the **QR code** link ("linked devices"), which is an unofficial method: its access keys are encrypted in our database, and WhatsApp may restrict a number that uses it. The organisation is responsible for informing its own customers about the processing of their messages.
+If your organisation links a messaging channel, its customers' messages pass through MABAH (and through Meta). Two modes exist: Meta's **official API**, and the **QR code** link ("linked devices"), which is an unofficial method: its access keys are encrypted in our database, and WhatsApp may restrict a number that uses it. The organisation is responsible for informing its own customers about the processing of their messages.
 
 ## 5. With whom is your data shared?
 
@@ -60,7 +60,7 @@ If you consider that your rights are not being respected, you may refer the matt
 
 ## 9. Children
 
-Brij-IA is intended for professionals and is not intended for persons under [TO COMPLETE: 18] years of age.
+MABAH is intended for professionals and is not intended for persons under [TO COMPLETE: 18] years of age.
 
 ## 10. Cookies
 

@@ -45,7 +45,7 @@ router.post('/visit', limits.visit, async (req, res) => {
 router.get('/unsubscribe', limits.unsubscribe, async (req, res) => {
   const ok = await prospects.unsubscribe(req.query.t);
   res.set('Content-Type', 'text/html; charset=utf-8').set('Cache-Control', 'no-store').send(
-    `<!doctype html><html lang="fr"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Brij-IA</title><body style="font-family:system-ui,sans-serif;max-width:480px;margin:15vh auto;padding:0 20px;text-align:center"><h1>Brij-IA</h1><p>${ok ? 'C\'est fait : vous ne recevrez plus d\'e-mails de prospection de notre part.' : 'Ce lien n\'est plus valable ou la désinscription est déjà faite.'}</p></body></html>`
+    `<!doctype html><html lang="fr"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MABAH</title><body style="font-family:system-ui,sans-serif;max-width:480px;margin:15vh auto;padding:0 20px;text-align:center"><h1>MABAH</h1><p>${ok ? 'C\'est fait : vous ne recevrez plus d\'e-mails de prospection de notre part.' : 'Ce lien n\'est plus valable ou la désinscription est déjà faite.'}</p></body></html>`
   );
 });
 

@@ -109,7 +109,7 @@ router.post('/payments/initiate', requireUser, limits.paymentsInit, asyncHandler
   if (pendingManual && (!pendingManual.expires_at || Date.parse(pendingManual.expires_at) > Date.now())) { reference = pendingManual.reference; reused = true; } // double clic : même commande
   else {
     for (let i = 0; i < 8 && !reference; i++) {
-      const code = 'BRIJ-' + String(crypto.randomInt(100000, 1000000));
+      const code = 'MABAH-' + String(crypto.randomInt(100000, 1000000));
       try {
         await db.prepare(`INSERT INTO payments (reference, user_id, plan, operator, phone, amount_xaf, mode, status, provider_ref, created_at, expires_at, currency)
           VALUES (?, ?, ?, ?, ?, ?, 'manual', 'pending', NULL, ?, ?, 'XAF')`)

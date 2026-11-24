@@ -130,7 +130,7 @@ Ajoutés à `npm run test:chain` (`test:tmsgeo`, `test:parties`). Côté site : 
 
 ## 12. Position des entreprises (carte de l'administration)
 
-Chaque entreprise ayant un compte Brij-IA peut **partager volontairement** la position de son siège avec l'administration de la plateforme (statistiques par pays et par ville). Rien n'est public ni visible des autres entreprises.
+Chaque entreprise ayant un compte MABAH peut **partager volontairement** la position de son siège avec l'administration de la plateforme (statistiques par pays et par ville). Rien n'est public ni visible des autres entreprises.
 
 * **Saisie** : espace de travail › Équipe et antennes › « Position de l'entreprise » (administrateurs de l'entreprise) : recherche d'adresse (OpenStreetMap, sur clic), position GPS de l'appareil ou point posé sur la carte, ville et pays. Le partage exige une **case de consentement** ; la position est **arrondie à 3 décimales (≈ 100 m)** ; le pays est obligatoire ; elle se **retire à tout moment** (`DELETE /orgs/:orgId/geo`). Tout est journalisé dans l'activité de l'entreprise.
 * **Routes** : `GET /orgs/:orgId/geo` (tout membre : sa propre entreprise), `PUT` et `DELETE` (administrateur de l'entreprise) ; `GET /api/admin/geo/orgs` (session administrateur de la plateforme uniquement).

@@ -44,7 +44,7 @@ router.get('/export', guard, asyncHandler(async (req, res) => {
   const data = await privacy.exportUser(req.user.id);
   await db.prepare("INSERT INTO data_requests (user_id, kind, status, detail, requested_at, due_at, done_at) VALUES (?, 'export', 'done', 'libre-service', ?, ?, ?)").run(req.user.id, data.exportedAt, data.exportedAt, data.exportedAt);
   await central.audit.record(req, 'privacy.export', { severity: 'warn', detail: `${Object.keys(data.tables).length} table(s)` });
-  res.set({ 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="mes-donnees-brij-ia-${data.exportedAt.slice(0, 10)}.json"`, 'Cache-Control': 'no-store' });
+  res.set({ 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="mes-donnees-mabah-${data.exportedAt.slice(0, 10)}.json"`, 'Cache-Control': 'no-store' });
   res.send(JSON.stringify(data, null, 2));
 }));
 

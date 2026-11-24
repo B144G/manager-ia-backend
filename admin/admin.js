@@ -1,5 +1,5 @@
 'use strict';
-// Administration Brij-IA — coque (menu, en-tête, routage, recherche Ctrl K, connexion). Les écrans sont dans views-a.js et views-b.js.
+// Administration MABAH — coque (menu, en-tête, routage, recherche Ctrl K, connexion). Les écrans sont dans views-a.js et views-b.js.
 (function () {
   const A = window.A, { h, icon, fmtN, badge, api, toast, fail, initials } = A;
   const S = A.S;
@@ -30,14 +30,14 @@
     const sm = A.live.st.summary || (S.ov && S.ov.todo ? { payments: S.ov.todo.payments, leads: S.ov.todo.leads, alerts: S.ov.todo.alerts } : { payments: 0, leads: 0, alerts: 0 });
     return { payments: sm.payments || 0, alerts: sm.alerts || 0, contacts: sm.leads || 0, clients: A.live.unseen(), expiring: (S.ov && S.ov.todo && S.ov.todo.expiring) || 0 };
   };
-  function setTitle() { const c = counts(); const n = c.payments + c.alerts + c.clients; document.title = (n ? '(' + n + ') ' : '') + 'Administration Brij-IA'; }
+  function setTitle() { const c = counts(); const n = c.payments + c.alerts + c.clients; document.title = (n ? '(' + n + ') ' : '') + 'Administration MABAH'; }
 
   // ---------- Menu latéral ----------
   function drawSide() {
     const c = counts(), cur = route.name;
     const link = ([k, l, ic]) => h('a', { href: '#/' + k, 'aria-current': cur === k ? 'page' : null, onclick: () => closeDrawer() }, icon(ic), h('span', { class: 'nl' }, l), c[k] ? h('span', { class: 'cnt ' + (k === 'clients' ? 'new' : 'hot'), 'aria-label': c[k] + (k === 'clients' ? ' nouveaux' : ' à traiter') }, String(c[k])) : null);
     $('side').replaceChildren(
-      h('div', { class: 'brand' }, h('a', { href: '#/overview', 'aria-label': 'Brij-IA, accueil de l’administration' }, 'BRIJ', h('b', {}, '-IA')), h('span', { class: 'env' }, 'ADMIN')),
+      h('div', { class: 'brand' }, h('a', { href: '#/overview', 'aria-label': 'MABAH, accueil de l’administration', class: 'brand-a' }, h('img', { src: '/admin/img/logo-mabah-192.png', alt: '', width: 26, height: 26 }), 'MABAH'), h('span', { class: 'env' }, 'ADMIN')),
       ...NAV.flatMap(([title, items]) => [h('div', { class: 'nav-label' }, title), h('nav', { class: 'nav', 'aria-label': title }, items.map(link))]),
       h('div', { class: 'side-foot' },
         h('button', { class: 'btn ghost', type: 'button', onclick: () => A.theme.toggle(), 'aria-label': 'Basculer le thème clair / sombre' }, icon(A.theme.get() === 'dark' ? 'sun' : 'moon'), A.theme.get() === 'dark' ? 'Thème clair' : 'Thème sombre'),
@@ -203,7 +203,7 @@
   eyeBtn.addEventListener('click', () => { const i = document.querySelector('#loginForm [name=password]'); const show = i.type === 'password'; i.type = show ? 'text' : 'password'; eyeBtn.replaceChildren(icon(show ? 'eyeoff' : 'eye')); eyeBtn.setAttribute('aria-label', show ? 'Masquer le mot de passe' : 'Afficher le mot de passe'); });
   $('loginTheme').addEventListener('click', () => A.theme.toggle());
   $('loginPoints').append(...[['userplus', 'Les nouveaux comptes en direct'], ['payments', 'Les paiements à valider'], ['security', 'La sécurité et le journal d’audit']].map(([ic, t]) => h('li', {}, icon(ic), t)));
-  function showLogin() { A.live.stop(); S.ov = null; $('app').classList.add('hidden'); $('login').classList.remove('hidden'); document.title = 'Connexion · Administration Brij-IA'; const u = document.querySelector('#loginForm [name=username]'); if (u) u.focus({ preventScroll: true }); }
+  function showLogin() { A.live.stop(); S.ov = null; $('app').classList.add('hidden'); $('login').classList.remove('hidden'); document.title = 'Connexion · Administration MABAH'; const u = document.querySelector('#loginForm [name=username]'); if (u) u.focus({ preventScroll: true }); }
   function showApp() { $('login').classList.add('hidden'); $('app').classList.remove('hidden'); syncInert(); }
   A.onAuthLost = () => { if (!$('app').classList.contains('hidden') || $('login').classList.contains('hidden')) showLogin(); };
   $('loginForm').addEventListener('submit', async (e) => {

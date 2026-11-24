@@ -4,7 +4,7 @@
 
 ## En bref
 
-Brij-IA n'utilise **aucun cookie publicitaire et aucun pisteur tiers**. Il n'utilise que des cookies et stockages **strictement nécessaires** au fonctionnement, plus — **uniquement si vous l'acceptez** — un compteur de visites anonyme. Votre choix s'exprime dans le bandeau affiché à la première visite ; **refuser est aussi simple qu'accepter**, et vous pouvez le modifier à tout moment via « Gérer mes cookies » (en bas de chaque page).
+MABAH n'utilise **aucun cookie publicitaire et aucun pisteur tiers**. Il n'utilise que des cookies et stockages **strictement nécessaires** au fonctionnement, plus — **uniquement si vous l'acceptez** — un compteur de visites anonyme. Votre choix s'exprime dans le bandeau affiché à la première visite ; **refuser est aussi simple qu'accepter**, et vous pouvez le modifier à tout moment via « Gérer mes cookies » (en bas de chaque page).
 
 ## Ce que nous utilisons
 

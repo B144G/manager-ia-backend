@@ -1,5 +1,5 @@
 'use strict';
-// Démonstration complète de Brij-IA : crée l'entreprise « Batimat Afrique SARL » et utilise toutes les fonctions du site (sauf l'assistant WhatsApp).
+// Démonstration complète de MABAH : crée l'entreprise « Batimat Afrique SARL » et utilise toutes les fonctions du site (sauf l'assistant WhatsApp).
 //
 //   Essai local (base jetable, rien n'est envoyé) :   node scripts/demo/index.js --local [--keep] [--port 3000] [--only base,stock]
 //   Sur le site en ligne :                             node scripts/demo/index.js --url https://VOTRE-SERVEUR.onrender.com --contact VOTRE@EMAIL --pass MOT_DE_PASSE [--org ID]

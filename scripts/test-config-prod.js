@@ -11,7 +11,7 @@ const boot = (env) => {
   const r = spawnSync(process.execPath, ['-e', "require('./src/config'); console.log('BOOT-OK')"], { cwd: path.join(__dirname, '..'), env: clean, encoding: 'utf8' });
   return { code: r.status, out: (r.stdout || '') + (r.stderr || '') };
 };
-const good = { JWT_SECRET: 'j'.repeat(48), ADMIN_PASSWORD: 'MotDePasseSolide-2026', DATA_KEY: 'd'.repeat(48), ALLOWED_ORIGINS: 'https://brij-ia.example.com' };
+const good = { JWT_SECRET: 'j'.repeat(48), ADMIN_PASSWORD: 'MotDePasseSolide-2026', DATA_KEY: 'd'.repeat(48), ALLOWED_ORIGINS: 'https://mabah.example.com' };
 
 console.log('Configuration de production : seuils et STRICT_PROD_CONFIG');
 let r = boot(good);
@@ -32,7 +32,7 @@ r = boot({ ...good, ALLOWED_ORIGINS: '*' });
 check('ALLOWED_ORIGINS en joker : avertissement, démarre', r.code === 0 && /ALLOWED_ORIGINS/.test(r.out), r.out.slice(0, 200));
 r = boot({ ...good, ALLOWED_ORIGINS: 'http://site.example.com', STRICT_PROD_CONFIG: '1' });
 check('…adresse http:// avec STRICT_PROD_CONFIG=1 : refusé', r.code === 1, [r.code]);
-r = boot({ ...good, ALLOWED_ORIGINS: 'http://localhost:5173,https://brij-ia.example.com', STRICT_PROD_CONFIG: '1' });
+r = boot({ ...good, ALLOWED_ORIGINS: 'http://localhost:5173,https://mabah.example.com', STRICT_PROD_CONFIG: '1' });
 check('http://localhost reste permis même en mode strict', r.code === 0, r.out.slice(0, 200));
 r = boot({ ...good, DATA_KEY: '' });
 check('DATA_KEY absent : avertissement, dérivation de JWT_SECRET comme avant', r.code === 0 && /DATA_KEY absent/.test(r.out), r.out.slice(0, 200));

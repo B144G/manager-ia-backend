@@ -1,11 +1,11 @@
 # Accord de sous-traitance (modèle)
 
-*Version 2026-11-16 — modèle à signer ou à accepter en ligne entre une organisation cliente (le « Responsable ») et Brij-IA (le « Sous-traitant »). Il fait partie des conditions d'utilisation.*
+*Version 2026-11-16 — modèle à signer ou à accepter en ligne entre une organisation cliente (le « Responsable ») et MABAH (le « Sous-traitant »). Il fait partie des conditions d'utilisation.*
 
 **Entre** [À COMPLÉTER : organisation cliente, adresse, représentant] **et** [À COMPLÉTER : dénomination de Brij-IA, adresse, représentant].
 
 ## 1. Objet et durée
-Le Sous-traitant traite des données à caractère personnel pour le compte du Responsable afin de fournir le service Brij-IA. L'accord dure aussi longtemps que le service est fourni.
+Le Sous-traitant traite des données à caractère personnel pour le compte du Responsable afin de fournir le service MABAH. L'accord dure aussi longtemps que le service est fourni.
 
 ## 2. Nature du traitement, données, personnes
 Hébergement, stockage, consultation, calcul, réponse automatique assistée par IA, envoi de messages. Catégories de données et de personnes : voir le registre des traitements (document 05, partie B). Le Responsable s'interdit de saisir des catégories particulières de données (santé, opinions, etc.) non nécessaires, et reste seul juge de la licéité de ses traitements.

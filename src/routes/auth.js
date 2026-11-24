@@ -78,8 +78,8 @@ async function sendSignupCode(row, name) {
   const now = Date.now();
   const sent = await sendMail({
     to: row.contact,
-    subject: 'Votre code de vérification Brij-IA',
-    text: `Bonjour ${name},\n\nVotre code de vérification : ${code}\n\nIl est valable 1 minute. Saisissez-le sur la page d'inscription pour terminer la création de votre compte.\n\nSi vous n'avez pas demandé ce code, ignorez ce message.\n\nL'équipe Brij-IA`,
+    subject: 'Votre code de vérification MABAH',
+    text: `Bonjour ${name},\n\nVotre code de vérification : ${code}\n\nIl est valable 1 minute. Saisissez-le sur la page d'inscription pour terminer la création de votre compte.\n\nSi vous n'avez pas demandé ce code, ignorez ce message.\n\nL'équipe MABAH`,
   });
   if (!sent) throw new HttpError(503, "L'envoi d'e-mails n'est pas disponible pour le moment. Réessayez plus tard.");
   return { codeHash: codeHash(row.contact, code), expires: new Date(now + CODE_MS).toISOString(), at: new Date(now).toISOString() };
@@ -253,7 +253,7 @@ router.post('/password/forgot', limits.make(15 * 60 * 1000, 6, 'Trop de demandes
   if (row) {
     if (row.contact.includes('@') && mailEnabled()) {
       const { link } = await makeResetLink(req, row.id, 'user');
-      mailUser(row.contact, 'Réinitialisation de votre mot de passe - Brij-IA', `Bonjour ${row.name},\n\nVous avez demandé à changer votre mot de passe. Ouvrez ce lien (valable 1 heure, une seule fois) :\n${link}\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez ce message : votre mot de passe reste inchangé.\n\nL'équipe Brij-IA`);
+      mailUser(row.contact, 'Réinitialisation de votre mot de passe - MABAH', `Bonjour ${row.name},\n\nVous avez demandé à changer votre mot de passe. Ouvrez ce lien (valable 1 heure, une seule fois) :\n${link}\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez ce message : votre mot de passe reste inchangé.\n\nL'équipe MABAH`);
     } else {
       notify('reinitialisation', `Demande de réinitialisation de mot de passe : ${row.name} (${row.contact}). Vérifiez la personne, puis générez un lien dans Administration > Utilisateurs.`);
     }
@@ -292,7 +292,7 @@ router.post('/me/password', requireUser, limits.make(15 * 60 * 1000, 10, 'Trop d
   await sec.audit('password_change', req, req.user.id, '');
   await accounts.recordEvent(req.user.id, 'mot_de_passe_change');
   await setUserCookie(res, req.user.id, req, { closeOthers: true }); // cet appareil reste connecté, les autres sont déconnectés immédiatement
-  if (req.user.contact.includes('@')) mailUser(req.user.contact, 'Votre mot de passe Brij-IA a été modifié', `Bonjour ${req.user.name},\n\nVotre mot de passe vient d'être modifié. Si ce n'est pas vous, réinitialisez-le tout de suite depuis la page de connexion (« Mot de passe oublié »).\n\nL'équipe Brij-IA`);
+  if (req.user.contact.includes('@')) mailUser(req.user.contact, 'Votre mot de passe MABAH a été modifié', `Bonjour ${req.user.name},\n\nVotre mot de passe vient d'être modifié. Si ce n'est pas vous, réinitialisez-le tout de suite depuis la page de connexion (« Mot de passe oublié »).\n\nL'équipe MABAH`);
   res.json({ ok: true });
 }));
 

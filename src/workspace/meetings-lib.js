@@ -289,7 +289,7 @@ function fold(line) { const out = []; let s = line; while (s.length > 73) { out.
 const icsDate = (ms) => new Date(ms).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
 /** Fichier .ics (invitation) : une entrée par réunion. Importable dans Google Agenda, Outlook, Apple. */
 function buildIcs(org, meetings, tz, { cancelled = false } = {}) {
-  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Brij-IA//Reunions//FR', 'CALSCALE:GREGORIAN', `METHOD:${cancelled ? 'CANCEL' : 'PUBLISH'}`];
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//MABAH//Reunions//FR', 'CALSCALE:GREGORIAN', `METHOD:${cancelled ? 'CANCEL' : 'PUBLISH'}`];
   for (const m of meetings) {
     const s = startMs(m, tz);
     const desc = [m.objective, m.link ? `Lien : ${m.link}` : ''].filter(Boolean).join('\n');

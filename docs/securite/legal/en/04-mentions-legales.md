@@ -25,7 +25,7 @@ The fields in square brackets must be completed before publication: they cannot 
 
 ## Intellectual property
 
-The Brij-IA name, the logo, the code, the texts and the graphic elements are protected. Any unauthorised reproduction is prohibited.
+The MABAH name, the logo, the code, the texts and the graphic elements are protected. Any unauthorised reproduction is prohibited.
 
 ## Personal data
 

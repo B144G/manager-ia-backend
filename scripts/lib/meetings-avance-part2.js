@@ -473,7 +473,7 @@ module.exports = async function part2(c) {
   check('70 participants acceptés avec la limite relevée ; salle de visioconférence créée automatiquement', r.status === 201, r.json);
   const big = r.json.id;
   r = await owner('GET', `${MT}/${big}`);
-  check('la salle est un lien Jitsi Meet non devinable (partage d’écran dans la salle)', r.json.meeting.linkKind === 'jitsi' && /^https:\/\/meet\.jit\.si\/BrijIA-\d+-[0-9a-f]{18}$/.test(r.json.meeting.link) && r.json.participants.length === 71, r.json.meeting);
+  check('la salle est un lien Jitsi Meet non devinable (partage d’écran dans la salle)', r.json.meeting.linkKind === 'jitsi' && /^https:\/\/meet\.jit\.si\/MABAH-\d+-[0-9a-f]{18}$/.test(r.json.meeting.link) && r.json.participants.length === 71, r.json.meeting);
   r = await owner('POST', `${MT}/${big}/room`, {});
   check('une réunion qui a déjà un lien ne reçoit pas une 2ᵉ salle sans remplacement explicite (409)', r.status === 409, r.status);
   r = await owner('POST', `${MT}/${big}/room`, { replace: true });

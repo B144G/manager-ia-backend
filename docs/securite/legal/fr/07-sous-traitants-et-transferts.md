@@ -16,7 +16,7 @@
 | **Opérateurs MTN / Orange** | Exécution du paiement | Numéro, montant | Cameroun | — |
 | **Google Fonts** (si les polices ne sont pas hébergées localement) | Affichage des polices | Adresse IP du visiteur | États-Unis | [À COMPLÉTER : héberger les polices pour supprimer ce transfert] |
 
-**Services choisis par l'organisation (non sous-traitants de Brij-IA) :** outils reliés par webhook ou clé d'API (Zapier, Make, n8n, serveur propre). L'organisation en est responsable.
+**Services choisis par l'organisation (non sous-traitants de MABAH) :** outils reliés par webhook ou clé d'API (Zapier, Make, n8n, serveur propre). L'organisation en est responsable.
 
 **Changements :** tout ajout ou remplacement est annoncé dans l'application avec [À COMPLÉTER : 30] jours de préavis.
 

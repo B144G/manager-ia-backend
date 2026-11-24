@@ -15,7 +15,7 @@ const Q = [
   { id: 'threshold', tier: 'later', ask: 'À partir de quel montant voulez-vous valider vous-même une dépense ou une remise ?', type: 'one', options: [['50000', 'Dès 50 000'], ['200000', 'Dès 200 000'], ['1000000', 'Dès 1 000 000'], ['never', 'Je ne valide pas']], ctx: 'Seuil de validation (dans la monnaie de l\'organisation)' },
   { id: 'vat', tier: 'later', ask: 'Votre entreprise facture-t-elle la TVA ?', type: 'one', options: [['yes', 'Oui'], ['no', 'Non'], ['unknown', 'Je ne sais pas']], ctx: 'TVA' },
   { id: 'payroll', tier: 'later', ask: 'Payez-vous des salaires chaque mois ?', type: 'one', options: [['yes', 'Oui'], ['no', 'Non']], ctx: 'Salaires' },
-  { id: 'goal', tier: 'later', ask: 'Qu\'attendez-vous d\'abord de Brij-IA ?', type: 'one', options: [['sell', 'Vendre davantage'], ['track', 'Mieux suivre mon activité'], ['time', 'Gagner du temps'], ['team', 'Mieux organiser mon équipe']], ctx: 'Objectif principal' },
+  { id: 'goal', tier: 'later', ask: 'Qu\'attendez-vous d\'abord de MABAH ?', type: 'one', options: [['sell', 'Vendre davantage'], ['track', 'Mieux suivre mon activité'], ['time', 'Gagner du temps'], ['team', 'Mieux organiser mon équipe']], ctx: 'Objectif principal' },
 ];
 const byId = Object.fromEntries(Q.map((q) => [q.id, q]));
 const labelOf = (q, v) => (Array.isArray(v) ? v : [v]).map((x) => (q.options.find((o) => o[0] === x) || [x, x])[1]).join(', ');

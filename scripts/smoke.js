@@ -152,7 +152,7 @@ async function main() {
     check('offre inconnue -> 400', r.status === 400);
     r = await user('POST', '/api/payments/initiate', { plan: 'unl_month', operator: 'mtn', phone: '670000010' });
     const pay = r.json;
-    check('initiate manuel', r.status === 200 && pay.mode === 'manual' && pay.status === 'pending' && pay.amountXAF === 80000 && /^(MI-[A-Z0-9]{6}|BRIJ-\d{6})$/.test(pay.reference) && pay.instructions.includes(pay.reference) && pay.instructions.includes('670000001') && pay.instructions.includes('Titulaire Test'), r.json);
+    check('initiate manuel', r.status === 200 && pay.mode === 'manual' && pay.status === 'pending' && pay.amountXAF === 80000 && /^(MI-[A-Z0-9]{6}|(?:MABAH|BRIJ)-\d{6})$/.test(pay.reference) && pay.instructions.includes(pay.reference) && pay.instructions.includes('670000001') && pay.instructions.includes('Titulaire Test'), r.json);
     r = await user('GET', '/api/payments/' + pay.reference);
     check('statut pending', r.status === 200 && r.json.status === 'pending' && r.json.plan === 'unl_month', r.json);
     r = await client(base)('POST', '/api/payments/confirm-manual', { reference: pay.reference, transactionId: 'XXXX', payerName: 'Test Payeur' });
@@ -215,9 +215,9 @@ async function main() {
     const types = (r.json.notifications || []).map((n) => n.type);
     check('notifications enregistrées', ['inscription', 'contact', 'paiement_a_valider', 'paiement_confirme'].every((t) => types.includes(t)), types);
     r = await anon('GET', '/admin');
-    check('page /admin servie', r.status === 200 && r.text.includes('Administration Brij-IA') && /content-security-policy/i.test([...r.headers.keys()].join(',')));
+    check('page /admin servie', r.status === 200 && r.text.includes('Administration MABAH') && /content-security-policy/i.test([...r.headers.keys()].join(',')));
     r = await anon('GET', '/admin/admin.js');
-    check('/admin/admin.js servi', r.status === 200 && r.text.includes('Brij-IA'));
+    check('/admin/admin.js servi', r.status === 200 && r.text.includes('MABAH'));
 
     console.log('Sécurité');
     r = await anon('POST', '/api/contact', { name: 'X Y', message: 'test' }, { Origin: 'https://site-pirate.example' });

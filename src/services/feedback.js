@@ -174,7 +174,7 @@ function notifyNew(id) {
     try {
       const r = await db.prepare('SELECT f.*, o.name AS org_name FROM fb_feedback f JOIN orgs o ON o.id = f.org_id WHERE f.id = ?').get(id);
       if (!r) return;
-      const subject = `[Brij-IA] Nouvel avis ${r.stars}/5 : ${oneLineClean(KIND_LABEL[r.kind] + ' · ' + moduleTitle(r.module), 90)}`;
+      const subject = `[MABAH] Nouvel avis ${r.stars}/5 : ${oneLineClean(KIND_LABEL[r.kind] + ' · ' + moduleTitle(r.module), 90)}`;
       const text = mailText(r, whoOf(r, r.org_name));
       const sent = [];
       for (const name of channels.keys()) {
@@ -215,7 +215,7 @@ async function runDigest() {
   const yesterday = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
   const d = await digest(yesterday);
   if (!d.count || !channelOn('email')) return false;
-  try { await channels.get('email').send(`[Brij-IA] Résumé des avis du ${yesterday} : ${d.count} avis`, d.text); return true; } catch (e) { log.warn('Résumé quotidien des avis : envoi impossible :', oneLine(e.message, 160)); return false; }
+  try { await channels.get('email').send(`[MABAH] Résumé des avis du ${yesterday} : ${d.count} avis`, d.text); return true; } catch (e) { log.warn('Résumé quotidien des avis : envoi impossible :', oneLine(e.message, 160)); return false; }
 }
 
 // ---------- Droits des personnes ----------

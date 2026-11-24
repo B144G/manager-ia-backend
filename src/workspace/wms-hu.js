@@ -268,7 +268,7 @@ const { code128 } = require('../services/code128');
 function labelPdf({ code, typeLabel, org, location, lines, created }) {
   return new Promise((resolve, reject) => {
     const W2 = 283; const H2 = 425; // 100 × 150 mm
-    const doc = new PDFDocument({ size: [W2, H2], margin: 14, info: { Title: code, Creator: 'Brij-IA' } });
+    const doc = new PDFDocument({ size: [W2, H2], margin: 14, info: { Title: code, Creator: 'MABAH' } });
     const chunks = []; doc.on('data', (c) => chunks.push(c)); doc.on('end', () => resolve(Buffer.concat(chunks))); doc.on('error', reject);
     const clean = require('../services/pdf').clean;
     doc.font('Helvetica-Bold').fontSize(16).text(clean(`${typeLabel} ${code}`), 14, 14, { width: W2 - 28 });

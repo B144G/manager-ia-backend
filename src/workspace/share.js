@@ -4,7 +4,7 @@
 // chaque destinataire est prévenu dans l'application (et par e-mail si son contact en est un) et ouvre le document après connexion : pas de lien public.
 // Les bulletins de paie ne vont qu'à leur salarié (et à l'administrateur qui les envoie), jamais à d'autres destinataires.
 const express = require('express');
-const BRN = (req) => require('../services/brand-lib').pn(req.org); // nom du produit choisi par l'entreprise (défaut : Brij-IA)
+const BRN = (req) => require('../services/brand-lib').pn(req.org); // nom du produit choisi par l'entreprise (défaut : MABAH)
 const { db, nowISO } = require('../db');
 const A = require('./access');
 const W = require('./w3');

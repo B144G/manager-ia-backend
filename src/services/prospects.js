@@ -10,7 +10,7 @@ const { sendMail } = require('./notify');
 
 const STATUSES = ['new', 'contacted', 'trial', 'client', 'lost'];
 const STAGE_DAYS = [1, 3, 7]; // jours après la demande
-const siteUrl = () => (config.siteUrl || 'https://brij-ia.vercel.app').replace(/\/+$/, '');
+const siteUrl = () => (config.siteUrl || require('./product').publicUrl).replace(/\/+$/, '');
 const apiUrl = () => (process.env.PUBLIC_API_URL || process.env.RENDER_EXTERNAL_URL || 'https://manager-ia-backend.onrender.com').replace(/\/+$/, '');
 const PHONE = '+237 653 62 13 88';
 
@@ -25,12 +25,12 @@ function splitContact(contact) {
 function firstFollowAt(from = new Date()) { return addDays(from, STAGE_DAYS[0]).toISOString(); }
 
 const MAILS = [
-  (n) => ({ subject: 'Brij-IA : bien démarrer en 5 minutes', text: `Bonjour ${n},\n\nMerci de l'intérêt que vous portez à Brij-IA. Pour essayer sans rien payer :\n\n1. Créez votre compte (gratuit) : ${siteUrl()}\n2. Ouvrez « Clients et ventes » et ajoutez un premier client.\n3. Créez une facture : le bouton « Guide » (point d'interrogation jaune) vous montre chaque étape avec des flèches.\n\nUne question ? Répondez à cet e-mail ou écrivez-nous sur WhatsApp au ${PHONE}.\n\nL'équipe Brij-IA` }),
-  (n) => ({ subject: 'Brij-IA : ce que vous pouvez faire dès aujourd\'hui', text: `Bonjour ${n},\n\nQuelques exemples de ce que Brij-IA prend en charge pour une petite entreprise :\n\n- vos factures et vos paiements reçus, avec les relances préparées pour les impayés ;\n- votre stock, avec une alerte avant la rupture ;\n- votre budget du mois, par catégorie ;\n- vos employés, leurs congés et leurs bulletins de paie (documents de travail à faire valider par un expert).\n\nEssayez gratuitement : ${siteUrl()}\n\nL'équipe Brij-IA` }),
-  (n) => ({ subject: 'Brij-IA : on vous aide à démarrer ?', text: `Bonjour ${n},\n\nSi vous n'avez pas encore eu le temps d'essayer Brij-IA, nous pouvons le faire ensemble : une démonstration de 10 minutes, sur WhatsApp ou par appel, adaptée à votre activité.\n\nÉcrivez-nous au ${PHONE}, ou répondez simplement à cet e-mail.\n\nC'est notre dernier message automatique. Merci pour votre confiance.\nL'équipe Brij-IA` }),
+  (n) => ({ subject: 'MABAH : bien démarrer en 5 minutes', text: `Bonjour ${n},\n\nMerci de l'intérêt que vous portez à MABAH. Pour essayer sans rien payer :\n\n1. Créez votre compte (gratuit) : ${siteUrl()}\n2. Ouvrez « Clients et ventes » et ajoutez un premier client.\n3. Créez une facture : le bouton « Guide » (point d'interrogation jaune) vous montre chaque étape avec des flèches.\n\nUne question ? Répondez à cet e-mail ou écrivez-nous sur WhatsApp au ${PHONE}.\n\nL'équipe MABAH` }),
+  (n) => ({ subject: 'MABAH : ce que vous pouvez faire dès aujourd\'hui', text: `Bonjour ${n},\n\nQuelques exemples de ce que MABAH prend en charge pour une petite entreprise :\n\n- vos factures et vos paiements reçus, avec les relances préparées pour les impayés ;\n- votre stock, avec une alerte avant la rupture ;\n- votre budget du mois, par catégorie ;\n- vos employés, leurs congés et leurs bulletins de paie (documents de travail à faire valider par un expert).\n\nEssayez gratuitement : ${siteUrl()}\n\nL'équipe MABAH` }),
+  (n) => ({ subject: 'MABAH : on vous aide à démarrer ?', text: `Bonjour ${n},\n\nSi vous n'avez pas encore eu le temps d'essayer MABAH, nous pouvons le faire ensemble : une démonstration de 10 minutes, sur WhatsApp ou par appel, adaptée à votre activité.\n\nÉcrivez-nous au ${PHONE}, ou répondez simplement à cet e-mail.\n\nC'est notre dernier message automatique. Merci pour votre confiance.\nL'équipe MABAH` }),
 ];
 
-const unsubText = (token) => `\n\n—\nVous recevez ce message car vous avez demandé à être contacté(e) par Brij-IA. Pour ne plus recevoir nos e-mails : ${apiUrl()}/api/unsubscribe?t=${token}`;
+const unsubText = (token) => `\n\n—\nVous recevez ce message car vous avez demandé à être contacté(e) par MABAH. Pour ne plus recevoir nos e-mails : ${apiUrl()}/api/unsubscribe?t=${token}`;
 
 /** Envoie les relances arrivées à échéance. Appelé chaque heure ; 20 e-mails au plus par passage (limite d'envoi du fournisseur). */
 async function sendDueFollowups(limit = 20) {

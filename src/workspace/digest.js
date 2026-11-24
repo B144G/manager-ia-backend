@@ -10,7 +10,7 @@ const crypto = require('crypto');
 const express = require('express');
 const config = require('../config');
 const BR = require('../services/brand-lib');
-const PN = (org) => BR.sender(BR.peek(org)) || (org && org.name) || require('../services/product').name; // nom du produit choisi par l'entreprise (défaut : Brij-IA) ; la marque est chargée en amont (of)
+const PN = (org) => BR.sender(BR.peek(org)) || (org && org.name) || require('../services/product').name; // nom du produit choisi par l'entreprise (défaut : MABAH) ; la marque est chargée en amont (of)
 const { db, nowISO } = require('../db');
 const limits = require('../middleware/limits');
 const A = require('./access');
@@ -315,7 +315,7 @@ pub.get('/digest-unsub/:token', limits.make(60 * 1000, 30, 'Trop de requêtes.')
   if (!row) return page('<p>Lien invalide ou expiré.</p>', 404);
   await db.prepare('UPDATE digest_subs SET morning = 0, urgent = 0, unsub_at = ?, updated_at = ? WHERE id = ?').run(nowISO(), nowISO(), row.id);
   await A.logActivity(Number(o), Number(u), 'alerts', 'Résumé et alertes : désabonnement par le lien de l\'e-mail');
-  return page(`<h1 style="font-size:20px">C'est fait</h1><p>Vous ne recevrez plus le résumé du matin ni les alertes de ${esc(row.org)}. Vous pouvez vous réabonner à tout moment depuis Brij-IA, module Alertes.</p>`, 200);
+  return page(`<h1 style="font-size:20px">C'est fait</h1><p>Vous ne recevrez plus le résumé du matin ni les alertes de ${esc(row.org)}. Vous pouvez vous réabonner à tout moment depuis MABAH, module Alertes.</p>`, 200);
 });
 
 module.exports = { router, pub, tick, composeMorning, composeUrgent, localClock };

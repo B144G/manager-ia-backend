@@ -1,6 +1,6 @@
 # Information Security Policy
 
-*Version 2026-11-16. This document describes what Brij-IA implements and verifies through automated tests; it does not constitute a certification. An independent penetration test remains to be carried out.*
+*Version 2026-11-16. This document describes what MABAH implements and verifies through automated tests; it does not constitute a certification. An independent penetration test remains to be carried out.*
 
 ## 1. Principles
 Least privilege; defence in depth; security by default; verifiable logging; transparency (incidents notified); continuous improvement.

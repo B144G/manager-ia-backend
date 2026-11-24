@@ -2,7 +2,7 @@
 // Marques des entreprises : ce que chaque entreprise a personnalisé (nom affiché, assistant, couleur, mode), lecture seule ; tentatives d'usurpation refusées.
 (function () {
   const A = window.A, { h, fmtN, fmtDate, card, cardFlush, empty, table, api, phead } = A;
-  const MODE = { brij: 'Brij-IA (affichage d’origine)', powered: 'Nom de l’entreprise + « Propulsé par Brij-IA »', white: 'Marque blanche' };
+  const MODE = { brij: 'MABAH (affichage d’origine)', powered: 'Nom de l’entreprise + « Propulsé par MABAH »', white: 'Marque blanche' };
 
   async function brandsView(main) {
     main.append(phead('Marques des entreprises', 'Le nom, l’assistant et la couleur que chaque entreprise a choisis. Lecture seule : sert à repérer une usurpation ou un abus.'));

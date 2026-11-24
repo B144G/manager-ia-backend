@@ -1,4 +1,4 @@
-# Audit de sécurité de Brij-IA — serveur (Node/Express, PostgreSQL)
+# Audit de sécurité de MABAH — serveur (Node/Express, PostgreSQL)
 
 Date : 16 novembre 2026 · Branche : `claude/securite-784605` · Auteur : revue interne assistée par outils (lecture du code, tests automatiques, `npm audit`).
 
@@ -74,7 +74,7 @@ Gravité : **Critique** (compromission directe), **Élevée**, **Moyenne**, **Fa
 
 **M11 — Suppression d'organisation incomplète.** `src/workspace/index.js:134` : 206 tables portent `org_id`, 6 sans liaison en cascade (`tmp_files`, `broadcast_sends`, `chat_media`, `decision_steps`, `acc_lines`, `audit_trail`). Des fichiers générés (voix) et d'autres lignes pouvaient subsister après « suppression ». *Correction :* effacement explicite des tables sans cascade dans la même transaction (le journal d'audit, volontairement, est conservé). **Corrigé** — test : une organisation avec client, employé et fichier temporaire est supprimée ; **0 ligne** subsiste dans les 206 tables.
 
-**M12 — Droits des personnes non outillés.** Ni export, ni demande de suppression, ni consentements datés, ni durées de conservation paramétrables, ni registre des accès aux données sensibles. *Correction :* module `src/security/privacy.js` et routes `/api/privacy/*` (voir `docs/securite/legal/`). **Implémenté et testé** (`test-security-privacy.js`, 36 contrôles). *Reste :* pas d'interface pour qu'une personne **cliente d'une organisation** (et non utilisatrice de Brij-IA) exerce ses droits : elle s'adresse à l'organisation (responsable) — fonction à prévoir (O4).
+**M12 — Droits des personnes non outillés.** Ni export, ni demande de suppression, ni consentements datés, ni durées de conservation paramétrables, ni registre des accès aux données sensibles. *Correction :* module `src/security/privacy.js` et routes `/api/privacy/*` (voir `docs/securite/legal/`). **Implémenté et testé** (`test-security-privacy.js`, 36 contrôles). *Reste :* pas d'interface pour qu'une personne **cliente d'une organisation** (et non utilisatrice de MABAH) exerce ses droits : elle s'adresse à l'organisation (responsable) — fonction à prévoir (O4).
 
 ### Faible
 

@@ -1,10 +1,10 @@
 # Registre des traitements
 
-*Version 2026-11-16 — registre tenu par Brij-IA en tant que **responsable de traitement** (partie A) et en tant que **sous-traitant** pour le compte de ses clients (partie B).*
+*Version 2026-11-16 — registre tenu par MABAH en tant que **responsable de traitement** (partie A) et en tant que **sous-traitant** pour le compte de ses clients (partie B).*
 
 Responsable : [À COMPLÉTER : dénomination, adresse] · Référent protection des données : [À COMPLÉTER].
 
-## A. Traitements dont Brij-IA est responsable
+## A. Traitements dont MABAH est responsable
 
 | N° | Traitement | Finalité | Personnes | Données | Base | Destinataires | Transferts | Durée | Sécurité |
 |---|---|---|---|---|---|---|---|---|---|
@@ -16,9 +16,9 @@ Responsable : [À COMPLÉTER : dénomination, adresse] · Référent protection 
 | A6 | Contact et essais | Répondre aux demandes | Prospects | Nom, contact, message | Mesures précontractuelles | E-mail | Voir doc 07 | 3 ans | — |
 | A7 | Mesure d'audience | Statistiques de visites | Visiteurs (si consentement) | Page, origine, appareil — sans IP ni identifiant | Consentement | — | — | 13 mois | Agrégation |
 
-## B. Traitements pour le compte des organisations (Brij-IA = sous-traitant)
+## B. Traitements pour le compte des organisations (MABAH = sous-traitant)
 
-L'organisation (responsable) décide des finalités ; Brij-IA fournit l'outil. Catégories de données et personnes concernées :
+L'organisation (responsable) décide des finalités ; MABAH fournit l'outil. Catégories de données et personnes concernées :
 
 | N° | Module | Personnes | Données (exemples) | Sensibilité | Protection particulière |
 |---|---|---|---|---|---|

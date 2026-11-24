@@ -25,7 +25,7 @@ async function noteLogin(req, userId) {
     const u = await db.prepare('SELECT name, contact FROM users WHERE id = ?').get(userId);
     const accounts = require('../services/accounts');
     await accounts.addNotice(userId, 'connexion_inhabituelle', { title: 'Nouvel appareil connecté', text: `Une connexion à votre compte a eu lieu depuis un appareil jamais utilisé (${device}). Si ce n'est pas vous, changez votre mot de passe et fermez les appareils inconnus dans Sécurité du compte.` }).catch(() => {});
-    if (u && u.contact.includes('@')) require('../services/notify').mailUser(u.contact, 'Nouvelle connexion à votre compte Brij-IA', `Bonjour ${u.name},\n\nUne connexion à votre compte vient d'avoir lieu depuis un appareil que nous ne connaissions pas : ${device}, le ${now.slice(0, 16).replace('T', ' ')} (UTC).\n\nSi c'est vous, rien à faire. Sinon, changez votre mot de passe tout de suite (« Mot de passe oublié » sur la page de connexion) et fermez les appareils inconnus dans Sécurité du compte.\n\nL'équipe Brij-IA`);
+    if (u && u.contact.includes('@')) require('../services/notify').mailUser(u.contact, 'Nouvelle connexion à votre compte MABAH', `Bonjour ${u.name},\n\nUne connexion à votre compte vient d'avoir lieu depuis un appareil que nous ne connaissions pas : ${device}, le ${now.slice(0, 16).replace('T', ' ')} (UTC).\n\nSi c'est vous, rien à faire. Sinon, changez votre mot de passe tout de suite (« Mot de passe oublié » sur la page de connexion) et fermez les appareils inconnus dans Sécurité du compte.\n\nL'équipe MABAH`);
     return true;
   } catch (e) { log.warn('Appareils connus : ' + String(e.message).slice(0, 100)); return false; }
 }

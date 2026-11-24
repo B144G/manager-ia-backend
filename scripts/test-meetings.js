@@ -255,7 +255,7 @@ run('Réunions : droits, convocation, compte rendu, actions → tâches, IA', as
 }, {
   async setup() {
     const a = await fakeAiServer(); const s = await fakeSmtp(box);
-    return { a, s, env: { ANTHROPIC_API_KEY: 'cle-de-test', ANTHROPIC_BASE_URL: `http://127.0.0.1:${a.port}`, SMTP_HOST: '127.0.0.1', SMTP_PORT: String(s.port), SMTP_FROM: 'Brij-IA <noreply@manager-ia.test>', WS_AI_FREE: '500', AI_PER_MINUTE: '500', MAIL_DAY_FREE: '500', SITE_URL: 'https://app.exemple.test' } };
+    return { a, s, env: { ANTHROPIC_API_KEY: 'cle-de-test', ANTHROPIC_BASE_URL: `http://127.0.0.1:${a.port}`, SMTP_HOST: '127.0.0.1', SMTP_PORT: String(s.port), SMTP_FROM: 'MABAH <noreply@manager-ia.test>', WS_AI_FREE: '500', AI_PER_MINUTE: '500', MAIL_DAY_FREE: '500', SITE_URL: 'https://app.exemple.test' } };
   },
   async teardown(x) { x.a.srv.close(); x.s.srv.close(); },
 });

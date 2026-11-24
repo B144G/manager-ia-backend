@@ -90,7 +90,7 @@ async function main() {
   const pgt = await startTestPg();
   const blank = ['ALLOWED_ORIGINS', 'COOKIE_SAMESITE', 'COOKIE_SECURE', 'SMTP_HOST', 'WHATSAPP_PHONE_ID', 'WHATSAPP_TOKEN', 'CAMPAY_USERNAME', 'CAMPAY_PASSWORD', 'BUSINESS_FILE', 'KNOWLEDGE_DIR', 'BREVO_API_KEY', 'MAIL_API', 'MAIL_API_KEY'];
   const baseEnv = { ...process.env, ...Object.fromEntries(blank.map((k) => [k, ''])), NODE_ENV: 'test', JWT_SECRET: 'secret-de-test-assez-long-123456', DATABASE_URL: pgt.url, META_GRAPH_URL: `http://127.0.0.1:${fport}/graph`,
-    ADMIN_USERNAME: 'admin-test', ADMIN_PASSWORD: 'mot-de-passe-admin-test', TRUST_PROXY: '0', SIGNUP_VERIFY: 'off', SMTP_FROM: 'Brij-IA <noreply@manager-ia.test>', SITE_URL: 'https://app.exemple.test',
+    ADMIN_USERNAME: 'admin-test', ADMIN_PASSWORD: 'mot-de-passe-admin-test', TRUST_PROXY: '0', SIGNUP_VERIFY: 'off', SMTP_FROM: 'MABAH <noreply@manager-ia.test>', SITE_URL: 'https://app.exemple.test',
     DIGEST_TICK_MS: '300', DIGEST_URGENT_MS: '300', MAIL_DAY_FREE: '6' };
   let app = await startApp({ ...baseEnv, BREVO_API_KEY: 'cle-de-test', MAIL_API_URL: `http://127.0.0.1:${fport}/v3` });
   let rawDb; let app2 = null;
@@ -140,7 +140,7 @@ async function main() {
     const m1 = fake.seen.mail[fake.seen.mail.length - 1];
     check('test : envoi par e-mail, statut « Envoyé par e-mail », aucun message WhatsApp', r.status === 200 && r.json.status === 'email_sent' && r.json.channel === 'email' && /Envoyé par e-mail/.test(r.json.statusText) && fake.seen.wa.length === 0, r.json);
     check('destinataire = adresse du compte ; sujet avec le nom de l\'organisation', m1 && m1.to[0].email === awaMail && /Boutique Awa/.test(m1.subject) && /Test/.test(m1.subject), m1 && [m1.to, m1.subject]);
-    check('texte : salutation, impayés, tâches, « Ouvrez Brij-IA pour le détail », lien vers l\'application', /Bonjour Awa/.test(m1.textContent) && /Impayés : 1 facture/.test(m1.textContent) && /Tâches en retard : 1/.test(m1.textContent) && /Ouvrez Brij-IA pour le détail/.test(m1.textContent) && m1.textContent.includes('https://app.exemple.test') && /\[Test\]/.test(m1.textContent) && !/undefined|NaN/.test(m1.textContent), m1.textContent);
+    check('texte : salutation, impayés, tâches, « Ouvrez MABAH pour le détail », lien vers l\'application', /Bonjour Awa/.test(m1.textContent) && /Impayés : 1 facture/.test(m1.textContent) && /Tâches en retard : 1/.test(m1.textContent) && /Ouvrez MABAH pour le détail/.test(m1.textContent) && m1.textContent.includes('https://app.exemple.test') && /\[Test\]/.test(m1.textContent) && !/undefined|NaN/.test(m1.textContent), m1.textContent);
     check('HTML simple : nom de l\'organisation, liste, lien vers l\'application', m1.htmlContent && /<li>/.test(m1.htmlContent) && /Boutique Awa/.test(m1.htmlContent) && /href="https:\/\/app\.exemple\.test"/.test(m1.htmlContent), m1.htmlContent);
     const link = (/(https?:\/\/[^\s"]+\/digest-unsub\/[\w.]+)/.exec(m1.textContent) || [])[1];
     check('désinscription en un clic : lien signé dans le texte, le HTML et l\'en-tête List-Unsubscribe', link && m1.htmlContent.includes(link) && m1.headers && m1.headers['List-Unsubscribe'] === `<${link}>`, link);
@@ -170,7 +170,7 @@ async function main() {
     await owner('PUT', `${D}/me`, { morning: true, urgent: true, hour: hm(nowLocal() - 1) });
     const gotU = await until(async () => fake.seen.mail.slice(n1).some((x) => /Alerte urgente/.test(x.subject)));
     const al = fake.seen.mail.slice(n1).find((x) => /Alerte urgente/.test(x.subject));
-    check('alerte urgente envoyée par e-mail (rupture de stock, facture très en retard)', gotU && /Rupture de stock : Savon noir/.test(al.textContent) && /FA-9001 .* impayée depuis 50 jours/.test(al.textContent) && /Ouvrez Brij-IA/.test(al.textContent) && al.htmlContent.includes('<li>') && /Boutique Awa/.test(al.subject), al && al.textContent);
+    check('alerte urgente envoyée par e-mail (rupture de stock, facture très en retard)', gotU && /Rupture de stock : Savon noir/.test(al.textContent) && /FA-9001 .* impayée depuis 50 jours/.test(al.textContent) && /Ouvrez MABAH/.test(al.textContent) && al.htmlContent.includes('<li>') && /Boutique Awa/.test(al.subject), al && al.textContent);
     await sleep(2000);
     check('alerte urgente : pas de répétition pour les mêmes événements', fake.seen.mail.slice(n1).filter((x) => /Alerte urgente/.test(x.subject)).length === 1);
     check('aucun message WhatsApp pendant tout ce temps', fake.seen.wa.length === 0);

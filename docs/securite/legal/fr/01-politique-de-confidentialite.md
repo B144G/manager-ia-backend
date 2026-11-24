@@ -2,17 +2,17 @@
 
 *Version 2026-11-16 · Dernière mise à jour : 16 novembre 2026*
 
-Cette politique explique quelles données Brij-IA collecte, pourquoi, combien de temps nous les gardons, à qui elles sont confiées et comment exercer vos droits. Elle s'appuie sur les principes du Règlement général sur la protection des données (RGPD) et sur le droit camerounais applicable, notamment la loi n° 2010/012 du 21 décembre 2010 relative à la cybersécurité et à la cybercriminalité et la loi camerounaise relative à la protection des données à caractère personnel adoptée fin 2024.
+Cette politique explique quelles données MABAH collecte, pourquoi, combien de temps nous les gardons, à qui elles sont confiées et comment exercer vos droits. Elle s'appuie sur les principes du Règlement général sur la protection des données (RGPD) et sur le droit camerounais applicable, notamment la loi n° 2010/012 du 21 décembre 2010 relative à la cybersécurité et à la cybercriminalité et la loi camerounaise relative à la protection des données à caractère personnel adoptée fin 2024.
 
 ## 1. Qui est responsable ?
 
-**Brij-IA** — [À COMPLÉTER : dénomination sociale, forme juridique, adresse du siège, RCCM, NIU].
+**MABAH** — [À COMPLÉTER : dénomination sociale, forme juridique, adresse du siège, RCCM, NIU].
 Contact « vie privée » : [À COMPLÉTER : adresse e-mail dédiée] · Téléphone/WhatsApp : [À COMPLÉTER].
 
 Deux situations à bien distinguer :
 
-- **Votre compte Brij-IA** (nom, contact, mot de passe, abonnement, journal de sécurité) : Brij-IA est **responsable du traitement**.
-- **Les données que votre organisation saisit ou reçoit dans Brij-IA** (clients, employés, fiches de paie, factures, conversations WhatsApp avec vos clients, etc.) : **votre organisation** en est la responsable ; Brij-IA agit comme **sous-traitant** et ne les utilise que pour fournir le service, selon l'accord de sous-traitance (document 06). Si vous êtes un client ou un employé d'une organisation qui utilise Brij-IA, adressez vos demandes à cette organisation.
+- **Votre compte MABAH** (nom, contact, mot de passe, abonnement, journal de sécurité) : MABAH est **responsable du traitement**.
+- **Les données que votre organisation saisit ou reçoit dans MABAH** (clients, employés, fiches de paie, factures, conversations WhatsApp avec vos clients, etc.) : **votre organisation** en est la responsable ; MABAH agit comme **sous-traitant** et ne les utilise que pour fournir le service, selon l'accord de sous-traitance (document 06). Si vous êtes un client ou un employé d'une organisation qui utilise MABAH, adressez vos demandes à cette organisation.
 
 ## 2. Quelles données, pourquoi, sur quelle base, combien de temps ?
 
@@ -32,13 +32,13 @@ Deux situations à bien distinguer :
 
 ## 3. Intelligence artificielle
 
-L'assistant de Brij-IA envoie à un **fournisseur d'IA** (voir document 07) les messages que vous écrivez et, pour répondre avec précision, un résumé limité des données de **votre** organisation (filtré selon votre rôle et votre antenne). Les données d'une organisation ne sont jamais mélangées à celles d'une autre.
-Brij-IA n'utilise pas vos données pour entraîner des modèles. Le fournisseur d'IA applique ses propres conditions de traitement : [À COMPLÉTER : rappeler les engagements du fournisseur retenu].
+L'assistant MABAH IA envoie à un **fournisseur d'IA** (voir document 07) les messages que vous écrivez et, pour répondre avec précision, un résumé limité des données de **votre** organisation (filtré selon votre rôle et votre antenne). Les données d'une organisation ne sont jamais mélangées à celles d'une autre.
+MABAH n'utilise pas vos données pour entraîner des modèles. Le fournisseur d'IA applique ses propres conditions de traitement : [À COMPLÉTER : rappeler les engagements du fournisseur retenu].
 L'IA **propose** ; les actions sensibles (prix, commandes, paiements, écritures comptables, messages sortants) restent soumises à la validation d'une personne. Une réponse de l'IA peut être inexacte : vérifiez-la avant de décider.
 
 ## 4. WhatsApp, Messenger, Instagram
 
-Si votre organisation relie un canal de messagerie, les messages de ses clients transitent par Brij-IA (et par Meta). Deux modes existent : l'**API officielle** de Meta, et la liaison **par code QR** (« appareils connectés »), qui est une méthode non officielle : ses clés d'accès sont chiffrées dans notre base, et WhatsApp peut restreindre un numéro qui l'utilise. L'organisation est responsable d'informer ses propres clients du traitement de leurs messages.
+Si votre organisation relie un canal de messagerie, les messages de ses clients transitent par MABAH (et par Meta). Deux modes existent : l'**API officielle** de Meta, et la liaison **par code QR** (« appareils connectés »), qui est une méthode non officielle : ses clés d'accès sont chiffrées dans notre base, et WhatsApp peut restreindre un numéro qui l'utilise. L'organisation est responsable d'informer ses propres clients du traitement de leurs messages.
 
 ## 5. À qui sont confiées vos données ?
 
@@ -60,7 +60,7 @@ Si vous estimez que vos droits ne sont pas respectés, vous pouvez saisir l'auto
 
 ## 9. Enfants
 
-Brij-IA s'adresse à des professionnels et n'est pas destiné aux personnes de moins de [À COMPLÉTER : 18] ans.
+MABAH s'adresse à des professionnels et n'est pas destiné aux personnes de moins de [À COMPLÉTER : 18] ans.
 
 ## 10. Cookies
 

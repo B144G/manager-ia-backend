@@ -168,8 +168,8 @@ async function month(ctx, h, ym, opts = {}) {
   await tpl(h, `Frais bancaires ${ym}`, 'bank_fees', h.on(ym, 28), 12500, { piece: `AFB-FRAIS-${ym}`, label: `Frais de tenue de compte et commissions ${ym}` });
   await tpl(h, `Frais mobile money ${ym}`, 'momo_fees', h.on(ym, 28), 4500, { piece: `MOMO-FRAIS-${ym}`, label: `Frais de transfert MoMo ${ym}` }); F.momo -= 4500;
   F.cash -= 250000; // loyer de Yaoundé (écriture récurrente)
-  // Salaires avant la mise en place de la paie dans Brij-IA : saisie guidée
-  if (opts.salary === 'template') await tpl(h, `Salaires ${ym} (saisie guidée, avant la paie Brij-IA)`, 'salary_bank', h.on(ym, 28), 2950000, { options: { charges: 545000 }, piece: `SAL-${ym}`, label: `Salaires nets ${ym} (virement groupé)` });
+  // Salaires avant la mise en place de la paie dans MABAH : saisie guidée
+  if (opts.salary === 'template') await tpl(h, `Salaires ${ym} (saisie guidée, avant la paie MABAH)`, 'salary_bank', h.on(ym, 28), 2950000, { options: { charges: 545000 }, piece: `SAL-${ym}`, label: `Salaires nets ${ym} (virement groupé)` });
   // TVA et cotisations du mois précédent
   await vatSettle(ctx, h, prev); await vatPay(ctx, h, prev);
   await socialPay(ctx, h, prev);

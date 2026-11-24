@@ -1,5 +1,5 @@
 'use strict';
-// Marque de l'entreprise : noyau commun (sans route). Valeurs par défaut = comportement historique de Brij-IA ;
+// Marque de l'entreprise : noyau commun (sans route). Valeurs par défaut = comportement historique de MABAH ;
 // tant qu'une entreprise n'a rien personnalisé, `effective()` renvoie exactement ces valeurs et rien ne change.
 // Contexte de requête (AsyncLocalStorage) : sous /orgs/:orgId, tout code (PDF, e-mails, invites de l'IA…) peut lire la marque de l'entreprise courante
 // sans que chaque appel ait à la transmettre ; en dehors d'une requête, appelez `of(org)` explicitement.
@@ -10,7 +10,7 @@ const { HttpError } = require('../util');
 const PRODUCT = require('./product');
 const PLATFORM = PRODUCT.name; // nom du produit : défini dans services/product.js
 const DEFAULT_COLOR = '#4f46e5';
-const MODES = ['brij', 'powered', 'white']; // brij : « Brij-IA » comme aujourd'hui · powered : nom de l'entreprise + « Propulsé par Brij-IA » discret · white : marque blanche
+const MODES = ['brij', 'powered', 'white']; // brij : « MABAH » comme aujourd'hui · powered : nom de l'entreprise + « Propulsé par MABAH » discret · white : marque blanche
 const THEMES = ['', 'light', 'dark'];
 const LANGS = ['fr', 'en', 'de', 'es'];
 const NEVER_HIDE = ['dashboard', 'team', 'billing']; // l'écran de personnalisation et l'accueil restent toujours accessibles
@@ -72,7 +72,7 @@ function sanitize(input, { moduleIds = [] } = {}) {
   out.assistantName = name(b.assistantName, "Nom de l'assistant IA", 40, false, 3);
   out.mode = b.mode === undefined || b.mode === '' ? 'brij' : b.mode;
   if (!MODES.includes(out.mode)) throw new HttpError(400, 'Mode de marque inconnu.');
-  if (out.productName && out.mode === 'brij') out.mode = 'powered'; // un nom personnalisé remplace « Brij-IA » : on garde alors la mention discrète « Propulsé par »
+  if (out.productName && out.mode === 'brij') out.mode = 'powered'; // un nom personnalisé remplace « MABAH » : on garde alors la mention discrète « Propulsé par »
   if (!out.productName && out.mode !== 'brij' && out.mode !== 'white') out.mode = 'brij';
   if (b.color) {
     if (!hexRgb(b.color)) throw new HttpError(400, 'Couleur invalide : utilisez le format #rrggbb.');
@@ -156,15 +156,15 @@ function effectiveFrom(org, row) {
 }
 /** Marque connue sans attendre (après un `of(org)` : tâches d'arrière-plan). Inconnue : affichage d'origine. */
 const peek = (org) => effectiveFrom(org, org ? last.get(Number(org.id)) || null : null);
-/** Mention de crédit d'un document : « Brij-IA » par défaut ; « Nom, propulsé par Brij-IA » ; ou le nom seul (rien en marque blanche sans nom). */
+/** Mention de crédit d'un document : « MABAH » par défaut ; « Nom, propulsé par MABAH » ; ou le nom seul (rien en marque blanche sans nom). */
 const credit = (b) => (!b || b.mode === 'brij' ? PLATFORM : b.mode === 'powered' ? `${b.name}, propulsé par ${PLATFORM}` : (b.productName || ''));
 /** Marque de cette entreprise à l'instant T : celle de la requête en cours si c'est la même entreprise, sinon la dernière connue. */
 const now = (org) => { const st = als.getStore(); return st && org && Number(st.orgId) === Number(org.id) ? st.brand : peek(org); };
 /** Nom du produit à citer dans un message sortant de cette entreprise (jamais vide : le nom de l'entreprise en marque blanche). */
 const pn = (org) => sender(now(org)) || (org && org.name) || PLATFORM;
-/** Nom du produit à citer dans un message sortant (e-mail, WhatsApp, PDF) : « Brij-IA » par défaut, le nom choisi sinon ; vide en marque blanche sans nom. */
+/** Nom du produit à citer dans un message sortant (e-mail, WhatsApp, PDF) : « MABAH » par défaut, le nom choisi sinon ; vide en marque blanche sans nom. */
 const sender = (b) => (b.mode === 'white' && !b.productName ? '' : b.name);
-/** Mention « envoyé avec … » : aujourd'hui « Message envoyé avec Brij-IA » ; personnalisée : le nom choisi + « propulsé par Brij-IA » si l'option est active ; rien en marque blanche. */
+/** Mention « envoyé avec … » : aujourd'hui « Message envoyé avec MABAH » ; personnalisée : le nom choisi + « propulsé par MABAH » si l'option est active ; rien en marque blanche. */
 function signature(b) {
   if (b.mode === 'brij') return `Message envoyé avec ${PLATFORM}`;
   if (b.mode === 'powered') return `Message envoyé avec ${b.name}, propulsé par ${PLATFORM}`;

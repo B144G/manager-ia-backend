@@ -19,7 +19,7 @@ module.exports = async function projects(ctx) {
   const mk = async (key, body, as = 'manager') => { P[key] = (await ctx.do(`Projets : créer « ${body.name} »`, 'POST', '/projects', body, { as })).id; return P[key]; };
   await mk('showroom', { name: 'Ouverture du showroom de Bonamoussadi', description: "Nouveau point de vente de 400 m² au carrefour de Bonamoussadi (Douala) : carrelage, sanitaires, peinture et quincaillerie fine exposés, conseil aux particuliers et aux architectes.", due: ctx.day(40), branchId: B.douala });
   await mk('ecole', { name: 'Marché CUD 5e — école publique de Kotto', description: "Fourniture des matériaux de construction de 6 salles de classe pour la Commune de Douala 5e (bon de commande n° 2026/CUD5/114) : livraisons échelonnées sur chantier, réception provisoire puis facturation.", due: ctx.day(55), branchId: B.douala });
-  await mk('brij', { name: 'Déploiement de Brij-IA et inventaire tournant', description: 'Former les équipes, paramétrer les seuils de réapprovisionnement et faire un inventaire tournant complet des deux dépôts.', due: ctx.day(-4) });
+  await mk('mabah', { name: 'Déploiement de MABAH et inventaire tournant', description: 'Former les équipes, paramétrer les seuils de réapprovisionnement et faire un inventaire tournant complet des deux dépôts.', due: ctx.day(-4) });
   await mk('foire', { name: 'Stand à la Foire des matériaux de Douala 2026', description: 'Stand de 36 m² à la foire annuelle : démonstrations de pose de carreaux, prix salon, collecte de contacts.', due: ctx.day(-30), branchId: B.douala });
   // Créé par une proposition de l'IA validée par le responsable (aucun appel à l'IA : la proposition est appliquée telle quelle).
   P.yaounde = (await ctx.do("Assistant IA : appliquer un plan de projet proposé (« Extension du dépôt de Yaoundé »)", 'POST', '/ai/apply', { kind: 'project-plan', proposal: {
@@ -63,12 +63,12 @@ module.exports = async function projects(ctx) {
   await plan('lot3', { estimateHours: 16, startDate: ctx.day(20), dependsOn: T.lot2 });
   await plan('reception', { estimateHours: 6, dependsOn: T.lot3 });
   await plan('facture', { estimateHours: 4, dependsOn: T.reception });
-  // Brij-IA : projet en retard et au-delà de son budget
-  await task('formation', P.brij, { title: "Formation de l'équipe (ventes, stock, caisse)", assigneeId: U('manager'), due: ctx.day(-40), status: 'done' });
-  await task('seuils', P.brij, { title: 'Paramétrage des seuils de réapprovisionnement', assigneeId: U('storekeeper'), due: ctx.day(-30), status: 'done' });
-  await task('invA', P.brij, { title: 'Inventaire tournant — dépôt de Douala (allées A à F)', assigneeId: U('storekeeper'), due: ctx.day(-18), status: 'done' });
-  await task('invB', P.brij, { title: 'Inventaire tournant — dépôt de Yaoundé', assigneeId: U('storekeeper'), due: ctx.day(-6), status: 'doing', priority: 'high' });
-  await task('hebdo', P.brij, { title: 'Comptage hebdomadaire des sacs de ciment', assigneeId: U('storekeeper'), due: ctx.day(-1) });
+  // MABAH : projet en retard et au-delà de son budget
+  await task('formation', P.mabah, { title: "Formation de l'équipe (ventes, stock, caisse)", assigneeId: U('manager'), due: ctx.day(-40), status: 'done' });
+  await task('seuils', P.mabah, { title: 'Paramétrage des seuils de réapprovisionnement', assigneeId: U('storekeeper'), due: ctx.day(-30), status: 'done' });
+  await task('invA', P.mabah, { title: 'Inventaire tournant — dépôt de Douala (allées A à F)', assigneeId: U('storekeeper'), due: ctx.day(-18), status: 'done' });
+  await task('invB', P.mabah, { title: 'Inventaire tournant — dépôt de Yaoundé', assigneeId: U('storekeeper'), due: ctx.day(-6), status: 'doing', priority: 'high' });
+  await task('hebdo', P.mabah, { title: 'Comptage hebdomadaire des sacs de ciment', assigneeId: U('storekeeper'), due: ctx.day(-1) });
   await plan('formation', { estimateHours: 16, startDate: ctx.day(-45) });
   await plan('seuils', { estimateHours: 8, startDate: ctx.day(-33) });
   await plan('invA', { estimateHours: 30, startDate: ctx.day(-28) });
@@ -124,7 +124,7 @@ module.exports = async function projects(ctx) {
   await ms(P.showroom, 'Ouverture au public', ctx.day(36));
   await ms(P.ecole, 'Lot 1 livré', ctx.day(-20), true);
   await ms(P.ecole, 'Réception provisoire', ctx.day(50));
-  await ms(P.brij, 'Inventaire des deux dépôts terminé', ctx.day(-6));
+  await ms(P.mabah, 'Inventaire des deux dépôts terminé', ctx.day(-6));
   const mx = await ms(P.foire, 'Bilan du salon', ctx.day(-25), true);
   await ctx.do('Jalons : décaler un jalon', 'PUT', `/projects/milestones/${mx}`, { due: ctx.day(-24), title: 'Bilan du salon présenté' }, { as: 'manager' });
   const md = await ms(P.foire, 'Jalon en trop', ctx.day(-20));
@@ -132,7 +132,7 @@ module.exports = async function projects(ctx) {
 
   // ---------- Budget et dépenses ----------
   const budget = (pid, budget, name) => ctx.do(`Budget projet : ${budget.toLocaleString('fr-FR')} FCFA pour « ${name} »`, 'PUT', `/projects/${pid}/budget`, { budget }, { as: 'manager' });
-  await budget(P.showroom, 15000000, 'showroom'); await budget(P.ecole, 3500000, 'école de Kotto'); await budget(P.brij, 1200000, 'Brij-IA'); await budget(P.foire, 2200000, 'foire'); await budget(P.yaounde, 85000000, 'dépôt de Yaoundé');
+  await budget(P.showroom, 15000000, 'showroom'); await budget(P.ecole, 3500000, 'école de Kotto'); await budget(P.mabah, 1200000, 'MABAH'); await budget(P.foire, 2200000, 'foire'); await budget(P.yaounde, 85000000, 'dépôt de Yaoundé');
   const cost = (pid, label, amount, day) => ctx.do(`Dépenses projet : ${label}`, 'POST', `/projects/${pid}/costs`, { label, amount, date: ctx.day(day) }, { as: 'manager' });
   await cost(P.showroom, "Caution et 3 mois de loyer d'avance", 4500000, -78);
   await cost(P.showroom, 'Carrelage, faux plafond et menuiserie (Ndokoti Bâtiment)', 3800000, -40);
@@ -142,8 +142,8 @@ module.exports = async function projects(ctx) {
   await cost(P.ecole, 'Location de camion-grue (lot 1)', 450000, -21);
   await cost(P.ecole, 'Carburant et péages Douala–Kotto', 185000, -20);
   await cost(P.ecole, 'Manutentionnaires journaliers', 120000, -20);
-  await cost(P.brij, 'Formation sur site (2 jours)', 450000, -42);
-  await cost(P.brij, 'Deux tablettes et lecteurs de codes-barres', 760000, -35);
+  await cost(P.mabah, 'Formation sur site (2 jours)', 450000, -42);
+  await cost(P.mabah, 'Deux tablettes et lecteurs de codes-barres', 760000, -35);
   await cost(P.foire, 'Location du stand 36 m²', 1100000, -50);
   await cost(P.foire, 'Kakémonos, flyers et goodies', 640000, -48);
   const bad = (await cost(P.foire, 'Saisie en double', 640000, -48)).id;
@@ -195,7 +195,7 @@ module.exports = async function projects(ctx) {
   await ctx.do('Tâches : rouvrir une tâche (écart de comptage à recompter)', 'PUT', `/projects/tasks/${T.invB}`, { status: 'doing' }, { as: 'manager' });
   const rec = await ctx.do('Tâches récurrentes : créer les occurrences dues', 'POST', '/projects/recurring/run', undefined, { as: 'manager' });
   ctx.check('Tâches récurrentes : le comptage hebdomadaire est recréé', rec.created >= 1, rec);
-  const occ = ((await ctx.do('Tâches : tâches du projet Brij-IA', 'GET', `/projects/tasks?project=${P.brij}`, undefined, { as: 'manager' })).tasks || []).filter((t) => t.title === 'Comptage hebdomadaire des sacs de ciment' && t.id !== T.hebdo);
+  const occ = ((await ctx.do('Tâches : tâches du projet MABAH', 'GET', `/projects/tasks?project=${P.mabah}`, undefined, { as: 'manager' })).tasks || []).filter((t) => t.title === 'Comptage hebdomadaire des sacs de ciment' && t.id !== T.hebdo);
   ctx.check('Tâches récurrentes : une seule occurrence, à la dernière échéance passée (pas de rattrapage)', occ.length === 1 && occ[0].due === ctx.day(-1), occ);
   await ctx.do('Tâches : supprimer une tâche (responsable)', 'DELETE', `/projects/tasks/${T.hebdo}`, undefined, { as: 'manager' });
 
@@ -215,8 +215,8 @@ module.exports = async function projects(ctx) {
   await ctx.do('Tâches : filtrer par projet et statut', 'GET', `/projects/tasks?project=${P.ecole}&status=todo`, undefined, { as: 'manager' });
   const sum = await ctx.do('Projets : résumé budget, temps et jalons', 'GET', `/projects/${P.showroom}/summary`, undefined, { as: 'manager' });
   ctx.check('Budget : le showroom dépasse 80 % de son budget', sum.cost && sum.cost.usedPct >= 80, sum.cost);
-  const sb = await ctx.do('Projets : résumé du projet Brij-IA', 'GET', `/projects/${P.brij}/summary`, undefined, { as: 'manager' });
-  ctx.check('Budget : le projet Brij-IA est au-delà de son budget', sb.cost && sb.cost.overBudget === true, sb.cost);
+  const sb = await ctx.do('Projets : résumé du projet MABAH', 'GET', `/projects/${P.mabah}/summary`, undefined, { as: 'manager' });
+  ctx.check('Budget : le projet MABAH est au-delà de son budget', sb.cost && sb.cost.overBudget === true, sb.cost);
   const ins = await ctx.do('Projets : fiabilité des données et prévision', 'GET', `/projects/${P.showroom}/insight`, undefined, { as: 'manager' });
   ctx.check('Prévision : score de fiabilité et date de fin calculés', ins.quality && typeof ins.quality.score === 'number' && ins.forecast && ins.forecast.endDate, ins);
   const pro = await ctx.do('Projets pro : tableau de bord complet (valeur acquise, chemin critique)', 'GET', `/projects/${P.showroom}/pro`, undefined, { as: 'manager' });
@@ -242,7 +242,7 @@ module.exports = async function projects(ctx) {
   const team = has('manager') && has('accountant');
   const s1 = team ? await ctx.do('Partage : envoyer le rapport du showroom (avec coûts) à la direction', 'POST', '/share/send', { kind: 'project', sourceId: P.showroom, includeCosts: true, userIds: [ctx.ids.ownerId, U('accountant')], message: 'Point avant le comité de lundi : budget à 90 %.' }, { as: 'manager' }) : {};
   if (team) await ctx.do('Partage : envoyer le planning du chantier de Kotto à l\'antenne de Douala', 'POST', '/share/send', { kind: 'project', sourceId: P.ecole, branchIds: [B.douala], roles: ['admin'] }, { as: 'manager' });
-  const s3 = !team ? {} : await ctx.do('Partage : envoi par erreur', 'POST', '/share/send', { kind: 'project', sourceId: P.brij, roles: ['admin'] }, { as: 'manager' });
+  const s3 = !team ? {} : await ctx.do('Partage : envoi par erreur', 'POST', '/share/send', { kind: 'project', sourceId: P.mabah, roles: ['admin'] }, { as: 'manager' });
   if (s3.id) await ctx.do('Partage : retirer un partage', 'DELETE', `/share/${s3.id}`, undefined, { as: 'manager' });
   const inv = (await ctx.do('Ventes : factures (pour le PDF)', 'GET', '/crm/documents?kind=invoice', undefined, { as: 'manager' })).documents || [];
   if (inv.length) {

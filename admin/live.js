@@ -51,7 +51,7 @@
     A.toast('Nouveau compte : ' + a.name + ' (' + a.plan + ')', 'ok');
     if (L.prefs.sound) beep();
     if (L.prefs.notif && 'Notification' in window && Notification.permission === 'granted' && (document.hidden || !document.hasFocus())) {
-      try { new Notification('Nouveau compte Brij-IA', { body: a.name + ' · ' + a.plan + (a.interests.length ? ' · ' + a.interests.slice(0, 3).join(', ') : ''), tag: 'brij-acc-' + a.id }); } catch (e) { /* ignoré */ }
+      try { new Notification('Nouveau compte MABAH', { body: a.name + ' · ' + a.plan + (a.interests.length ? ' · ' + a.interests.slice(0, 3).join(', ') : ''), tag: 'mabah-acc-' + a.id }); } catch (e) { /* ignoré */ }
     }
   }
   L.notifSupported = () => 'Notification' in window;

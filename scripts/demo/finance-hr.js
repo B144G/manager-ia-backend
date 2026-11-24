@@ -40,7 +40,7 @@ async function hr(ctx, h) {
     const ex = have.find((e) => e.name === name);
     const m = member && ctx.ids.members[member];
     const body = { name, job, phone: m ? undefined : '+237 6' + String(70000000 + name.length * 1234567).slice(0, 8), hiredAt: hired || (k === 'rose' ? rosesHire : ibraHire), salary, branchId: ctx.ids.branches[br], userId: m && m.userId ? m.userId : undefined, payChannel: ch, payAccount: accNo, cnpsNo: cnps, niu };
-    E[k] = ex ? ex.id : (await hrDo(`RH : embaucher ${name} (${job})${m && m.userId ? ' — relié à son compte' : ' — sans compte Brij-IA'}`, 'POST', '/employees', body, { as: 'accountant' })).id;
+    E[k] = ex ? ex.id : (await hrDo(`RH : embaucher ${name} (${job})${m && m.userId ? ' — relié à son compte' : ' — sans compte MABAH'}`, 'POST', '/employees', body, { as: 'accountant' })).id;
   }
   if (ctx.users.manager) await hrDo('RH : un responsable ajoute un employé sans voir les salaires (stagiaire)', 'POST', '/employees', { name: 'Kevin Ndongo', job: 'Stagiaire logistique', hiredAt: addDays(T, -20), branchId: ctx.ids.branches.douala, salary: 999999 }).then(async (r) => {
     if (!r.id) return;

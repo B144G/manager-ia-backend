@@ -1,4 +1,4 @@
-# Administration Brij-IA : refonte de l'interface et inscriptions en direct
+# Administration MABAH : refonte de l'interface et inscriptions en direct
 
 Captures `avant-*` (ancienne interface) et `apres-*` (nouvelle) à 390, 768 et 1280 px, en clair et en sombre.
 

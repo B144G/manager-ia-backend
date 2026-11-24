@@ -4,6 +4,7 @@
 // Blocs : { type: 'heading', text } · { type: 'kv', rows: [[libellé, valeur]] } · { type: 'table', cols: [{ key, label, width, align }], rows: [{...}], totals?: [[libellé, valeur]] }
 //         · { type: 'text', text } · { type: 'note', text } · { type: 'space' }
 const PDFDocument = require('pdfkit');
+const LOGO_FILE = require('path').join(__dirname, '..', 'assets', 'mabah-logo-128.png'); // logo MABAH (pied de page)
 const PRODUCT = require('./product');
 
 const INK = '#111827'; const MUTED = '#6b7280'; const LINE = '#d1d5db'; const BASE_ACCENT = '#4338ca'; let ACCENT = BASE_ACCENT; // ACCENT : couleur de marque de l'entreprise pendant un rendu (le rendu est synchrone)
@@ -59,13 +60,15 @@ function build(doc, spec, brand) {
     // Le pied de page est sous la marge basse : sans ce réglage, pdfkit ajouterait une page vide à chaque ligne écrite ici.
     const mb = doc.page.margins.bottom; doc.page.margins.bottom = 0;
     doc.font('Helvetica').fontSize(8).fillColor(MUTED);
-    doc.text(clean(footerLeft(spec, brand)), L, y, { width: W / 2, lineBreak: false });
+    const fl = clean(footerLeft(spec, brand)); const withLogo = fl.includes(PRODUCT.name);
+    if (withLogo) { try { doc.image(LOGO_FILE, L, y - 2, { width: 11 }); } catch { /* logo absent : pied sans image */ } }
+    doc.text(fl, withLogo ? L + 15 : L, y, { width: W / 2 - (withLogo ? 15 : 0), lineBreak: false });
     doc.text(`Page ${i - range.start + 1} / ${range.count}`, L + W / 2, y, { width: W / 2, align: 'right', lineBreak: false });
     doc.page.margins.bottom = mb;
   }
 }
 
-/** Pied de page : « Entreprise · Brij-IA » par défaut ; texte de l'entreprise, « Propulsé par Brij-IA » ou rien en marque blanche selon ses réglages. */
+/** Pied de page : « Entreprise · MABAH » par défaut ; texte de l'entreprise, « Propulsé par MABAH » ou rien en marque blanche selon ses réglages. */
 function footerLeft(spec, brand) {
   const org = spec.org || '';
   if (!brand || brand.mode === 'brij' && !brand.pdfFooter) return `${org} · ${PRODUCT.name}`;

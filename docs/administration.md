@@ -1,4 +1,4 @@
-# Module Administration (Brij-IA)
+# Module Administration (MABAH)
 
 Branches : serveur `administration-module` (depuis `fusion-final-serveur` 47a83d0), site `administration-module` (depuis `fusion-final-site` 3b9b93c). Rien n'est poussé.
 

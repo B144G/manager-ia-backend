@@ -1,6 +1,6 @@
 # Politique de sécurité de l'information
 
-*Version 2026-11-16. Ce document décrit ce que Brij-IA met en œuvre et vérifie par des tests automatiques ; il ne constitue pas une certification. Un test d'intrusion indépendant reste à réaliser.*
+*Version 2026-11-16. Ce document décrit ce que MABAH met en œuvre et vérifie par des tests automatiques ; il ne constitue pas une certification. Un test d'intrusion indépendant reste à réaliser.*
 
 ## 1. Principes
 Moindre privilège ; défense en profondeur ; sécurité par défaut ; journalisation vérifiable ; transparence (incidents notifiés) ; amélioration continue.

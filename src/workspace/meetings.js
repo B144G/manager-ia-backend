@@ -145,7 +145,7 @@ async function insertMeeting(req, f, orgCfgTz) {
 }
 
 /** Salle de visioconférence Jitsi Meet (gratuite, sans compte) : nom aléatoire non devinable. Le partage d'écran est celui de la salle, pour tous les participants. */
-const newRoomUrl = (orgId) => `https://meet.jit.si/BrijIA-${orgId}-${require('crypto').randomBytes(9).toString('hex')}`;
+const newRoomUrl = (orgId) => `https://meet.jit.si/MABAH-${orgId}-${require('crypto').randomBytes(9).toString('hex')}`;
 /** Type choisi : un type personnalisé de l'organisation (catégorie de droits + valeurs par défaut) ou l'une des six catégories. */
 async function resolveType(req, b) {
   if (b.typeId !== undefined && b.typeId !== null && b.typeId !== '') {
@@ -505,7 +505,7 @@ function inviteText(req, m, agenda, who, { update = false, cancelled = false } =
       `Quand : ${M.whenLine(m)}`, `Où : ${M.whereLine(m)}`);
     if (m.objective) lines.push('', `Objet : ${m.objective}`);
     if (agenda.length) lines.push('', 'Ordre du jour :', ...agenda.map((a, i) => `${i + 1}. ${a.title}${a.duration_min ? ` (${a.duration_min} min)` : ''}`));
-    lines.push('', 'Merci de confirmer votre présence en répondant à ce message (ou dans Brij-IA, rubrique Réunions).');
+    lines.push('', 'Merci de confirmer votre présence en répondant à ce message (ou dans ' + require('../services/brand-lib').pn(req.org) + ', rubrique Réunions).');
   }
   lines.push('', `— ${req.org.name}`);
   return lines.join('\n');

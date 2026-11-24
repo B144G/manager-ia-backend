@@ -1,5 +1,5 @@
 'use strict';
-// Administration Brij-IA — briques d'interface (aucune dépendance externe).
+// Administration MABAH — briques d'interface (aucune dépendance externe).
 // Tout texte inséré passe par textContent ; jamais de HTML injecté, jamais d'attribut style (CSP stricte) : les tailles dynamiques passent par le CSSOM.
 (function () {
   const A = (window.A = window.A || {});

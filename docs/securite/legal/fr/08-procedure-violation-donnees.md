@@ -18,8 +18,8 @@ Une violation est un incident de sécurité entraînant la destruction, la perte
 |---|---|
 | Détection → qualification (gravité) | 4 heures ouvrées |
 | Confinement (couper l'accès, révoquer sessions et clés, fermer l'adresse bloquée) | Immédiat |
-| Information des **organisations clientes** dont les données sont concernées (Brij-IA sous-traitant) | **Au plus tard 72 h** après la connaissance, dès que possible |
-| Notification à l'**autorité de protection des données** (Brij-IA responsable) | Dans le délai fixé par la loi applicable [À COMPLÉTER : délai exact] et visé à **72 h** |
+| Information des **organisations clientes** dont les données sont concernées (MABAH sous-traitant) | **Au plus tard 72 h** après la connaissance, dès que possible |
+| Notification à l'**autorité de protection des données** (MABAH responsable) | Dans le délai fixé par la loi applicable [À COMPLÉTER : délai exact] et visé à **72 h** |
 | Information des **personnes concernées** si risque élevé | Sans délai injustifié |
 | Retour d'expérience | 10 jours ouvrés |
 
@@ -36,7 +36,7 @@ Une violation est un incident de sécurité entraînant la destruction, la perte
 Date/heure de détection · Détecté par · Description · Données et catégories de personnes · Nombre de personnes (estimé) · Organisations concernées · Cause probable · Mesures prises · Risque évalué (faible/moyen/élevé) et justification · Notifications faites (qui, quand) · Actions correctives.
 
 ## 6. Modèle de message à une organisation cliente
-> **Objet : Incident de sécurité concernant vos données Brij-IA**
+> **Objet : Incident de sécurité concernant vos données MABAH**
 > Le [date] à [heure], nous avons détecté [nature de l'incident]. Il concerne [catégories de données] de [nombre approximatif] personnes de votre organisation. Cause connue : [cause ou « en cours d'analyse »]. Mesures déjà prises : [mesures]. Ce que nous vous recommandons : [actions]. Nous vous tiendrons informé(e) au plus tard le [date]. Contact : [référent].
 
 ## 7. Modèle de message aux personnes concernées
