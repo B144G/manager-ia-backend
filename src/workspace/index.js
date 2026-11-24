@@ -272,6 +272,7 @@ orgRouter.use('/history', require('./history'));
 orgRouter.use('/feedback', require('./feedback').router); // avis et recommandations (bouton discret, tables fb_)
 orgRouter.use('/purchasing', require('./purchasing').router);
 orgRouter.use('/meetings', require('./meetings').router);
+orgRouter.use('/chat', require('./chat').router); // chat interne (tables chat_) : conversations, groupes, fichiers, appels, assistante
 orgRouter.use('/integrations', require('./integrations'));
 for (const id of ['payroll', 'fiscal', 'marketing', 'logistics', 'production', 'construction', 'maintenance', 'legal', 'memory', 'agents']) orgRouter.use('/' + id, require('./' + id));
 orgRouter.use('/structure', require('./structure'));

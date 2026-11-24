@@ -38,7 +38,7 @@ const check = (name, cond, detail) => { if (cond) { ok++; console.log('  OK  ', 
   }
   check('Avis : la migration 116 (tables fb_) REMPLACE l\'emplacement réservé ; 117 à 139 restent des migrations vides réservées', /fb_feedback/.test(MIGRATIONS[115] || '') && !/reserve/.test(MIGRATIONS[115]) && MIGRATIONS.slice(116, 139).every((m, k) => m === `SELECT ${117 + k} AS reserve`));
   check('Transport · géolocalisation : migrations 140 (tables tg_) et 141 (clients / fournisseurs typés) aux mêmes numéros ; 142 présente', /tg_settings/.test(MIGRATIONS[139] || '') && /pty_terms/.test(MIGRATIONS[140] || '') && MIGRATIONS.length >= 142, MIGRATIONS.length);
-  check('Portée WhatsApp : migrations 143 (réglage, exceptions), 144 (origine, état des conversations), 145 (journal) ; 145 migrations au total', /wa_scope_settings/.test(MIGRATIONS[142] || '') && /wa_contact_origin/.test(MIGRATIONS[143] || '') && /wa_scope_log/.test(MIGRATIONS[144] || '') && MIGRATIONS.length === 145, MIGRATIONS.length);
+  check('Portée WhatsApp : migrations 143 (réglage, exceptions), 144 (origine, état des conversations), 145 (journal) ; au moins 145 migrations au total', /wa_scope_settings/.test(MIGRATIONS[142] || '') && /wa_contact_origin/.test(MIGRATIONS[143] || '') && /wa_scope_log/.test(MIGRATIONS[144] || '') && MIGRATIONS.length >= 145, MIGRATIONS.length);
   // Rejouabilité : les migrations ajoutées par la fusion (indice >= BASE_COUNT) doivent pouvoir être rejouées sans erreur (IF NOT EXISTS partout).
   let failed = null;
   for (let i = BASE_COUNT; i < MIGRATIONS.length && !failed; i++) { try { await db.exec(MIGRATIONS[i]); } catch (e) { failed = `migration ${i + 1} : ${e.message}`; } }

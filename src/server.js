@@ -28,7 +28,7 @@ app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { poli
 
 // En-têtes de sécurité supplémentaires (sur tout) et politique de contenu stricte pour les pages du site servies ici.
 app.use((req, res, next) => {
-  res.set('Permissions-Policy', 'camera=(), geolocation=(), payment=(), usb=(), interest-cohort=(), microphone=(self)');
+  res.set('Permissions-Policy', 'camera=(self), geolocation=(self), payment=(), usb=(), interest-cohort=(), microphone=(self), display-capture=(self)');
   res.set('X-Content-Type-Options', 'nosniff');
   next();
 });

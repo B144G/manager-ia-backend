@@ -3814,6 +3814,9 @@ while (MIGRATIONS.length < 139) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1}
 MIGRATIONS.push(...require('./migrations/transport-geo'));
 // Portée des réponses automatiques WhatsApp (143 et suivantes) : toujours en fin de tableau.
 MIGRATIONS.push(...require('./migrations/wa-portee'));
+// Chat interne (tables chat_) : numéros 300 et suivants (146 à 299 réservés aux autres modules). Toujours en fin de tableau.
+while (MIGRATIONS.length < 299) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1} AS reserve`);
+MIGRATIONS.push(...require('./migrations/chat-interne'));
 
 db.ready = db.migrate(MIGRATIONS);
 
