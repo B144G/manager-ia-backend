@@ -56,6 +56,10 @@ async function loadConv(req, id) {
   if (!c) throw new HttpError(404, 'Conversation introuvable.');
   return c;
 }
+/** Conversation chiffrée de bout en bout : le serveur ne voit que du texte chiffré, il ne peut ni le lire, ni le chercher, ni le confier à l'IA. */
+const isE2ee = (c) => Number(c.e2ee) === 1;
+function needPlain(conv, what) { if (isE2ee(conv)) throw new HttpError(400, `${what || 'Cette fonction'} n'est pas disponible dans une conversation chiffrée de bout en bout : le serveur ne peut pas lire son contenu.`); }
+const CIPHER_RX = /^[A-Za-z0-9+/=_.-]{8,12000}$/;
 const isGroupAdmin = (c) => c.kind === 'group' && c.my_role === 'admin';
 /** Participants actifs (encore membres de l'entreprise). */
 async function members(convId, orgId) {
@@ -85,7 +89,7 @@ async function views(req, conv, rows, memberList) {
   const replies = new Map();
   if (replyIds.length) for (const r of await db.prepare(`SELECT id, sender_id, kind, body, deleted_at, visible_to FROM ci_messages WHERE conv_id = ? AND id IN (${ph(replyIds)})`).all(conv.id, ...replyIds)) {
     if (r.visible_to != null && Number(r.visible_to) !== req.user.id) continue; // réponse privée d'une autre personne : jamais citée
-    replies.set(Number(r.id), { id: Number(r.id), senderId: num(r.sender_id), senderName: r.sender_id ? names.get(Number(r.sender_id)) || '' : brand.AI_NAME, snippet: snippet(r), deleted: Boolean(r.deleted_at) });
+    replies.set(Number(r.id), { id: Number(r.id), senderId: num(r.sender_id), senderName: r.sender_id ? names.get(Number(r.sender_id)) || '' : brand.AI_NAME, snippet: Number(conv.e2ee) === 1 ? '🔒' : snippet(r), deleted: Boolean(r.deleted_at) });
   }
   const fileIds = rows.map((r) => num(r.file_id)).filter(Boolean);
   const files = new Map();
@@ -157,11 +161,12 @@ async function postMessage(req, conv, o) {
   const orgId = req.org.id;
   const sender = o.senderId === undefined ? req.user.id : o.senderId; // null = assistante
   const mem = o.members || await members(conv.id, orgId);
-  const body = o.rawBody ? String(o.rawBody).slice(0, MAX_BODY) : cleanText(o.body, MAX_BODY);
-  const men = o.noMentions ? { ids: [], all: false } : detectMentions(body, mem, sender, conv.kind === 'group');
+  const enc = isE2ee(conv) && ['text', 'voice', 'file'].includes(o.kind || 'text');
+  const body = enc ? String(o.body || '').slice(0, 12000) : o.rawBody ? String(o.rawBody).slice(0, MAX_BODY) : cleanText(o.body, MAX_BODY);
+  const men = o.noMentions || enc ? { ids: [], all: false } : detectMentions(body, mem, sender, conv.kind === 'group');
   const now = o.at || nowISO();
   const id = Number((await db.prepare(`INSERT INTO ci_messages (org_id, conv_id, sender_id, kind, body, meta, reply_to_id, file_id, urgent, mentions, mention_all, visible_to, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(orgId, conv.id, sender, o.kind || 'text', body, JSON.stringify(o.meta || {}), o.replyToId || null, o.fileId || null, o.urgent ? 1 : 0, JSON.stringify(men.ids), men.all ? 1 : 0, o.visibleTo || null, now)).lastInsertRowid);
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(orgId, conv.id, sender, o.kind || 'text', body, JSON.stringify(enc ? { ...(o.meta || {}), enc: 1 } : (o.meta || {})), o.replyToId || null, o.fileId || null, o.urgent ? 1 : 0, JSON.stringify(men.ids), men.all ? 1 : 0, o.visibleTo || null, now)).lastInsertRowid);
   if (o.fileId) await db.prepare('UPDATE ci_files SET message_id = ? WHERE id = ? AND org_id = ?').run(id, o.fileId, orgId);
   if (!o.visibleTo) await db.prepare('UPDATE ci_conversations SET last_message_id = ?, last_at = ? WHERE id = ?').run(id, now, conv.id);
   if (sender) await db.prepare('UPDATE ci_members SET last_read_id = ?, last_delivered_id = ? WHERE conv_id = ? AND user_id = ? AND last_read_id < ?').run(id, id, conv.id, sender, id);
@@ -203,12 +208,12 @@ async function convSummary(req, c, memberList, withLast = true) {
   let last = null;
   if (withLast) {
     const lr = await db.prepare(`SELECT m.* FROM ci_messages m WHERE m.conv_id = ? AND m.id > ? AND (m.visible_to IS NULL OR m.visible_to = ?) ORDER BY m.id DESC LIMIT 1`).get(c.id, myFrom, req.user.id);
-    if (lr) last = { id: Number(lr.id), kind: lr.kind, senderId: num(lr.sender_id), senderName: lr.sender_id ? ((mem.find((m) => Number(m.user_id) === Number(lr.sender_id)) || {}).name || '') : (lr.kind === 'ai' ? brand.AI_NAME : ''), text: lr.deleted_at ? '' : oneLine(lr.body, 120), deleted: Boolean(lr.deleted_at), at: lr.created_at, urgent: Number(lr.urgent) === 1 };
+    if (lr) last = { id: Number(lr.id), kind: lr.kind, senderId: num(lr.sender_id), senderName: lr.sender_id ? ((mem.find((m) => Number(m.user_id) === Number(lr.sender_id)) || {}).name || '') : (lr.kind === 'ai' ? brand.AI_NAME : ''), text: lr.deleted_at ? '' : Number(c.e2ee) === 1 ? '' : oneLine(lr.body, 120), encrypted: Number(c.e2ee) === 1 && !lr.deleted_at, deleted: Boolean(lr.deleted_at), at: lr.created_at, urgent: Number(lr.urgent) === 1 };
   }
   return {
     id: Number(c.id), kind: c.kind, purpose: c.purpose, name: c.kind === 'direct' ? (other ? other.name : '') : c.name, description: c.description, department: c.department, projectId: num(c.project_id),
     otherUserId: other ? Number(other.user_id) : null, aiEnabled: Number(c.ai_enabled) === 1, onlyAdminsPost: Number(c.only_admins_post) === 1, myRole: c.my_role, muted: Number(c.my_muted) === 1, archived: Number(c.my_archived) === 1,
-    memberCount: mem.length, unread, mentioned, last, lastAt: c.last_at, createdAt: c.created_at,
+    e2ee: Number(c.e2ee) === 1, memberCount: mem.length, unread, mentioned, last, lastAt: c.last_at, createdAt: c.created_at,
   };
 }
 
@@ -225,4 +230,4 @@ async function markRead(req, conv, upTo) {
   return max;
 }
 
-module.exports = { allow, MAX_BODY, KINDS, FILE_KINDS, HARD_MAX_FILE_MB, userLimit, _resetLimits, getSettings, getPrefs, loadConv, isGroupAdmin, members, directKey, views, visibleSql, detectMentions, postMessage, convSummary, markRead, parseJSON, log };
+module.exports = { isE2ee, needPlain, CIPHER_RX, allow, MAX_BODY, KINDS, FILE_KINDS, HARD_MAX_FILE_MB, userLimit, _resetLimits, getSettings, getPrefs, loadConv, isGroupAdmin, members, directKey, views, visibleSql, detectMentions, postMessage, convSummary, markRead, parseJSON, log };

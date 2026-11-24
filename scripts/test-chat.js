@@ -514,6 +514,70 @@ run('Chat interne : conversations, groupes, fichiers, appels, assistante, isolat
   check('appels désactivés par l’entreprise : refusés (403)', r.status === 403, r.status);
   await owner('PUT', `${C}/settings`, { callsEnabled: true });
 
+  // ---------- Position en direct (opt-in par employé) ----------
+  r = await mem('POST', `${C}/geo/position`, { lat: 4.05, lng: 9.7 });
+  check('position en direct : refusée tant que la personne ne l’a pas activée (403)', r.status === 403, r.status);
+  r = await mem('PUT', `${C}/geo/me`, { enabled: true });
+  check('activation sans consentement explicite refusée (400)', r.status === 400, r.status);
+  r = await owner('PUT', `${C}/geo/me`, { enabled: true, consent: true });
+  check('Awa active volontairement sa position', r.status === 200 && r.json.enabled === true, r.json);
+  r = await owner('POST', `${C}/geo/position`, { lat: 4.0511, lng: 9.7679, accuracy: 30 });
+  check('Awa envoie sa position', r.status === 200, r.status);
+  r = await owner('POST', `${C}/geo/position`, { lat: 999, lng: 0 });
+  check('position invalide refusée (400)', r.status === 400, r.status);
+  r = await mem('GET', `${C}/geo/people`);
+  check('Paul voit Awa sur la carte (en ligne, position récente) mais pas ceux qui n’ont rien activé', r.json.people.length === 1 && r.json.people[0].name === 'Awa' && r.json.people[0].lat === 4.0511, r.json.people);
+  r = await other('GET', `${C2}/geo/people`);
+  check('isolation : l’autre entreprise ne voit aucune position', r.status === 200 && r.json.people.length === 0, r.json);
+  r = await mgr('PUT', `${C}/geo/me`, { enabled: false });
+  r = await owner('PUT', `${C}/geo/me`, { enabled: false });
+  r = await mem('GET', `${C}/geo/people`);
+  const gone = await dbx.prepare('SELECT lat FROM ci_geo WHERE user_id = ?').get(awa);
+  check('désactivation : Awa disparaît de la carte et ses coordonnées sont effacées', r.json.people.length === 0 && gone.lat === null, [r.json.people, gone]);
+  await dbx.prepare("UPDATE ci_geo SET enabled = 1, lat = 1, lng = 1, updated_at = ? WHERE user_id = ?").run(new Date(Date.now() - 3600000).toISOString(), awa);
+  r = await mem('GET', `${C}/geo/people`);
+  check('une position de plus de 5 minutes n’est plus affichée', r.json.people.length === 0, r.json.people);
+  const aud = (await dbx.prepare("SELECT action FROM audit_log WHERE entity = 'chat_geo'").all()).map((x) => x.action);
+  check('activation et désactivation inscrites au journal d’audit', aud.includes('enable') && aud.includes('disable'), aud);
+
+  // ---------- Chiffrement de bout en bout (conversations à deux) ----------
+  const jwk = (x) => JSON.stringify({ kty: 'EC', crv: 'P-256', x, y: x });
+  r = await mgr('POST', `${C}/conversations/direct`, { userId: paul, encrypted: true });
+  check('chiffrement : refusé tant que les deux personnes n’ont pas de clé (409)', r.status === 409, r.status);
+  r = await mgr('PUT', `${C}/keys/me`, { publicKey: JSON.stringify({ kty: 'EC', crv: 'P-256', x: 'aaa', y: 'bbb', d: 'SECRET' }) });
+  check('le serveur refuse une clé qui contient une partie PRIVÉE (400)', r.status === 400, r.status);
+  r = await mgr('PUT', `${C}/keys/me`, { publicKey: jwk('MarcX') });
+  r = await mem('PUT', `${C}/keys/me`, { publicKey: jwk('PaulX') });
+  r = await mgr('GET', `${C}/keys/${paul}`);
+  check('on récupère la clé publique d’un collègue', r.json.publicKey && JSON.parse(r.json.publicKey).x === 'PaulX', r.json);
+  r = await other('GET', `${C2}/keys/${paul}`);
+  check('isolation : clé d’une personne d’une autre entreprise (400)', r.status === 400, r.status);
+  r = await mgr('POST', `${C}/conversations/direct`, { userId: paul, encrypted: true });
+  const E = r.json.conversation.id;
+  check('conversation chiffrée créée, distincte de la conversation normale', r.status === 200 && r.json.conversation.e2ee === true && E !== D, r.json);
+  r = await mgr('POST', `${C}/conversations/${E}/messages`, { body: 'en clair SECRET-CLAIR' });
+  check('en clair dans une conversation chiffrée : refusé (400)', r.status === 400, r.status);
+  r = await mgr('POST', `${C}/conversations/${E}/messages`, { cipher: 'AAAAAAAAAAAA.Zm9vYmFyU0VDUkVU' });
+  check('message chiffré accepté ; le serveur ne stocke que le texte chiffré', r.status === 201 && r.json.message.meta.enc === 1 && r.json.message.body === 'AAAAAAAAAAAA.Zm9vYmFyU0VDUkVU', r.json);
+  r = await mem('GET', `${C}/search?q=Zm9vYmFy`);
+  check('la recherche ne parcourt jamais les conversations chiffrées', r.json.messages.length === 0, r.json.messages);
+  r = await mem('GET', `${C}/conversations`);
+  const ec = r.json.conversations.find((c) => c.id === E);
+  check('la liste n’affiche aucun extrait du contenu chiffré', ec.e2ee === true && ec.last.text === '' && ec.last.encrypted === true, ec.last);
+  r = await owner('GET', `${C}/conversations/${E}/messages`);
+  check('le propriétaire ne lit pas la conversation chiffrée (404)', r.status === 404, r.status);
+  r = await mem('PUT', `${C}/ai/conversations/${E}`, { enabled: true });
+  check('l’assistante ne peut pas entrer dans une conversation chiffrée (400)', r.status === 400, r.status);
+  r = await mem('POST', `${C}/conversations/${E}/polls`, { question: 'q', options: ['a', 'b'] });
+  check('sondage / programmation / position / traduction refusés en conversation chiffrée (400)', r.status === 400, r.status);
+  r = await mem('POST', `${C}/files?conv=${E}&name=${encodeURIComponent('bm9tLWNoaWZmcmU=')}`, Buffer.from('octets chiffrés quelconques'));
+  check('fichier chiffré par l’appareil accepté (le serveur ne peut pas en lire le type)', r.status === 201 && r.json.message.file.category === 'encrypted', r.json);
+  const EF = r.json.message.file.id;
+  r = await mgr('GET', `${C}/files/${EF}/content`);
+  check('le destinataire récupère les octets chiffrés', r.status === 200 && r.buf.toString() === 'octets chiffrés quelconques');
+  r = await owner('GET', `${C}/files/${EF}/content`);
+  check('un tiers n’y accède pas (404)', r.status === 404, r.status);
+
   // ---------- Isolation entre entreprises + limites ----------
   for (const [m, p, b] of [['GET', `/files/${F1}/content`], ['PUT', `/files/${F1}`, { folder: 'x' }], ['POST', `/polls/${P}/vote`, { optionIds: [1] }], ['POST', `/messages/${M1}/pin`, {}], ['GET', `/conversations/${D}/messages`], ['GET', `/conversations/${G}`], ['POST', `/groups`, { name: 'x', memberIds: [marc] }], ['GET', `/search?q=SECRET`]]) {
     r = await other(m, `${C2}${p}`, b);

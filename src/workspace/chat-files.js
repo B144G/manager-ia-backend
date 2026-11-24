@@ -54,6 +54,16 @@ router.post('/files', uploadLimit, sizeGate, express.raw({ type: () => true, lim
   if (!Buffer.isBuffer(buf) || !buf.length) throw new HttpError(400, 'Aucun fichier reçu.');
   if (buf.length > set.maxFileMb * 1024 * 1024) throw new HttpError(413, `Fichier trop volumineux : cette entreprise accepte ${set.maxFileMb} Mo au plus par fichier.`);
   const voice = req.query.voice === '1';
+  if (L.isE2ee(conv)) { // contenu chiffré par l'appareil : le serveur ne peut ni en lire le type, ni l'analyser (limite assumée, voir la documentation)
+    const encName = String(req.query.name || '').slice(0, 400);
+    if (!L.CIPHER_RX.test(encName)) throw new HttpError(400, 'Nom de fichier chiffré invalide.');
+    const dur2 = voice ? Math.min(Math.max(parseInt(req.query.durationMs, 10) || 0, 0), 15 * 60 * 1000) : 0;
+    const fid2 = Number((await db.prepare('INSERT INTO ci_files (org_id, conv_id, name, mime, category, size, duration_ms, data, uploader_id, scan, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(req.org.id, conv.id, encName, 'application/octet-stream', 'encrypted', buf.length, dur2, buf, req.user.id, 'encrypted', nowISO())).lastInsertRowid);
+    const cap = String(req.query.caption || '');
+    const v2 = await L.postMessage(req, conv, { kind: voice ? 'voice' : 'file', body: cap && L.CIPHER_RX.test(cap) ? cap : encName, meta: voice ? { durationMs: dur2 } : {}, fileId: fid2 });
+    return res.status(201).json({ message: v2 });
+  }
   const info = U.inspect(buf, String(req.query.name || (voice ? 'message-vocal.webm' : 'fichier')), { voice });
   if (!voice && !set.allowedKinds.includes(info.category)) throw new HttpError(400, `Les fichiers de type « ${U.CAT_LABEL[info.category]} » ne sont pas autorisés dans cette entreprise.`);
   const scan = await U.antivirus(buf);

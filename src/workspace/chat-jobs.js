@@ -38,7 +38,7 @@ async function tick() {
   if (busy) return;
   try { await db.ready; } catch { return; }
   busy = true;
-  try { await sendDue(); await remindDue(); await require('./chat-calls').sweep(); } catch (e) { log.warn('Chat : tâche de fond :', oneLine(e.message, 160)); } finally { busy = false; }
+  try { await sendDue(); await remindDue(); await require('./chat-calls').sweep(); if (Date.now() % 12 === 0 || !tick.lastPurge || Date.now() - tick.lastPurge > 3600000) { tick.lastPurge = Date.now(); await require('./chat-geo').purge(); } } catch (e) { log.warn('Chat : tâche de fond :', oneLine(e.message, 160)); } finally { busy = false; }
 }
 let timer = null;
 function start() {

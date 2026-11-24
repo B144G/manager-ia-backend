@@ -71,7 +71,7 @@ const BASE = () => `Tu es ${brand.AI_NAME}, l'assistante intégrée au chat inte
 async function privateNote(req, conv, text, meta) {
   return L.postMessage(req, conv, { kind: 'ai', senderId: null, body: text.slice(0, L.MAX_BODY), meta: { ...meta, requestedBy: req.user.id, requestedByName: req.user.name }, visibleTo: req.user.id, noMentions: true });
 }
-function needAi(conv) { if (Number(conv.ai_enabled) !== 1) throw new HttpError(400, "L'assistante n'est pas invitée dans cette conversation. Invitez-la d'abord."); }
+function needAi(conv) { L.needPlain(conv, "L'assistante"); if (Number(conv.ai_enabled) !== 1) throw new HttpError(400, "L'assistante n'est pas invitée dans cette conversation. Invitez-la d'abord."); }
 
 router.get('/status', async (req, res) => res.json(await status(req)));
 
@@ -80,6 +80,7 @@ router.put('/conversations/:id', async (req, res) => {
   const set = await L.getSettings(req.org.id);
   if (conv.kind === 'group' && !L.isGroupAdmin(conv)) throw new HttpError(403, "Seuls les administrateurs du groupe peuvent inviter ou retirer l'assistante.");
   const on = Boolean((req.body || {}).enabled);
+  if (on) L.needPlain(conv, "L'assistante");
   if (on && !set.aiEnabled) throw new HttpError(400, "L'assistante est désactivée dans les réglages du chat de votre entreprise.");
   if (on === (Number(conv.ai_enabled) === 1)) return res.json({ ok: true, enabled: on });
   await db.prepare('UPDATE ci_conversations SET ai_enabled = ? WHERE id = ?').run(on ? 1 : 0, conv.id);

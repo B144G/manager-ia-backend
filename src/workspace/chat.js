@@ -100,16 +100,43 @@ router.get('/conversations', async (req, res) => {
   res.json({ conversations: out });
 });
 
+// ---------- Clés publiques (chiffrement de bout en bout) : le serveur ne garde QUE les clés publiques ----------
+router.get('/keys/me', async (req, res) => {
+  const k = await db.prepare('SELECT public_key, created_at FROM ci_keys WHERE org_id = ? AND user_id = ?').get(req.org.id, req.user.id);
+  res.json({ publicKey: k ? k.public_key : null, createdAt: k ? k.created_at : null });
+});
+router.put('/keys/me', L.userLimit('keys', 60 * 60 * 1000, 10, 'Trop de changements de clé. Réessayez plus tard.'), async (req, res) => {
+  const pk = (req.body || {}).publicKey;
+  let j = null;
+  try { j = typeof pk === 'string' ? JSON.parse(pk) : null; } catch { j = null; }
+  if (!j || j.kty !== 'EC' || j.crv !== 'P-256' || typeof j.x !== 'string' || typeof j.y !== 'string' || j.d !== undefined || pk.length > 400) throw new HttpError(400, 'Clé publique invalide (elle ne doit jamais contenir la partie privée).');
+  const old = await db.prepare('SELECT public_key FROM ci_keys WHERE org_id = ? AND user_id = ?').get(req.org.id, req.user.id);
+  await db.prepare('INSERT INTO ci_keys (org_id, user_id, public_key, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (org_id, user_id) DO UPDATE SET public_key = EXCLUDED.public_key, created_at = EXCLUDED.created_at').run(req.org.id, req.user.id, JSON.stringify({ kty: j.kty, crv: j.crv, x: j.x, y: j.y }), nowISO());
+  if (old && old.public_key !== pk) await W.audit(req, 'chat_keys', req.user.id, 'rotate', null, null);
+  res.json({ ok: true });
+});
+router.get('/keys/:userId', async (req, res) => {
+  const uid = A.id(req.params.userId);
+  await A.memberOf(req, uid);
+  const k = await db.prepare('SELECT public_key FROM ci_keys WHERE org_id = ? AND user_id = ?').get(req.org.id, uid);
+  res.json({ publicKey: k ? k.public_key : null });
+});
+
 router.post('/conversations/direct', async (req, res) => {
   const other = A.id((req.body || {}).userId, 'Choisissez une personne.');
+  const encrypted = (req.body || {}).encrypted === true;
   if (other === req.user.id) throw new HttpError(400, "Vous ne pouvez pas ouvrir une conversation avec vous-même.");
   await A.memberOf(req, other);
-  const key = L.directKey(req.user.id, other);
+  if (encrypted) {
+    const ks = await db.prepare('SELECT user_id FROM ci_keys WHERE org_id = ? AND user_id IN (?, ?)').all(req.org.id, req.user.id, other);
+    if (ks.length < 2) throw new HttpError(409, "Les deux personnes doivent d'abord activer le chiffrement (ouvrir le chat une fois sur leur appareil).");
+  }
+  const key = L.directKey(req.user.id, other) + (encrypted ? ':e' : '');
   let c = await db.prepare('SELECT id FROM ci_conversations WHERE org_id = ? AND direct_key = ?').get(req.org.id, key);
   if (!c) {
     const now = nowISO();
     try {
-      const id = Number((await db.prepare("INSERT INTO ci_conversations (org_id, kind, direct_key, created_by, created_at, last_at) VALUES (?, 'direct', ?, ?, ?, ?)").run(req.org.id, key, req.user.id, now, now)).lastInsertRowid);
+      const id = Number((await db.prepare("INSERT INTO ci_conversations (org_id, kind, direct_key, e2ee, created_by, created_at, last_at) VALUES (?, 'direct', ?, ?, ?, ?, ?)").run(req.org.id, key, encrypted ? 1 : 0, req.user.id, now, now)).lastInsertRowid);
       for (const u of [req.user.id, other]) await db.prepare('INSERT INTO ci_members (org_id, conv_id, user_id, role, joined_at) VALUES (?, ?, ?, ?, ?)').run(req.org.id, id, u, 'member', now);
       c = { id };
     } catch { c = await db.prepare('SELECT id FROM ci_conversations WHERE org_id = ? AND direct_key = ?').get(req.org.id, key); } // créée en même temps par l'autre personne
@@ -158,7 +185,14 @@ router.post('/conversations/:id/messages', sendLimit, async (req, res) => {
   const conv = await L.loadConv(req, req.params.id);
   await canPost(conv);
   const b = req.body || {};
-  const body = cleanText(b.body, L.MAX_BODY);
+  let body;
+  if (L.isE2ee(conv)) {
+    body = typeof b.cipher === 'string' ? b.cipher : '';
+    if (!L.CIPHER_RX.test(body)) throw new HttpError(400, 'Cette conversation est chiffrée de bout en bout : le message doit être chiffré par votre appareil.');
+  } else {
+    if (b.cipher !== undefined) throw new HttpError(400, "Cette conversation n'est pas chiffrée.");
+    body = cleanText(b.body, L.MAX_BODY);
+  }
   if (!body) throw new HttpError(400, 'Écrivez un message.');
   let replyTo = null;
   if (b.replyToId) {
@@ -166,7 +200,7 @@ router.post('/conversations/:id/messages', sendLimit, async (req, res) => {
     if (!replyTo) throw new HttpError(404, 'Le message cité est introuvable.');
   }
   const view = await L.postMessage(req, conv, { body, replyToId: replyTo ? Number(replyTo.id) : null, urgent: b.urgent === true });
-  require('./chat-ai').afterPost(req, conv, view).catch(() => {}); // @assistante dans un message : réponse en arrière-plan
+  if (!L.isE2ee(conv)) require('./chat-ai').afterPost(req, conv, view).catch(() => {}); // @assistante dans un message : réponse en arrière-plan
   res.status(201).json({ message: view });
 });
 
@@ -204,10 +238,11 @@ router.put('/messages/:id', sendLimit, async (req, res) => {
   const { m, conv } = await ownMessage(req, req.params.id);
   if (Number(m.sender_id) !== req.user.id || !['text'].includes(m.kind) || m.deleted_at) throw new HttpError(403, 'Vous ne pouvez modifier que vos propres messages texte.');
   if (Date.now() - Date.parse(m.created_at) > 24 * 3600 * 1000) throw new HttpError(403, 'Un message ne peut plus être modifié après 24 heures.');
-  const body = cleanText((req.body || {}).body, L.MAX_BODY);
-  if (!body) throw new HttpError(400, 'Le message ne peut pas être vide.');
+  const enc = L.isE2ee(conv);
+  const body = enc ? String((req.body || {}).cipher || '') : cleanText((req.body || {}).body, L.MAX_BODY);
+  if (!body || (enc && !L.CIPHER_RX.test(body))) throw new HttpError(400, 'Le message ne peut pas être vide.');
   const mem = await L.members(conv.id, req.org.id);
-  const men = L.detectMentions(body, mem, req.user.id, conv.kind === 'group');
+  const men = enc ? { ids: [], all: false } : L.detectMentions(body, mem, req.user.id, conv.kind === 'group');
   await db.prepare('UPDATE ci_messages SET body = ?, edited_at = ?, mentions = ?, mention_all = ? WHERE id = ?').run(body, nowISO(), JSON.stringify(men.ids), men.all ? 1 : 0, m.id);
   const [v] = await L.views(req, conv, [await db.prepare('SELECT * FROM ci_messages WHERE id = ?').get(m.id)], mem);
   hub.publish(req.org.id, mem.map((x) => Number(x.user_id)), 'message.update', { convId: Number(conv.id), message: { ...v, mine: false, delivered: undefined, read: undefined, readBy: undefined } });
@@ -381,6 +416,7 @@ router.post('/conversations/:id/leave', groupLimit, async (req, res) => {
 router.use('/', require('./chat-files').router);
 router.use('/', require('./chat-extras').router);
 router.use('/calls', require('./chat-calls').router);
+router.use('/geo', require('./chat-geo').router); // position en direct (opt-in par employé)
 router.use('/ai', require('./chat-ai').router);
 require('./chat-jobs');
 

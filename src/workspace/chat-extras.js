@@ -51,6 +51,7 @@ router.delete('/messages/:id/pin', async (req, res) => {
 // ---------- Sondages ----------
 router.post('/conversations/:id/polls', sendLimit, async (req, res) => {
   const conv = await L.loadConv(req, req.params.id);
+  L.needPlain(conv, 'Le sondage');
   if (Number(conv.only_admins_post) === 1 && conv.my_role !== 'admin') throw new HttpError(403, 'Dans ce groupe, seuls les administrateurs du groupe peuvent écrire.');
   const b = req.body || {};
   const question = A.text(b.question, 200, { required: true, msg: 'Écrivez la question du sondage.' });
@@ -96,6 +97,7 @@ router.post('/polls/:id/close', async (req, res) => {
 // ---------- Messages programmés ----------
 router.post('/conversations/:id/scheduled', sendLimit, async (req, res) => {
   const conv = await L.loadConv(req, req.params.id);
+  L.needPlain(conv, 'Le message programmé');
   if (Number(conv.only_admins_post) === 1 && conv.my_role !== 'admin') throw new HttpError(403, 'Dans ce groupe, seuls les administrateurs du groupe peuvent écrire.');
   const b = req.body || {};
   const body = A.text(b.body, L.MAX_BODY, { required: true, msg: 'Écrivez le message à programmer.' });
@@ -143,7 +145,7 @@ router.post('/messages/:id/task', async (req, res) => {
   const { m, conv } = await visibleMessage(req, req.params.id);
   if (m.kind === 'system') throw new HttpError(400, "Ce message ne peut pas devenir une tâche.");
   const b = req.body || {};
-  const title = A.text(b.title === undefined ? oneLine(m.body, 160) : b.title, 160, { required: true, msg: 'Indiquez le titre de la tâche.' });
+  const title = A.text(b.title === undefined ? (L.isE2ee(conv) ? '' : oneLine(m.body, 160)) : b.title, 160, { required: true, msg: 'Indiquez le titre de la tâche.' });
   let pid = null; let branch = null;
   if (b.projectId) {
     const p = await db.prepare('SELECT id, branch_id FROM projects WHERE id = ? AND org_id = ?').get(A.id(b.projectId, 'Projet inconnu.'), req.org.id);
@@ -162,6 +164,7 @@ router.post('/messages/:id/task', async (req, res) => {
 // ---------- Position ponctuelle (consentement explicite) ----------
 router.post('/conversations/:id/location', sendLimit, async (req, res) => {
   const conv = await L.loadConv(req, req.params.id);
+  L.needPlain(conv, 'Le partage de position');
   if (Number(conv.only_admins_post) === 1 && conv.my_role !== 'admin') throw new HttpError(403, 'Dans ce groupe, seuls les administrateurs du groupe peuvent écrire.');
   const b = req.body || {};
   if (b.consent !== true) throw new HttpError(400, "Confirmez que vous acceptez de partager votre position une seule fois avec cette conversation.");
@@ -193,7 +196,7 @@ router.get('/search', searchLimit, async (req, res) => {
     const convFilter = req.query.conv ? ' AND m.conv_id = ?' : '';
     const rows = await db.prepare(`SELECT m.id, m.conv_id, m.sender_id, m.kind, m.body, m.created_at, c.kind AS ckind, c.name AS cname
       FROM ci_messages m JOIN ci_members cm ON cm.conv_id = m.conv_id AND cm.user_id = ? AND cm.left_at IS NULL JOIN ci_conversations c ON c.id = m.conv_id
-      WHERE m.org_id = ? AND m.deleted_at IS NULL AND m.kind IN ('text', 'file', 'poll', 'ai', 'location') AND m.id > cm.from_id AND (m.visible_to IS NULL OR m.visible_to = ?)${convFilter} AND (${where})
+      WHERE m.org_id = ? AND c.e2ee = 0 AND m.deleted_at IS NULL AND m.kind IN ('text', 'file', 'poll', 'ai', 'location') AND m.id > cm.from_id AND (m.visible_to IS NULL OR m.visible_to = ?)${convFilter} AND (${where})
       ORDER BY m.id DESC LIMIT 300`).all(req.user.id, req.org.id, req.user.id, ...(req.query.conv ? [A.id(req.query.conv)] : []), ...all.map(likeOf));
     const scored = rows.map((r) => { const low = r.body.toLowerCase(); return { r, score: all.filter((t) => low.includes(t)).length + (terms.every((t) => low.includes(t)) ? 2 : 0) }; }).sort((a, b) => b.score - a.score || Number(b.r.id) - Number(a.r.id)).slice(0, 40);
     const names = new Map();
@@ -217,7 +220,8 @@ const fileRows = (req, where, args) => db.prepare(`SELECT f.id, f.conv_id, f.nam
 // ---------- Traduction et transcription ----------
 const LANGS = { fr: 'français', en: 'anglais', de: 'allemand', es: 'espagnol' };
 router.post('/messages/:id/translate', aiLimit, async (req, res) => {
-  const { m } = await visibleMessage(req, req.params.id);
+  const { m, conv: cv } = await visibleMessage(req, req.params.id);
+  L.needPlain(cv, 'La traduction');
   const lang = A.oneOf((req.body || {}).lang, Object.keys(LANGS), 'fr', 'Langue inconnue.');
   const text = m.kind === 'voice' ? String(L.parseJSON(m.meta, {}).transcript || '') : m.body;
   if (!text) return res.json({ ok: false, code: 'empty', message: m.kind === 'voice' ? "Ce message vocal n'a pas encore été transcrit : transcrivez-le d'abord." : 'Ce message ne contient pas de texte à traduire.' });
@@ -227,6 +231,7 @@ router.post('/messages/:id/translate', aiLimit, async (req, res) => {
 });
 router.post('/messages/:id/transcribe', aiLimit, async (req, res) => {
   const { m, conv } = await visibleMessage(req, req.params.id);
+  L.needPlain(conv, 'La transcription');
   if (m.kind !== 'voice' || !m.file_id) throw new HttpError(400, "Seuls les messages vocaux peuvent être transcrits.");
   const meta = L.parseJSON(m.meta, {});
   if (meta.transcript) return res.json({ ok: true, text: meta.transcript });

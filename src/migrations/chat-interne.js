@@ -2,7 +2,9 @@
 // Chat interne (tables chat_) : migrations 300 et suivantes (append-only : ne jamais modifier une migration existante).
 //  300 : réglages de l'entreprise, préférences de chaque personne, conversations, participants, messages, fichiers, messages épinglés ;
 //  301 : sondages, messages programmés, rappels, tâches créées depuis un message ;
-//  302 : appels et réunions audio / vidéo (historique, participants).
+//  302 : appels et réunions audio / vidéo (historique, participants) ;
+//  303 : position en direct, activée librement par chaque employé (consentement, effaçable) ;
+//  304 : chiffrement de bout en bout des conversations à deux (clés PUBLIQUES seulement : les clés privées ne quittent jamais l'appareil).
 // Les fichiers sont stockés dans la base (colonne BYTEA), comme le reste du produit : le disque du serveur peut être éphémère.
 module.exports = [
   `
@@ -190,6 +192,29 @@ module.exports = [
     joined_at TEXT,
     left_at TEXT,
     PRIMARY KEY (call_id, user_id)
+  );
+  `,
+  `
+  CREATE TABLE IF NOT EXISTS ci_geo (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    enabled BIGINT NOT NULL DEFAULT 0,
+    consent_at TEXT,
+    lat DOUBLE PRECISION,
+    lng DOUBLE PRECISION,
+    accuracy BIGINT NOT NULL DEFAULT 0,
+    updated_at TEXT,
+    PRIMARY KEY (org_id, user_id)
+  );
+  `,
+  `
+  ALTER TABLE ci_conversations ADD COLUMN IF NOT EXISTS e2ee BIGINT NOT NULL DEFAULT 0;
+  CREATE TABLE IF NOT EXISTS ci_keys (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    public_key TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, user_id)
   );
   `,
 ];
