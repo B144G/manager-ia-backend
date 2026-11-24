@@ -1,6 +1,9 @@
 'use strict';
 // Espaces par rôle : chaque personne a SON espace (comptabilité, commercial, stock…) selon son compte et sa fonction dans l'entreprise.
-// Désactivé par défaut (réglage d'entreprise) : sans réglage, rien ne change et l'ancien menu général reste en place.
+// ACTIVÉS PAR DÉFAUT pour toutes les entreprises (existantes et nouvelles) : décision du fondateur, à la fusion. Retour arrière à deux niveaux :
+//   - le propriétaire d'une entreprise peut désactiver le réglage (PUT /spaces/settings) : l'entreprise retrouve l'ancien menu général ;
+//   - la variable d'environnement SPACES_BY_ROLE=off désactive les espaces pour TOUTES les entreprises (interrupteur général, sans redéploiement du site).
+// Une personne sans espace affecté garde ses accès actuels : ses espaces sont dérivés de ses droits (voir levelsFor, « repli sûr »).
 //
 // Niveaux d'accès à un espace (jamais un droit « au-dessus » de ce que le propriétaire a accordé) :
 //   view   Visiteur : lecture seule. Toute écriture est REFUSÉE par le serveur (403 space_readonly), quel que soit le rôle de la personne.
@@ -78,9 +81,13 @@ const SEG = {
 const moduleOfPath = (p) => { const seg = String(p || '').split('/')[1] || ''; return SEG[seg] === undefined ? null : SEG[seg]; };
 
 // ---------- Réglage de l'organisation et droits effectifs ----------
+/** Interrupteur général (variable d'environnement SPACES_BY_ROLE=off|0|false|non) : retour arrière pour toutes les entreprises. */
+const globalOff = () => /^(off|0|false|no|non|disabled|desactive|désactivé)$/i.test(String(process.env.SPACES_BY_ROLE || '').trim());
 async function settingsOf(orgId) {
   const r = await db.prepare('SELECT enabled, open_read FROM space_settings WHERE org_id = ?').get(orgId);
-  return { enabled: Boolean(r && Number(r.enabled)), openRead: Boolean(r && Number(r.open_read)) };
+  const off = globalOff();
+  // Sans réglage enregistré (entreprises existantes comme nouvelles) : ACTIVÉ. Un réglage du propriétaire (activé ou désactivé) est respecté, sauf interrupteur général.
+  return { enabled: !off && (r ? Boolean(Number(r.enabled)) : true), openRead: Boolean(r && Number(r.open_read)), explicit: Boolean(r), globalOff: off };
 }
 
 /**
@@ -93,6 +100,14 @@ async function levelsFor(orgId, userId, role) {
   const derived = {};
   const up = (sp, lv) => { if (LV[lv] > LV[derived[sp] || 'none']) derived[sp] = lv; };
   for (const s of SPACES) if (s.baseline) up(s.id, 'write');
+  // Repli sûr : une personne à qui le propriétaire n'a affecté AUCUN espace garde ses accès actuels. Ses espaces sont dérivés de ses droits :
+  // tout espace dont au moins un écran est ouvert à son rôle lui est accordé en « membre » (ses droits habituels, jamais relevés).
+  const fallback = rows.length === 0 && A.RANK[role] < A.RANK.admin;
+  if (fallback) {
+    const { modules } = require('./modules');
+    const seen = new Set(modules.filter((m) => A.RANK[role] >= A.RANK[m.min]).map((m) => m.id));
+    for (const s of SPACES) if (s.modules.some((m) => seen.has(m))) up(s.id, 'write');
+  }
   if (A.RANK[role] >= A.RANK.admin) for (const s of SPACES) up(s.id, 'manage');
   else {
     if (A.RANK[role] >= A.RANK.manager) up('direction', 'view');
@@ -109,7 +124,7 @@ async function levelsFor(orgId, userId, role) {
     const lv = fixed ? 'manage' : (e !== undefined ? e : d);
     if (lv !== 'none') { levels[s.id] = lv; via[s.id] = fixed ? 'role' : e !== undefined ? 'assigned' : s.baseline && d === 'write' ? 'base' : 'role'; }
   }
-  return { levels, via, explicit };
+  return { levels, via, explicit, fallback };
 }
 
 async function effective(req) {
@@ -144,11 +159,12 @@ async function forMember(req) {
   const visible = new Set(modules.filter((m) => A.RANK[eff.role] >= A.RANK[m.min]).map((m) => m.id));
   const spaces = SPACES.filter((s) => eff.levels[s.id]).map((s) => ({
     id: s.id, icon: s.icon, title: s.title, desc: s.desc, level: eff.levels[s.id], via: eff.via[s.id],
+    // (Seulement pour un espace AFFECTÉ par le propriétaire ; un espace dérivé des droits actuels ne montre que les écrans déjà ouverts au rôle.)
     // Un visiteur ou un responsable peut ouvrir des écrans que son rôle d'organisation ne montre pas (le serveur relève ses droits dans l'espace).
-    modules: s.modules.filter((m) => visible.has(m) || (LV[eff.levels[s.id]] >= LV.view && !NO_ELEVATE.has(s.id))).map((m) => ({ id: m, title: (modules.find((x) => x.id === m) || {}).title || m })),
+    modules: s.modules.filter((m) => visible.has(m) || (eff.via[s.id] === 'assigned' && LV[eff.levels[s.id]] >= LV.view && !NO_ELEVATE.has(s.id))).map((m) => ({ id: m, title: (modules.find((x) => x.id === m) || {}).title || m })),
   }));
   const l = landing(eff, last);
-  return { enabled: true, openRead: eff.openRead, spaces, funcRoles: eff.funcs, last, landing: l.space, choose: l.choose };
+  return { enabled: true, openRead: eff.openRead, spaces, funcRoles: eff.funcs, last, landing: l.space, choose: l.choose, fallback: Boolean(eff.fallback) };
 }
 
 // ---------- Garde des routes : appliquée à chaque requête vers un module ----------
@@ -274,13 +290,14 @@ router.get('/overview', async (req, res) => {
 router.put('/settings', A.need('owner'), async (req, res) => {
   const b = req.body || {};
   const cur = await settingsOf(req.org.id);
-  const enabled = b.enabled === undefined ? cur.enabled : Boolean(b.enabled);
+  const raw = await db.prepare('SELECT enabled FROM space_settings WHERE org_id = ?').get(req.org.id);
+  const enabled = b.enabled === undefined ? (raw ? Boolean(Number(raw.enabled)) : true) : Boolean(b.enabled); // enregistré tel quel : le réglage du propriétaire survit à l'interrupteur général
   const openRead = b.openRead === undefined ? cur.openRead : Boolean(b.openRead);
   await db.prepare(`INSERT INTO space_settings (org_id, enabled, open_read, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT (org_id) DO UPDATE SET enabled = EXCLUDED.enabled, open_read = EXCLUDED.open_read, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at`)
     .run(req.org.id, enabled ? 1 : 0, openRead ? 1 : 0, req.user.id, nowISO());
   await log(req, 'settings', `enabled=${enabled} openRead=${openRead}`);
-  res.json({ ok: true, enabled, openRead });
+  res.json({ ok: true, enabled: enabled && !globalOff(), openRead, globalOff: globalOff() });
 });
 
 router.get('/settings', A.need('admin'), async (req, res) => res.json({ ...(await settingsOf(req.org.id)), catalogue: SPACES.map(({ id, icon, title, desc, modules }) => ({ id, icon, title, desc, modules })), funcRoles: FUNC_ROLES.map((f) => ({ id: f.id, title: f.title, desc: f.desc, preset: presetOf([f.id]) })) }));

@@ -2,7 +2,15 @@
 
 Chaque personne a **son espace** (Comptabilité, Commercial, Stock…) selon son compte et sa fonction dans l'entreprise cliente, au lieu d'un menu général où tous les modules sont listés pour tout le monde.
 
-Réglage d'entreprise **« Espaces par rôle »** : **désactivé par défaut**. Tant qu'il l'est, rien ne change (ancien menu, mêmes droits). Le propriétaire l'active dans *Équipe et antennes › Espaces par rôle* ; le fondateur décidera plus tard d'en faire le défaut.
+Réglage d'entreprise **« Espaces par rôle »** : **ACTIVÉ PAR DÉFAUT pour tout le monde** (décision du fondateur, appliquée à la fusion « fusion-mabah »), entreprises existantes comprises : aucune migration de données, c'est l'absence de réglage enregistré qui vaut « activé ».
+
+**Sécurités et retour arrière**
+- **Repli sûr** : une personne à qui le propriétaire n'a affecté aucun espace GARDE ses accès actuels. Ses espaces sont dérivés de ses droits (tout espace dont au moins un écran est ouvert à son rôle, en niveau « membre », sans relèvement ; seuls les écrans déjà ouverts à son rôle sont listés). Dès que le propriétaire lui affecte un espace, elle ne voit plus que ses espaces affectés.
+- **Le propriétaire et les administrateurs voient tout** (inchangé : niveau « responsable » partout, jamais de blocage de leur propre compte).
+- **Retour arrière par entreprise** : le propriétaire désactive le réglage (*Équipe et antennes › Espaces par rôle*, ou `PUT /spaces/settings {enabled:false}`) : l'entreprise retrouve l'ancien menu général. Le réglage enregistré est respecté.
+- **Retour arrière général** : variable d'environnement serveur **`SPACES_BY_ROLE=off`** (Render) : plus d'espaces pour aucune entreprise, sans redéployer le site. Retirer la variable (ou `on`) les remet ; aucune affectation n'est perdue.
+- **Message d'information** au premier passage (site) : chaque personne voit une fois une explication du nouveau menu (retenue par entreprise et par navigateur).
+- Tests mis à jour : `scripts/test-espaces.js` (80 contrôles : défaut activé, repli sûr, isolation entre entreprises, droits, retour arrière propriétaire et général, entreprise créée après la fusion).
 
 ---
 
@@ -119,7 +127,7 @@ Les emplacements 146 à 169 sont réservés aux autres sessions (migrations vide
 
 | N° | Tables | Rôle |
 |---|---|---|
-| 170 | `space_settings` (`enabled`, `open_read`), `space_log` | réglage par entreprise (défaut : désactivé) et journal |
+| 170 | `space_settings` (`enabled`, `open_read`), `space_log` | réglage par entreprise (défaut en l'absence de ligne : activé) et journal |
 | 171 | `member_spaces` (org, user, space, access), `member_func_roles` | affectations et fonctions |
 | 172 | `member_space_prefs` | dernier espace choisi (d'un appareil à l'autre) |
 | 173 | `member_photos` | photo de profil (PNG / JPEG / WebP, 400 Ko max) |
@@ -171,7 +179,7 @@ Changements du cadre commun, volontairement minimes : `index.js` (3 lignes), `ac
 - Le mode visiteur désactive les boutons d'écriture reconnus par leur style / libellé (primaire, danger, « Modifier », « Supprimer »…) ; un bouton d'écriture à l'apparence atypique peut rester cliquable : l'appel est alors refusé (message « Consultation seule »).
 - Un module qui lit un autre module (liste de clients dans un formulaire de projet…) échoue en 403 si la personne n'a pas cet espace même en visiteur : accorder la consultation (ou activer « consultation ouverte »). C'est le prix d'une isolation stricte.
 - Une personne sans affectation perd l'accès aux modules « membre » qui ne sont pas dans Projets et réunions dès l'activation : à affecter avant d'activer.
-- Aucune migration de données automatique : les entreprises existantes ne sont pas touchées tant que le réglage reste désactivé.
+- Aucune migration de données automatique : le défaut « activé » s'applique aux entreprises sans réglage enregistré (toutes, au moment de la fusion) ; celles qui ont un réglage enregistré gardent le leur.
 - La messagerie interne, l'IA et les notifications restent communes à tous les espaces.
 
 ## 9. Démonstration

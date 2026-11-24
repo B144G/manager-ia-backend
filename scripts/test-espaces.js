@@ -44,21 +44,29 @@ async function main() {
     r = await other('POST', '/api/ws/orgs', { name: 'Autre société', currency: 'FCFA' }); const org2 = r.json.id; const O2 = `/api/ws/orgs/${org2}`;
 
     console.log('Migrations');
-    check('migrations 170 à 173 aux bons numéros, 146 à 169 vides ou réservées', /space_settings/.test(MIGRATIONS[169]) && /member_spaces/.test(MIGRATIONS[170]) && /member_space_prefs/.test(MIGRATIONS[171]) && /member_photos/.test(MIGRATIONS[172]) && MIGRATIONS.slice(145, 169).every((m) => /reserve|space/.test(m)), MIGRATIONS.length);
+    check('migrations 170 à 173 aux bons numéros, 150 à 169 vides ou réservées', /space_settings/.test(MIGRATIONS[169]) && /member_spaces/.test(MIGRATIONS[170]) && /member_space_prefs/.test(MIGRATIONS[171]) && /member_photos/.test(MIGRATIONS[172]) && MIGRATIONS.slice(149, 169).every((m) => /reserve|space/.test(m)), MIGRATIONS.length);
 
-    console.log('Désactivé par défaut : rien ne change');
+    console.log('Activés par défaut pour tout le monde (décision du fondateur)');
     r = await owner('GET', O);
-    check('le réglage est désactivé par défaut', r.json.spaces && r.json.spaces.enabled === false, r.json.spaces);
+    check('le réglage est ACTIVÉ par défaut (entreprise sans réglage enregistré)', r.json.spaces && r.json.spaces.enabled === true, r.json.spaces);
+    check('aucun réglage n\'a été écrit en base : c\'est le défaut qui s\'applique (entreprises existantes comprises)', Number((await db.prepare('SELECT COUNT(*) c FROM space_settings WHERE org_id = ?').get(org)).c) === 0);
+    r = await nobody('GET', O);
+    check('une personne sans espace affecté garde ses accès : espaces dérivés de ses droits (repli sûr)', r.json.spaces.enabled && r.json.spaces.fallback === true && ['commercial', 'stock', 'projets'].every((id) => r.json.spaces.spaces.some((s) => s.id === id)), r.json.spaces && r.json.spaces.spaces.map((s) => s.id));
+    check('… sans aucun relèvement de droits (niveau « membre »)', r.json.spaces.spaces.every((s) => s.level === 'write') && !r.json.spaces.spaces.some((s) => s.modules.some((m) => ['accounting', 'payroll', 'fiscal', 'integrations'].includes(m.id))), r.json.spaces.spaces.map((s) => `${s.id}:${s.level}`));
     r = await nobody('GET', `${O}/stock`);
     check('un membre accède à Stock comme avant', r.status === 200, r.status);
     r = await nobody('POST', `${O}/crm/customers`, { name: 'Client Avant' });
     check('et peut écrire comme avant (ancien comportement)', r.status < 400, [r.status, r.json]);
+    r = await nobody('GET', `${O}/accounting/accounts`);
+    check('mais pas à la comptabilité, réservée aux administrateurs comme avant (403)', r.status === 403, r.status);
     r = await nobody('GET', `${S}/assignments`);
     check('les réglages sont réservés aux administrateurs', r.status === 403);
     r = await nobody('PUT', `${S}/settings`, { enabled: true });
-    check('un membre ne peut pas activer les espaces', r.status === 403);
-    r = await mgr('PUT', `${S}/settings`, { enabled: true });
+    check('un membre ne peut pas modifier le réglage', r.status === 403);
+    r = await mgr('PUT', `${S}/settings`, { enabled: false });
     check('un responsable non plus', r.status === 403);
+    r = await mgr('GET', O);
+    check('un responsable sans affectation voit ses espaces dérivés (direction, commercial…) sans accès supplémentaire', r.json.spaces.fallback === true && r.json.spaces.spaces.some((s) => s.id === 'direction') && !r.json.spaces.spaces.some((s) => s.id === 'compte' && s.level === 'manage'), r.json.spaces.spaces.map((s) => `${s.id}:${s.level}`));
 
     console.log('Affectation (propriétaire)');
     r = await owner('GET', `${S}/settings`);
@@ -77,9 +85,9 @@ async function main() {
     const A_ = (id) => r.json.members.find((m) => m.userId === id);
     check('l’affectation est relue', A_(cptId).explicit.finances === 'manage' && A_(cptId).funcRoles[0] === 'comptable' && A_(comId).explicit.commercial === 'write', A_(cptId));
 
-    console.log('Activation par le propriétaire');
+    console.log('Réglage du propriétaire');
     r = await owner('PUT', `${S}/settings`, { enabled: true });
-    check('le propriétaire active', r.status === 200 && r.json.enabled === true);
+    check('le propriétaire confirme l\'activation', r.status === 200 && r.json.enabled === true);
 
     console.log('Redirection selon le rôle');
     r = await cpt('GET', O);
@@ -120,7 +128,7 @@ async function main() {
     r = await cpt('GET', `${O}/team-nope`);
     check('chemin inconnu : réponse normale du serveur (404)', r.status === 404);
     r = await nobody('GET', `${O}/stock`);
-    check('un membre sans affectation perd l’accès au Stock (espace non accordé)', r.status === 403 && r.json.code === 'space_denied');
+    check('une personne sans affectation garde l’accès au Stock même quand d’autres sont restreintes (repli sûr)', r.status === 200, [r.status, r.json]);
     r = await nobody('GET', `${O}/projects`);
     check('mais garde Projets et réunions (espace de base)', r.status === 200, r.status);
 
@@ -192,16 +200,40 @@ async function main() {
     r = await owner('GET', `${O2}/spaces/me`);
     check('le propriétaire d’une entreprise n’accède pas à l’autre (404)', r.status === 404);
     r = await other('GET', `${O2}`);
-    check('l’autre entreprise reste sans espaces (ancien menu)', r.json.spaces.enabled === false);
+    check('l’autre entreprise a aussi les espaces par défaut, sans rien hériter de la première', r.json.spaces.enabled === true && r.json.spaces.spaces.length === 9 && r.json.spaces.last === null);
     r = await other('PUT', `${O2}/spaces/assignments/${cptId}`, { spaces: { finances: 'manage' } });
     check('on ne peut pas affecter une personne d’une autre entreprise (404)', r.status === 404);
     r = await db.prepare('SELECT COUNT(*) c FROM member_spaces WHERE org_id = ?').get(org2);
     check('aucune affectation créée dans l’autre entreprise', Number(r.c) === 0);
 
-    console.log('Retour arrière');
+    console.log('Retour arrière (propriétaire, puis interrupteur général)');
     r = await owner('PUT', `${S}/settings`, { enabled: false });
     r = await nobody('GET', `${O}/stock`);
-    check('désactivés, les espaces rendent l’ancien comportement', r.status === 200);
+    check('désactivés par le propriétaire, les espaces rendent l’ancien comportement', r.status === 200);
+    r = await cpt('GET', `${O}/hr/employees`);
+    check('le comptable retrouve l’ancien menu général (plus de blocage d’espace)', r.status !== 403 || r.json.code !== 'space_denied', [r.status, r.json]);
+    r = await cpt('GET', O);
+    check('l’entreprise désactivée n’a plus d’espaces', r.json.spaces.enabled === false);
+    r = await other('GET', O2);
+    check('l’autre entreprise n’est pas touchée par ce retour arrière', r.json.spaces.enabled === true);
+    r = await owner('PUT', `${S}/settings`, { enabled: true });
+    r = await cpt('GET', `${O}/hr/employees`);
+    check('réactivés, le blocage d’espace revient', r.status === 403 && r.json.code === 'space_denied');
+    process.env.SPACES_BY_ROLE = 'off';
+    r = await cpt('GET', O);
+    check('interrupteur général SPACES_BY_ROLE=off : plus d’espaces pour personne', r.json.spaces.enabled === false);
+    r = await other('GET', O2);
+    check('… y compris pour une entreprise sans réglage', r.json.spaces.enabled === false);
+    r = await cpt('GET', `${O}/hr/employees`);
+    check('… et le serveur ne bloque plus par espace', !(r.status === 403 && r.json.code === 'space_denied'), [r.status, r.json]);
+    r = await owner('GET', `${S}/settings`);
+    check('le propriétaire est informé que l’interrupteur général est coupé', r.json.globalOff === true && r.json.enabled === false, r.json);
+    delete process.env.SPACES_BY_ROLE;
+    r = await cpt('GET', O);
+    check('interrupteur remis : les espaces reviennent (les affectations n’ont rien perdu)', r.json.spaces.enabled === true && r.json.spaces.spaces.find((s) => s.id === 'finances').level === 'manage');
+    r = await owner('POST', '/api/ws/orgs', { name: 'Nouvelle entreprise', currency: 'FCFA' });
+    r = await owner('GET', `/api/ws/orgs/${r.json.id}`);
+    check('une entreprise créée après la fusion a les espaces dès le premier jour', r.json.spaces.enabled === true && r.json.spaces.landing === 'direction');
     r = await owner('GET', `${S}/log`);
     check('journal des changements', r.status === 200 && r.json.log.length >= 3, r.json);
   } finally { srv.close(); await pgt.stop(); }
