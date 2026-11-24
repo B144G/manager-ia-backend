@@ -7,6 +7,7 @@ const { db, nowISO } = require('../db');
 const limits = require('../middleware/limits');
 const A = require('./access');
 const M = require('./meetings-lib');
+const X = require('./meetings-adv-lib');
 const { HttpError, oneLine, isEmail, log } = require('../util');
 
 const router = express.Router({ mergeParams: true });
@@ -16,7 +17,7 @@ const decideLimit = limits.make(10 * 60 * 1000, 60, 'Trop de demandes. Réessaye
 // ---------- Contenu ----------
 async function agendaRows(meetingId) {
   return (await db.prepare('SELECT g.*, u.name AS uname FROM mtg_agenda g LEFT JOIN users u ON u.id = g.owner_id WHERE g.meeting_id = ? ORDER BY g.position, g.id').all(meetingId))
-    .map((g) => ({ id: Number(g.id), title: g.title, ownerId: g.owner_id == null ? null : Number(g.owner_id), owner: g.uname || g.owner_name || '', durationMin: Number(g.duration_min), notes: g.notes, done: Boolean(Number(g.done)) }));
+    .map((g) => ({ id: Number(g.id), title: g.title, ownerId: g.owner_id == null ? null : Number(g.owner_id), owner: g.uname || g.owner_name || '', durationMin: Number(g.duration_min), notes: g.notes, done: Boolean(Number(g.done)), kind: g.kind || 'discuss', spentMin: Number(g.spent_min || 0), accepted: Boolean(Number(g.accepted)), proposedBy: g.proposed_by == null ? null : Number(g.proposed_by) }));
 }
 async function decisionRows(meetingId) {
   return (await db.prepare('SELECT * FROM mtg_decisions WHERE meeting_id = ? ORDER BY position, id').all(meetingId)).map((d) => ({ id: Number(d.id), text: d.text, agendaId: d.agenda_id == null ? null : Number(d.agenda_id) }));
@@ -31,7 +32,7 @@ async function officialRow(meetingId) {
 async function contentFor(req, m, parts, ctx) {
   if (ctx.draftVisible) return await liveContent(m);
   const off = await officialRow(m.id);
-  if (!off) return { summary: '', nextMeeting: '', agenda: (await agendaRows(m.id)).map((a) => ({ ...a, notes: '', done: false })), decisions: [], actions: [], source: 'none' };
+  if (!off) return { summary: '', nextMeeting: '', agenda: (await agendaRows(m.id)).filter((a) => a.accepted).map((a) => ({ ...a, notes: '', done: false })), decisions: [], actions: [], source: 'none' };
   const c = JSON.parse(off.content);
   const live = new Map((await M.actionsOf(m.id)).map((a) => [a.id, a]));
   return {
@@ -45,9 +46,12 @@ async function snapshot(req, m, parts) {
   const names = await db.prepare('SELECT id, name FROM users WHERE id IN (?, ?)').all(m.organizer_id || 0, m.secretary_id || 0);
   const nm = (id) => (names.find((n) => Number(n.id) === Number(id)) || {}).name || '';
   return {
-    summary: c.summary, nextMeeting: c.nextMeeting, agenda: c.agenda, decisions: c.decisions,
+    summary: c.summary, nextMeeting: c.nextMeeting, agenda: c.agenda.filter((a) => a.accepted !== false), decisions: c.decisions,
+    resolutions: (await db.prepare('SELECT number, title, text, status, vote_mode, majority, result, carrier_name, carrier_id, due FROM mtg_resolutions WHERE meeting_id = ? ORDER BY position, id').all(m.id))
+      .map((r) => ({ number: r.number, title: r.title, text: r.text, status: r.status, majority: r.majority, mode: r.vote_mode, due: r.due || null, result: r.result ? (({ for: f, against, abstain }) => ({ for: f, against, abstain }))(JSON.parse(r.result)) : null })),
+    quorumStatus: m.status === 'no_quorum' ? 'no_quorum' : 'ok',
     actions: c.actions.filter((a) => a.status !== 'cancelled').map((a) => ({ id: a.id, text: a.text, assigneeId: a.assigneeId, assignee: a.assignee, due: a.due, agendaId: a.agendaId })),
-    attendance: parts.map((p) => ({ name: p.uname || p.name, kind: p.user_id == null ? 'guest' : 'member', required: Boolean(Number(p.required)), response: p.response, reason: p.reason, attended: p.attended })),
+    attendance: parts.map((p) => ({ name: p.uname || p.name, kind: p.user_id == null ? 'guest' : 'member', required: Boolean(Number(p.required)), response: p.response, reason: p.reason, attended: p.attended, lateMin: Number(p.late_min || 0) })),
     meta: { title: m.title, type: m.type, date: m.date, time: m.start_time, endTime: M.endTime(m), durationMin: Number(m.duration_min), place: m.place, link: m.link, objective: m.objective, organizer: nm(m.organizer_id), secretary: nm(m.secretary_id), org: req.org.name },
   };
 }
@@ -149,8 +153,12 @@ router.post('/:id/actions', async (req, res) => {
   let pos = Number((await db.prepare('SELECT COALESCE(MAX(position), -1) p FROM mtg_actions WHERE meeting_id = ?').get(m.id)).p);
   const ids = [];
   await db.transaction(async () => {
-    for (const a of clean) ids.push(Number((await db.prepare('INSERT INTO mtg_actions (org_id, meeting_id, agenda_id, position, text, assignee_id, assignee_name, due, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(req.org.id, m.id, a.agendaId, ++pos, a.text, a.assigneeId, a.assigneeName, a.due, req.user.id, nowISO())).lastInsertRowid));
+    for (const a of clean) {
+      const aid = Number((await db.prepare('INSERT INTO mtg_actions (org_id, meeting_id, agenda_id, position, text, assignee_id, assignee_name, due, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(req.org.id, m.id, a.agendaId, ++pos, a.text, a.assigneeId, a.assigneeName, a.due, req.user.id, nowISO())).lastInsertRowid);
+      ids.push(aid);
+      if (a.assigneeId || a.assigneeName) await X.resp(req, m, { kind: 'action', refId: aid, userId: a.assigneeId, userName: a.assigneeName, role: 'assignee', subject: a.text });
+    }
     await M.mlog(req, m.id, 'action', `${clean.length} action(s) ajoutée(s)`);
   })();
   res.status(201).json({ ids });
@@ -163,6 +171,7 @@ router.put('/:id/actions/:aid', async (req, res) => {
   const n = await cleanAction(req, m, req.body || {}, cur);
   await db.transaction(async () => {
     await db.prepare('UPDATE mtg_actions SET text = ?, assignee_id = ?, assignee_name = ?, due = ?, agenda_id = ?, reminded_stage = CASE WHEN due IS DISTINCT FROM ? THEN 0 ELSE reminded_stage END WHERE id = ?').run(n.text, n.assigneeId, n.assigneeName, n.due, n.agendaId, n.due, cur.id);
+    await X.respChange(req, m, { kind: 'action', refId: cur.id, role: 'assignee', subject: n.text, before: cur.assignee_id, after: n.assigneeId, beforeName: cur.assignee_name, afterName: n.assigneeName });
     await M.mlog(req, m.id, 'action', 'Action modifiée');
   })();
   res.json({ ok: true });
@@ -242,7 +251,7 @@ router.post('/:id/minutes/submit', async (req, res) => {
   const version = Number((await db.prepare('SELECT COALESCE(MAX(version), 0) v FROM mtg_minutes WHERE meeting_id = ?').get(m.id)).v) + 1;
   await db.transaction(async () => {
     await db.prepare("INSERT INTO mtg_minutes (org_id, meeting_id, version, status, content, submitted_by, submitted_at) VALUES (?, ?, ?, 'submitted', ?, ?, ?)").run(req.org.id, m.id, version, JSON.stringify(snap), req.user.id, nowISO());
-    await db.prepare("UPDATE mtg_meetings SET minutes_status = 'submitted', minutes_version = ?, status = 'held', return_reason = '', updated_at = ? WHERE id = ?").run(version, nowISO(), m.id);
+    await db.prepare("UPDATE mtg_meetings SET minutes_status = 'submitted', minutes_version = ?, status = CASE WHEN status = 'no_quorum' THEN status ELSE 'held' END, return_reason = '', updated_at = ? WHERE id = ?").run(version, nowISO(), m.id);
     await M.mlog(req, m.id, 'submitted', `Compte rendu soumis à validation (version ${version})`);
   })();
   const label = Number(m.confidential) ? 'une réunion confidentielle' : `« ${m.title} »`;
@@ -262,7 +271,8 @@ router.post('/:id/minutes/validate', decideLimit, async (req, res) => {
     await db.prepare("UPDATE mtg_minutes SET status = 'superseded' WHERE meeting_id = ? AND status = 'validated'").run(m.id);
     await db.prepare("UPDATE mtg_minutes SET status = 'validated', decided_by = ?, decided_at = ?, reason = ? WHERE id = ?").run(req.user.id, nowISO(), A.text(b.comment, 300), sub.id);
     await db.prepare("UPDATE mtg_meetings SET minutes_status = 'validated', updated_at = ? WHERE id = ?").run(nowISO(), m.id);
-    const tasks = await syncTasks(req, m);
+    const tasks = m.status === 'no_quorum' ? { created: [], updated: 0 } : await syncTasks(req, m); // sans quorum, aucune décision n'est valable : pas de tâches
+    await require('./meetings-adv2').signMinutes(req, m, sub);
     await M.mlog(req, m.id, 'validated', `Compte rendu validé (version ${sub.version}) ; ${tasks.created.length} tâche(s) créée(s)`);
     return tasks;
   })();
