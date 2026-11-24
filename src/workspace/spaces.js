@@ -182,7 +182,8 @@ async function guard(req, res, next) {
   }
   if (lv === 'view' && !read) throw Object.assign(new HttpError(403, 'Consultation seule : vous êtes visiteur dans cet espace, aucune modification n\'est possible.'), { errorCode: 'space_readonly' });
   const real = req.member.role;
-  const raise = !NO_ELEVATE.has(sp) && A.RANK[real] < A.RANK.admin && (lv === 'manage' || (lv === 'view' && read));
+  // Relèvement des droits SEULEMENT pour un espace affecté par le propriétaire : un niveau dérivé des droits actuels (repli sûr) ne donne jamais plus que ce que la personne avait avant.
+  const raise = eff.via[sp] === 'assigned' && !NO_ELEVATE.has(sp) && A.RANK[real] < A.RANK.admin && (lv === 'manage' || (lv === 'view' && read));
   if (raise) req.member = { ...req.member, role: 'admin', _realRole: real, _elevated: true }; // pour CETTE requête seulement, dans cet espace seulement
   next();
 }

@@ -27,6 +27,7 @@ export const SKIP_PATHS = [
   /^docs\/fusion\//,                         // rapports et journaux de déploiement de la fusion (historique)
   /(^|\/)TESTS[^/]*\.txt$/,                  // anciens journaux de tests
   /^src\/migrations\//,                      // historique des migrations : jamais modifié (append-only)
+  /^docs\/(mise-en-ligne-mabah|fusion-mabah-resultats)\.md$/,      // procédure de mise en ligne et résultats de la fusion : citent l'ancien nom (redirection, alias, message aux clients)
   /^docs\/renommage-mabah/,                  // la documentation du renommage cite évidemment l'ancien nom
   /^scripts\/rename-brand\.mjs$/,            // ce script
   /^scripts\/test-no-legacy-brand\.(js|mjs)$/, // le test de la liste blanche
