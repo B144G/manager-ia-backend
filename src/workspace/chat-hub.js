@@ -78,7 +78,7 @@ function openStream(req, res, orgId, userId, { onOpen, onClose } = {}) {
   const wasOnline = isOnline(orgId, userId);
   e.streams.add(res); e.seen = Date.now();
   sseSend(res, { seq, type: 'hello', data: { epoch: EPOCH, seq } });
-  const beat = setInterval(() => { e.seen = Date.now(); try { res.write(`: ping ${Date.now()}\n\n`); } catch { /* */ } }, 20000);
+  const beat = setInterval(() => { e.seen = Date.now(); try { res.write('event: ping\ndata: 1\n\n'); } catch { /* */ } }, 20000);
   req.on('close', () => { clearInterval(beat); e.streams.delete(res); e.seen = Date.now(); if (onClose) onClose(); });
   if (!wasOnline && onOpen) onOpen();
   return true;
