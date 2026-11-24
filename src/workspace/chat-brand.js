@@ -1,6 +1,7 @@
 'use strict';
-// Point d'entrée UNIQUE du nom du produit pour le chat interne (serveur). Pour renommer le produit : variable PRODUCT_NAME,
-// ou (après la fusion) brancher ici la constante centrale du nom du produit. Aucun autre fichier du chat ne contient le nom.
-const PRODUCT_NAME = String(process.env.PRODUCT_NAME || 'Brij-IA').trim().slice(0, 40) || 'Brij-IA';
-const AI_NAME = `${PRODUCT_NAME} IA`;
+// Point d'entrée UNIQUE du nom du produit pour le chat interne (serveur) : la constante centrale src/services/product.js.
+// (La variable d'environnement PRODUCT_NAME, si elle est définie, la remplace pour le chat seulement.)
+const PRODUCT = require('../services/product');
+const PRODUCT_NAME = String(process.env.PRODUCT_NAME || PRODUCT.name).trim().slice(0, 40) || PRODUCT.name;
+const AI_NAME = process.env.PRODUCT_NAME ? `${PRODUCT_NAME} IA` : PRODUCT.assistantName;
 module.exports = { PRODUCT_NAME, AI_NAME };

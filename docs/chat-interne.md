@@ -98,7 +98,7 @@ Bouton « Géolocalisation » dans l'en-tête de toute conversation (et sur l'ac
 
 | Variable | Rôle | Défaut |
 |---|---|---|
-| `PRODUCT_NAME` | nom du produit utilisé pour nommer l'assistante (« … IA ») ; à remplacer par la constante centrale après le renommage | `Brij-IA` |
+| `PRODUCT_NAME` | facultatif : remplace, pour le chat seulement, le nom central (`src/services/product.js`) | constante centrale (`MABAH`) |
 | `CHAT_STUN_URLS` | serveurs STUN, séparés par des virgules | STUN publics de Google |
 | `CHAT_TURN_URLS` | serveurs TURN (ex. `turn:turn.exemple.com:3478,turns:turn.exemple.com:5349`) | aucun |
 | `CHAT_TURN_SECRET` | secret partagé coturn (`use-auth-secret`) : identifiants **temporaires** (1 h) calculés par le serveur | — |
