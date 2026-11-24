@@ -13,7 +13,7 @@ const QUERY = ['q', 'search', 'sort', 'order', 'orderBy', 'dir', 'status', 'kind
   .map((k) => `${k}=${encodeURIComponent(SQLI)}`).join('&');
 
 run('Sécurité : entrées hostiles sur toutes les routes de lecture', async ({ check, owner, org, org2, base }) => {
-  const routes = listRoutes(app).filter((r) => r.method === 'GET' && r.path.startsWith('/api/ws/orgs/:orgId') && !/\/(export|download|file|pdf|print)/.test(r.path));
+  const routes = listRoutes(app).filter((r) => r.method === 'GET' && r.path.startsWith('/api/ws/orgs/:orgId') && !/\/(export|download|file|pdf|print)/.test(r.path) && !/\/chat\/stream$/.test(r.path)); // /chat/stream : flux temps réel qui ne se termine jamais (testé dans test:chat)
   check(`routes de lecture de l'espace de travail : ${routes.length} (plus de 250 attendues)`, routes.length > 250, routes.length);
   const slow = []; const fail = []; let n = 0;
   for (const r of routes) {
