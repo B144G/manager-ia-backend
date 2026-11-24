@@ -53,6 +53,10 @@ async function main() {
     r = await nobody('GET', O);
     check('une personne sans espace affecté garde ses accès : espaces dérivés de ses droits (repli sûr)', r.json.spaces.enabled && r.json.spaces.fallback === true && ['commercial', 'stock', 'projets'].every((id) => r.json.spaces.spaces.some((s) => s.id === id)), r.json.spaces && r.json.spaces.spaces.map((s) => s.id));
     check('… sans aucun relèvement de droits (niveau « membre »)', r.json.spaces.spaces.every((s) => s.level === 'write') && !r.json.spaces.spaces.some((s) => s.modules.some((m) => ['accounting', 'payroll', 'fiscal', 'integrations'].includes(m.id))), r.json.spaces.spaces.map((s) => `${s.id}:${s.level}`));
+    r = await nobody('GET', O);
+    check('le Chat interne fait partie de l\'espace de base « Projets et réunions » (clé de permission « chat »)', r.json.spaces.spaces.find((s) => s.id === 'projets').modules.some((m) => m.id === 'chat'));
+    r = await nobody('GET', `${O}/chat`);
+    check('et le chat reste accessible à une personne sans affectation', r.status === 200, [r.status, r.json]);
     r = await nobody('GET', `${O}/stock`);
     check('un membre accède à Stock comme avant', r.status === 200, r.status);
     r = await nobody('POST', `${O}/crm/customers`, { name: 'Client Avant' });
