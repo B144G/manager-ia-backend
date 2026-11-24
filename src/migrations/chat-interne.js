@@ -4,6 +4,7 @@
 //  301 : sondages, messages programmés, rappels, tâches créées depuis un message ;
 //  302 : appels et réunions audio / vidéo (historique, participants) ;
 //  303 : position en direct, activée librement par chaque employé (consentement, effaçable) ;
+//  305 : fils de discussion rattachés à un objet d'un module (type + identifiant) ;
 //  304 : chiffrement de bout en bout des conversations à deux (clés PUBLIQUES seulement : les clés privées ne quittent jamais l'appareil).
 // Les fichiers sont stockés dans la base (colonne BYTEA), comme le reste du produit : le disque du serveur peut être éphémère.
 module.exports = [
@@ -216,5 +217,10 @@ module.exports = [
     created_at TEXT NOT NULL,
     PRIMARY KEY (org_id, user_id)
   );
+  `,
+  `
+  ALTER TABLE ci_conversations ADD COLUMN IF NOT EXISTS object_type TEXT;
+  ALTER TABLE ci_conversations ADD COLUMN IF NOT EXISTS object_id BIGINT;
+  CREATE UNIQUE INDEX IF NOT EXISTS ux_ci_conv_object ON ci_conversations(org_id, object_type, object_id) WHERE object_type IS NOT NULL;
   `,
 ];

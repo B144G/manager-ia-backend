@@ -54,6 +54,8 @@ async function loadConv(req, id) {
     FROM ci_conversations c JOIN ci_members m ON m.conv_id = c.id AND m.user_id = ? AND m.left_at IS NULL
     WHERE c.id = ? AND c.org_id = ?`).get(req.user.id, cid, req.org.id);
   if (!c) throw new HttpError(404, 'Conversation introuvable.');
+  // Fil rattaché à un objet d'un module : lisible seulement par ceux qui ont (encore) le droit de voir l'objet.
+  if (c.object_type) { const O = require('./chat-objects'); if (!await O.resolve(req, c.object_type, Number(c.object_id))) throw new HttpError(404, 'Conversation introuvable.'); }
   return c;
 }
 /** Conversation chiffrée de bout en bout : le serveur ne voit que du texte chiffré, il ne peut ni le lire, ni le chercher, ni le confier à l'IA. */
@@ -110,6 +112,8 @@ async function views(req, conv, rows, memberList) {
   const pinned = new Set((await db.prepare(`SELECT message_id FROM ci_pins WHERE conv_id = ? AND message_id IN (${ph(ids)})`).all(conv.id, ...ids)).map((r) => Number(r.message_id)));
   const tasks = new Map();
   for (const t of await db.prepare(`SELECT mt.message_id, mt.task_id, t.title FROM ci_msg_tasks mt JOIN tasks t ON t.id = mt.task_id WHERE t.org_id = ? AND mt.message_id IN (${ph(ids)})`).all(req.org.id, ...ids)) tasks.set(Number(t.message_id), { id: Number(t.task_id), title: t.title });
+  const cards = new Map();
+  for (const r of rows) if (r.kind === 'object' && !r.deleted_at) { const m = parseJSON(r.meta, {}); const k = `${m.type}:${m.id}`; if (!cards.has(k)) cards.set(k, await require('./chat-objects').cardFor(req.org, req.user.id, m.type, Number(m.id))); }
   const mine = (r) => num(r.sender_id) === req.user.id;
   const others = (r) => mem.filter((m) => Number(m.user_id) !== num(r.sender_id));
   return rows.map((r) => {
@@ -120,6 +124,7 @@ async function views(req, conv, rows, memberList) {
       urgent: Number(r.urgent) === 1, mentions: del ? [] : parseJSON(r.mentions, []), mentionAll: Number(r.mention_all) === 1, mine: mine(r),
       replyTo: r.reply_to_id ? replies.get(Number(r.reply_to_id)) || { id: Number(r.reply_to_id), senderName: '', snippet: '', deleted: true } : null,
       file: !del && r.file_id ? files.get(Number(r.file_id)) || null : null, poll: !del && polls.get(Number(r.id)) || null, pinned: pinned.has(Number(r.id)), task: tasks.get(Number(r.id)) || null,
+      object: r.kind === 'object' && !del ? cards.get(`${parseJSON(r.meta, {}).type}:${parseJSON(r.meta, {}).id}`) || null : null,
       privateToMe: r.visible_to != null, // note de l'assistante visible par vous seul
     };
     if (mine(r) && !del && r.kind !== 'system') {
@@ -171,7 +176,8 @@ async function postMessage(req, conv, o) {
   if (!o.visibleTo) await db.prepare('UPDATE ci_conversations SET last_message_id = ?, last_at = ? WHERE id = ?').run(id, now, conv.id);
   if (sender) await db.prepare('UPDATE ci_members SET last_read_id = ?, last_delivered_id = ? WHERE conv_id = ? AND user_id = ? AND last_read_id < ?').run(id, id, conv.id, sender, id);
   const row = await db.prepare('SELECT * FROM ci_messages WHERE id = ?').get(id);
-  const targets = mem.filter((m) => (!o.visibleTo || Number(m.user_id) === o.visibleTo)).map((m) => Number(m.user_id));
+  let targets = mem.filter((m) => (!o.visibleTo || Number(m.user_id) === o.visibleTo)).map((m) => Number(m.user_id));
+  if (conv.object_type) { const O = require('./chat-objects'); const ok = []; for (const u of targets) if (await O.canView(req.org, u, conv.object_type, Number(conv.object_id))) ok.push(u); targets = ok; } // fil d'objet : jamais d'événement vers quelqu'un qui a perdu le droit de voir l'objet
   hub.setTyping(orgId, conv.id, sender || 0, null);
   // Remise : les personnes en ligne reçoivent le message tout de suite, donc « distribué ».
   const online = targets.filter((u) => u !== sender && hub.isOnline(orgId, u));
@@ -179,7 +185,8 @@ async function postMessage(req, conv, o) {
   const fresh = o.members ? mem : await members(conv.id, orgId);
   const [view] = await views({ ...req, user: { id: sender || 0 } }, conv, [row], fresh);
   for (const u of targets) {
-    const mineView = u === sender ? view : { ...view, mine: false, delivered: undefined, read: undefined, readBy: undefined };
+    let mineView = u === sender ? view : { ...view, mine: false, delivered: undefined, read: undefined, readBy: undefined };
+    if (view.kind === 'object' && view.object) { const m = view.meta; mineView = { ...mineView, object: await require('./chat-objects').cardFor(req.org, u, m.type, Number(m.id)) }; } // chaque destinataire voit ce que SES droits permettent
     hub.publish(orgId, [u], 'message', { convId: Number(conv.id), message: mineView, unreadFor: u !== sender });
   }
   if (online.length && sender) hub.publish(orgId, [sender], 'receipt', { convId: Number(conv.id), userIds: online, kind: 'delivered', upTo: id });
@@ -213,7 +220,7 @@ async function convSummary(req, c, memberList, withLast = true) {
   return {
     id: Number(c.id), kind: c.kind, purpose: c.purpose, name: c.kind === 'direct' ? (other ? other.name : '') : c.name, description: c.description, department: c.department, projectId: num(c.project_id),
     otherUserId: other ? Number(other.user_id) : null, aiEnabled: Number(c.ai_enabled) === 1, onlyAdminsPost: Number(c.only_admins_post) === 1, myRole: c.my_role, muted: Number(c.my_muted) === 1, archived: Number(c.my_archived) === 1,
-    e2ee: Number(c.e2ee) === 1, memberCount: mem.length, unread, mentioned, last, lastAt: c.last_at, createdAt: c.created_at,
+    e2ee: Number(c.e2ee) === 1, objectType: c.object_type || null, objectId: c.object_id == null ? null : Number(c.object_id), memberCount: mem.length, unread, mentioned, last, lastAt: c.last_at, createdAt: c.created_at,
   };
 }
 

@@ -578,6 +578,120 @@ run('Chat interne : conversations, groupes, fichiers, appels, assistante, isolat
   r = await owner('GET', `${C}/files/${EF}/content`);
   check('un tiers n’y accède pas (404)', r.status === 404, r.status);
 
+  // ---------- Rattachement aux modules : « Discuter », cartes d'objets, droits ----------
+  const OB = `${C}/objects`; const OB2 = `${C2}/objects`;
+  r = await mem('GET', `${OB}/types`);
+  check('registre : un simple membre ne voit pas les types réservés aux responsables (employé, fournisseur, achats)', r.status === 200 && r.json.types.some((t) => t.type === 'task') && r.json.types.some((t) => t.type === 'library_doc') && r.json.types.some((t) => t.type === 'meeting') && !r.json.types.some((t) => ['employee', 'supplier', 'pur_order'].includes(t.type)), r.json.types.map((t) => t.type));
+  r = await mgr('GET', `${OB}/types`);
+  check('… un responsable les voit', r.json.types.some((t) => t.type === 'employee'), r.json.types.length);
+  const tk2 = Number((await owner('POST', `${O}/projects/tasks`, { title: 'Relancer le client Mbida', projectId: proj })).json.id);
+  r = await mem('GET', `${OB}/task/${tk2}`);
+  check('aperçu d’un objet autorisé (tâche)', r.status === 200 && r.json.object.accessible && r.json.object.title === 'Relancer le client Mbida' && r.json.object.module === 'projects', r.json);
+  r = await mem('GET', `${OB}/search?type=task&q=Mbida`);
+  check('recherche d’objets (sélecteur de partage) filtrée par droits', r.json.results.length === 1 && r.json.results[0].id === tk2, r.json);
+  r = await other('GET', `${OB2}/task/${tk2}`);
+  check('isolation : l’objet d’une autre entreprise est introuvable (404)', r.status === 404, r.status);
+  r = await mem('POST', `${OB}/task/${tk2}/thread`, {});
+  const TH = r.json.conversation.id;
+  check('« Discuter » : fil de discussion créé et rattaché à la tâche', r.status === 200 && r.json.conversation.objectType === 'task' && r.json.conversation.objectId === tk2 && r.json.conversation.name === 'Relancer le client Mbida', r.json);
+  r = await mgr('POST', `${OB}/task/${tk2}/thread`, {});
+  check('un seul fil par objet : le même fil est retrouvé', r.json.conversation.id === TH, r.json);
+  r = await mgr('POST', `${C}/conversations/${TH}/messages`, { body: 'Je m’en occupe demain' });
+  r = await mem('GET', `${C}/conversations/${TH}/messages`);
+  check('les deux personnes lisent le fil', r.json.messages.some((m) => m.body === 'Je m’en occupe demain'), r.json.messages.length);
+  r = await owner('GET', `${C}/conversations/${TH}`);
+  check('une personne qui n’a pas rejoint le fil ne le lit pas (404)', r.status === 404, r.status);
+  r = await owner('POST', `${OB}/task/${tk2}/thread`, {});
+  check('… mais elle peut l’ouvrir, car elle a le droit de voir la tâche', r.status === 200, r.status);
+  r = await owner('POST', `${OB}/task/99999/thread`, {});
+  check('objet inexistant : 404', r.status === 404, r.status);
+  r = await mem('POST', `${OB}/employee/1/thread`, {});
+  check('droits : un membre ne peut pas ouvrir un fil sur un employé (404, jamais d’indice)', r.status === 404, r.status);
+  await dbx.prepare("INSERT INTO employees (org_id, name, job, created_at) VALUES (?, 'Employé SECRET-RH', 'Comptable', ?)").run(org, new Date().toISOString());
+  const emp = Number((await dbx.prepare("SELECT id FROM employees WHERE name = 'Employé SECRET-RH'").get()).id);
+  r = await mem('GET', `${OB}/employee/${emp}`);
+  check('droits : l’aperçu d’un employé est refusé à un simple membre (404)', r.status === 404, r.status);
+  r = await mgr('POST', `${OB}/employee/${emp}/thread`, { invite: [paul] });
+  const ETH = r.json.conversation.id;
+  check('un responsable ouvre le fil de l’employé ; inviter un membre sans droit est ignoré', r.status === 200 && r.json.conversation.memberCount === 1, r.json);
+  r = await mem('GET', `${C}/conversations/${ETH}/messages`);
+  check('… le membre sans droit ne lit pas ce fil (404)', r.status === 404, r.status);
+  // carte d'objet partagée : chaque lecteur est contrôlé séparément
+  r = await mgr('POST', `${OB}/share`, { convId: D, type: 'employee', id: emp });
+  check('Marc partage la carte d’un employé dans sa conversation avec Paul', r.status === 201 && r.json.message.kind === 'object' && r.json.message.object.accessible === true && r.json.message.object.title === 'Employé SECRET-RH', r.json);
+  r = await mem('GET', `${C}/conversations/${D}/messages?limit=5`);
+  const card = r.json.messages.find((m) => m.kind === 'object');
+  check('Paul voit une carte « objet non accessible » : AUCUN titre ni détail', card && card.object.accessible === false && !JSON.stringify(card).includes('SECRET-RH') && !JSON.stringify(card).includes('Comptable'), card);
+  r = await mem('GET', `${C}/updates?after=0&epoch=${epoch}`);
+  check('… ni dans le flux temps réel reçu par Paul', !JSON.stringify(r.json).includes('SECRET-RH'));
+  r = await mgr('GET', `${C}/conversations/${D}/messages?limit=5`);
+  check('Marc, lui, voit l’aperçu complet', r.json.messages.find((m) => m.kind === 'object').object.title === 'Employé SECRET-RH');
+  r = await mem('POST', `${OB}/share`, { convId: D, type: 'employee', id: emp });
+  check('on ne peut pas partager un objet qu’on n’a pas le droit de voir (404)', r.status === 404, r.status);
+  r = await mem('POST', `${OB}/share`, { convId: E, type: 'task', id: tk2 });
+  check('le partage d’objet est refusé dans une conversation chiffrée (400)', r.status === 400, r.status);
+  r = await owner('POST', `${OB}/share`, { convId: D, type: 'task', id: tk2 });
+  check('le propriétaire ne peut pas partager dans la conversation privée des autres (404)', r.status === 404, r.status);
+  // réunions : fil automatique, droits de la confidentialité, événements publiés comme messages système
+  const mtP = (await owner('POST', `${O}/meetings`, { title: 'Réunion fil auto', type: 'team', date: '2099-05-05', time: '09:00', durationMin: 30, participants: [{ userId: marc }, { userId: paul }], agenda: [{ title: 'Budget' }, { title: 'Recrutement' }] })).json.id;
+  await sleep(600);
+  r = await mgr('GET', `${C}/conversations`);
+  const mth = r.json.conversations.find((c) => c.objectType === 'meeting' && c.objectId === mtP);
+  check('Réunions : la convocation crée le fil de la réunion et y rattache les participants', mth && mth.memberCount === 3 && mth.name === 'Réunion fil auto', r.json.conversations.map((c) => c.name));
+  r = await mgr('GET', `${C}/conversations/${mth.id}/messages`);
+  const conv0 = r.json.messages.find((m) => m.meta.event === 'obj_meeting_convened');
+  check('… avec un message système (date, ordre du jour)', conv0 && conv0.meta.agenda.join() === 'Budget,Recrutement' && conv0.meta.date === '2099-05-05', conv0);
+  await owner('PUT', `${O}/meetings/${mtP}/agenda`, { items: [{ title: 'Budget' }, { title: 'Recrutement' }, { title: 'Divers' }] });
+  await owner('POST', `${O}/meetings/${mtP}/decisions`, { text: 'Valider le budget 2099' });
+  await owner('POST', `${O}/meetings/${mtP}/actions`, { text: 'Envoyer le devis', assigneeId: paul, due: '2099-06-01' });
+  await sleep(1800);
+  r = await mem('GET', `${C}/conversations/${mth.id}/messages`);
+  const ev = r.json.messages.filter((m) => m.kind === 'system').map((m) => m.meta.event);
+  check('Réunions : ordre du jour, décision et action sont publiés comme messages système dans le fil', ev.includes('obj_meeting_agenda') && ev.includes('obj_meeting_decision') && ev.includes('obj_meeting_action'), ev);
+  check('… avec leur contenu', JSON.stringify(r.json.messages).includes('Valider le budget 2099') && JSON.stringify(r.json.messages).includes('Envoyer le devis') && JSON.stringify(r.json.messages).includes('Divers'));
+  const mtC = (await owner('POST', `${O}/meetings`, { title: 'Confidentielle SECRET-DIR', type: 'direction', date: '2099-05-06', time: '09:00', confidential: true, participants: [{ userId: marc }] })).json.id;
+  await sleep(600);
+  r = await mem('GET', `${OB}/meeting/${mtC}`);
+  check('Réunions confidentielles : un non-invité ne voit pas l’objet (404)', r.status === 404, r.status);
+  r = await mem('POST', `${OB}/meeting/${mtC}/thread`, {});
+  check('… et ne peut pas ouvrir son fil (404)', r.status === 404, r.status);
+  r = await mem('GET', `${C}/conversations`);
+  check('… le fil de la réunion confidentielle n’apparaît pas dans sa liste', !r.json.conversations.some((c) => c.objectId === mtC && c.objectType === 'meeting') && !JSON.stringify(r.json).includes('SECRET-DIR'), r.json.conversations.map((c) => c.name));
+  r = await mgr('GET', `${C}/conversations`);
+  check('… mais le participant invité (Marc) y a accès', r.json.conversations.some((c) => c.objectId === mtC), r.json.conversations.length);
+  // perte de droit : Paul est retiré de la réunion de l'équipe => il n'a plus accès au fil
+  await dbx.prepare('UPDATE mtg_meetings SET confidential = 1 WHERE id = ?').run(mtP);
+  await dbx.prepare('DELETE FROM mtg_participants WHERE meeting_id = ? AND user_id = ?').run(mtP, paul);
+  r = await mem('GET', `${C}/conversations`);
+  check('perte de droit sur l’objet : le fil disparaît de la liste de Paul', !r.json.conversations.some((c) => c.id === mth.id), r.json.conversations.map((c) => c.name));
+  r = await mem('GET', `${C}/conversations/${mth.id}/messages`);
+  check('… et ses messages ne sont plus lisibles (404)', r.status === 404, r.status);
+  r = await mem('GET', `${C}/search?q=${encodeURIComponent('Valider le budget 2099')}`);
+  check('… ni retrouvables par la recherche', !r.json.messages.some((m) => m.text.includes("budget 2099")), r.json.messages);
+  // Bibliothèque : carte d'un document sans le dupliquer ; droits du bloc
+  r = await owner('POST', `${O}/library/blocks`, { name: 'Contrats' });
+  const blk = r.json.id;
+  const nowI = new Date().toISOString();
+  const LD = Number((await dbx.prepare("INSERT INTO lib_docs (org_id, block_id, name, mime, size, created_by, created_at, updated_at) VALUES (?, ?, 'contrat.pdf', 'application/pdf', 2048, ?, ?, ?) RETURNING id").get(org, blk, awa, nowI, nowI)).id);
+  check('Bibliothèque : document créé pour le test (bloc réservé aux administrateurs)', LD > 0, LD);
+  r = await owner('POST', `${OB}/share`, { convId: D === 0 ? 1 : GR, type: 'library_doc', id: LD });
+  check('le propriétaire partage la carte d’un document de la Bibliothèque dans un groupe', r.status === 201 && r.json.message.object.title === 'contrat.pdf', r.json);
+  const nDocs = Number((await dbx.prepare('SELECT COUNT(*) c FROM lib_docs').get()).c);
+  check('le document n’est PAS dupliqué (même nombre de documents)', nDocs === 1, nDocs);
+  r = await mem('GET', `${C}/conversations/${GR}/messages?limit=5`);
+  const lc = r.json.messages.find((m) => m.kind === 'object');
+  check('un membre sans droit sur le bloc ne voit ni nom ni taille du document', lc && lc.object.accessible === false && !JSON.stringify(lc).includes('contrat.pdf'), lc);
+  r = await mem('GET', `${OB}/search?type=library_doc&q=contrat`);
+  check('… et la recherche de documents ne le retourne pas', r.json.results.length === 0, r.json);
+  r = await owner('GET', `${OB}/search?type=library_doc&q=contrat`);
+  check('… alors que celui qui a le droit le trouve', r.json.results.length === 1, r.json);
+  r = await owner('POST', `${OB}/library_doc/${LD}/thread`, {});
+  check('fil de discussion d’un document de la Bibliothèque', r.status === 200 && r.json.conversation.objectType === 'library_doc', r.json);
+  r = await mem('POST', `${OB}/library_doc/${LD}/thread`, {});
+  check('… refusé à qui n’a pas le droit sur le bloc (404)', r.status === 404, r.status);
+  r = await owner('GET', `${OB}/pirate/1`);
+  check('type d’objet inconnu : 404', r.status === 404, r.status);
+
   // ---------- Isolation entre entreprises + limites ----------
   for (const [m, p, b] of [['GET', `/files/${F1}/content`], ['PUT', `/files/${F1}`, { folder: 'x' }], ['POST', `/polls/${P}/vote`, { optionIds: [1] }], ['POST', `/messages/${M1}/pin`, {}], ['GET', `/conversations/${D}/messages`], ['GET', `/conversations/${G}`], ['POST', `/groups`, { name: 'x', memberIds: [marc] }], ['GET', `/search?q=SECRET`]]) {
     r = await other(m, `${C2}${p}`, b);
@@ -598,7 +712,7 @@ run('Chat interne : conversations, groupes, fichiers, appels, assistante, isolat
 }, {
   async setup() {
     const a = await fakeAiServer();
-    return { a, env: { ANTHROPIC_API_KEY: 'cle-de-test', ANTHROPIC_BASE_URL: `http://127.0.0.1:${a.port}`, WS_AI_FREE: '500', AI_PER_MINUTE: '500', RATE_LIMIT_GLOBAL: '100000', PRODUCT_NAME: 'ProduitTest' } };
+    return { a, env: { ANTHROPIC_API_KEY: 'cle-de-test', ANTHROPIC_BASE_URL: `http://127.0.0.1:${a.port}`, WS_AI_FREE: '500', AI_PER_MINUTE: '500', RATE_LIMIT_GLOBAL: '100000', PRODUCT_NAME: 'ProduitTest', CHAT_PRUNE_MS: '0' } };
   },
   async teardown(x) { x.a.srv.close(); },
 });

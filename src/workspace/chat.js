@@ -26,6 +26,9 @@ router.use(async (req, res, next) => {
   next();
 });
 
+// Fils rattachés à un objet : les personnes qui ont perdu le droit de voir l'objet en sortent avant toute liste, recherche ou lecture de fichiers.
+router.use(async (req, res, next) => { if (req.method === 'GET' && /^\/(conversations|unread|search|files|folders|calls|geo)/.test(req.path)) await require('./chat-objects').prune(req); next(); });
+
 /** Remise : tout ce qui est arrivé pour cette personne est « distribué » ; les expéditeurs en sont prévenus. */
 async function markDelivered(req) {
   const rows = await db.prepare(`SELECT m.conv_id, c.last_message_id FROM ci_members m JOIN ci_conversations c ON c.id = m.conv_id
@@ -416,6 +419,7 @@ router.post('/conversations/:id/leave', groupLimit, async (req, res) => {
 router.use('/', require('./chat-files').router);
 router.use('/', require('./chat-extras').router);
 router.use('/calls', require('./chat-calls').router);
+router.use('/objects', require('./chat-objects').router); // rattachement aux modules (Discuter, cartes d'objets)
 router.use('/geo', require('./chat-geo').router); // position en direct (opt-in par employé)
 router.use('/ai', require('./chat-ai').router);
 require('./chat-jobs');
