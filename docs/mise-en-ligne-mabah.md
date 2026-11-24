@@ -11,6 +11,7 @@ La même copie de ce document se trouve dans `fusion/serveur/docs/` et `fusion/s
 | Réunions avancées (quorum, votes, procès-verbaux, signatures, conflits d'agenda, visioconférence) | migrations **146 à 149** | écrans Réunions |
 | Espaces par rôle — **activés pour tout le monde** | migrations **170 à 173** | menu par espace, message d'information |
 | Marque de l'entreprise (« Personnalisation de mon entreprise ») | migrations **200 et 201** | écran de personnalisation |
+| Chat interne (conversations, groupes, fichiers, appels, position, boutons « Discuter » sur Réunions, Bibliothèque, tâches) | migrations **300 et suivantes** | écran Chat, pastille « non lus » |
 | Renommage Brij-IA → **MABAH** (assistante **MABAH IA**), logo, palette du logo, slogan « Pilotez votre entreprise avec le meilleur outil. » | textes, e-mails, PDF, invites de l'IA | tout le site, icônes, SEO |
 | Nouvelle adresse publique **https://mabah.vercel.app** | constante centrale + origines acceptées | redirection des anciennes adresses, sitemap, robots |
 
@@ -41,6 +42,11 @@ Les migrations sont **ajoutées à la suite** (aucune ancienne n'est modifiée) 
 | `SPACES_BY_ROLE` | **vide** (ou `on`) = espaces par rôle activés pour tout le monde. **`off`** = interrupteur de retour arrière général (toutes les entreprises retrouvent l'ancien menu, sans redéployer le site). | voir §8 |
 | `SMTP_FROM` | `MABAH <votre-adresse-déjà-validée-chez-Brevo>` | seul le nom d'affichage change ; l'adresse doit rester celle déjà validée dans Brevo (*Senders*). Vérifier aussi le nom d'expéditeur dans Brevo. |
 | `API_PUBLIC_URL` | inchangée si elle existe | |
+| `CHAT_TURN_URLS`, `CHAT_TURN_SECRET` (ou `CHAT_TURN_USERNAME` / `CHAT_TURN_CREDENTIAL`) | **facultatives mais nécessaires pour des appels fiables** : un serveur TURN (ex. coturn) | sans TURN, les appels audio/vidéo marchent entre personnes sur de bons réseaux, mais **échouent souvent derrière la 4G des opérateurs (CGNAT) ou un pare-feu d'entreprise**. Un serveur TURN est à fournir et à tester sur réseau mobile réel : il n'est pas fourni. |
+| `CHAT_STUN_URLS`, `CHAT_CALL_MAX` (défaut 6, max 12), `CHAT_HARD_MAX_FILE_MB` (défaut 25) | facultatives | appels en maillage pair à pair : petits groupes seulement |
+| `CHAT_CLAMAV_HOST` / `CHAT_CLAMAV_PORT` / `CHAT_CLAMAV_REQUIRED` | facultatives | sans elles, les fichiers du chat ne sont **pas** analysés par un antivirus complet |
+| `CHAT_JOBS` | laisser vide | `off` seulement sur une seconde instance |
+| `PRODUCT_NAME` | **ne pas définir** | le nom vient de la constante centrale (MABAH) |
 | `COOKIE_*` | ne pas toucher | les cookies sont posés par le serveur à travers la réécriture `/api` de chaque adresse du site |
 
 Vercel (site) : `SITE_URL=https://mabah.vercel.app` est facultative (valeur par défaut du code).
@@ -141,7 +147,7 @@ La balise de vérification déjà présente dans `index.html` (jeton `uOEcJIaq�
 * **Textes légaux** : le nom est remplacé, mais l'identité de l'éditeur, l'adresse, le numéro d'immatriculation et le contact restent aux marqueurs « [À COMPLÉTER] » : rien n'a été inventé.
 * **Vidéo de présentation** de la page d'accueil (`public/video/manager-ia.mp4`) : elle affiche encore l'ancien nom ; à refaire ou à retirer.
 * **WhatsApp Business / Meta**, TikTok, Facebook, Instagram, LinkedIn, YouTube, Brevo (nom d'expéditeur), Campay (adresses de retour si l'ancienne adresse y est saisie) : nom, logo et adresse à mettre à jour (détail : `docs/renommage-mabah.md` §8).
-* **Chat interne** : pas inclus dans cette mise en ligne (il sera fusionné ensuite, sur les migrations libres 150 à 169 / 174 à 199).
+* **Chat interne — limites honnêtes** : (1) les **appels** (WebRTC pair à pair) ne sont garantis ni sur réseau mobile ni derrière un pare-feu sans serveur TURN ; ils n'ont **pas été testés sur un vrai réseau mobile** ; (2) les groupes d'appel sont petits (6 par défaut) ; (3) la **limite de taille d'envoi** de fichiers à travers Vercel (réécriture `/api`) n'est pas vérifiée : tester un fichier de 8 Mo après la mise en ligne, sinon baisser `CHAT_HARD_MAX_FILE_MB` ; (4) le flux temps réel est en mémoire d'un seul processus (une seule instance Render) ; (5) la position en direct n'est envoyée que tant que l'application est ouverte ; (6) les conversations chiffrées de bout en bout ne se récupèrent pas si la clé est perdue.
 
 ## 10. Résultats des contrôles de cette fusion
 
