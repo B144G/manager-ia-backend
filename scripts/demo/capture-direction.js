@@ -11,11 +11,12 @@ const PORT = 9334; const PASS = 'Essai-2026-brij';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const SCENES = [
   { id: '01-directeur-commercial', user: 'dcom@exemple.com', path: 'dir_commercial' },
-  { id: '02-commercial-equipe', user: 'vendeur@exemple.com', path: 'commercial' },
+  { id: '02-vendeur-espace-role', user: 'vendeur@exemple.com', path: 'crm' },
   { id: '03-directeur-visiteur-equipe', user: 'dcom@exemple.com', path: 'commercial' },
-  { id: '04-affaires', user: 'respco@exemple.com', path: 'affaires' },
-  { id: '05-qhse', user: 'chantier@exemple.com', path: 'qhse' },
-  { id: '06-directeur-technique', user: 'dt@exemple.com', path: 'dir_technique' },
+  { id: '04-assistante-espace-role', user: 'assist@exemple.com', path: 'sales' },
+  { id: '05-marketeuse-espace-role', user: 'mkt@exemple.com', path: 'marketing' },
+  { id: '06-comptable-espace-role', user: 'cpt@exemple.com', path: 'accounting' },
+  { id: '07-affaires', user: 'respco@exemple.com', path: 'affaires' },
 ];
 const MODES = [['clair', 1280, 800, false, 'light'], ['sombre', 1280, 800, false, 'dark'], ['mobile', 390, 844, true, 'light']];
 function cdp(url) {

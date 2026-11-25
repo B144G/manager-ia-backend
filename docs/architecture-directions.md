@@ -121,7 +121,7 @@ Limites honnêtes : le taux de reprise est un indicateur de substitution (nous n
 8. **Diffusion des rapports de direction** par courriel planifié.
 
 ## 8. Captures (démonstration locale)
-`docs/captures-direction/` : directeur commercial (espace de direction) face au commercial (espace d'équipe), le directeur commercial en visiteur sur l'espace de son équipe, affaires, QHSE, directeur technique — en clair, sombre et mobile. Produites par `scripts/demo-direction.js` (entreprise BTP de démonstration, ports 3420/5420) et `scripts/demo/capture-direction.js`.
+`docs/captures-direction/` (clair, sombre, mobile) : directeur commercial dans son espace de direction ; directeur commercial en visiteur sur l'espace de son équipe ; vendeur, assistante commerciale, marketeuse et comptable, chacun dans son espace de rôle (un seul espace affiché, uniquement ses écrans) ; gestion des affaires (module complémentaire activé pour la démonstration). Produites par `scripts/demo-direction.js` (entreprise de commerce de démonstration, ports 3420/5420) et `scripts/demo/capture-direction.js`.
 
 ## 9. Un espace = un rôle (catalogue unique)
 

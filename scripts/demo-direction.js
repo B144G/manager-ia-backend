@@ -10,8 +10,9 @@ const PEOPLE = [
   ['dcom@exemple.com', 'Sylvie Directrice Commerciale', 'Directeur commercial'],
   ['vendeur@exemple.com', 'Marc Vendeur', 'Commercial / vendeur'],
   ['respco@exemple.com', 'Rose Responsable Commerciale', 'Responsable commercial'],
-  ['dt@exemple.com', 'David Directeur Technique', 'Directeur technique'],
-  ['chantier@exemple.com', 'Chantal Conductrice de travaux', 'Conducteur de travaux'],
+  ['assist@exemple.com', 'Alice Assistante Commerciale', 'Assistant(e) commercial(e)'],
+  ['mkt@exemple.com', 'Maëlle Marketeuse', 'Community manager'],
+  ['cpt@exemple.com', 'Ada Comptable', 'Comptable'],
 ];
 async function main() {
   const pgt = await startTestPg();
@@ -28,7 +29,7 @@ async function main() {
   const O = cl[PEOPLE[0][0]];
   const rep = await seed((m, p, b) => O(m, '/api/ws' + p, b), { team: [] });
   const org = rep.org; const E = `/api/ws/orgs/${org}/entreprise`; const W = `/api/ws/orgs/${org}`;
-  await O('POST', `${E}/template`, { sector: 'btp' });
+  await O('POST', `${E}/template`, { sector: 'commerce' });
   const ch = (await O('GET', `${E}/chart`)).json;
   const posts = [...ch.directions.flatMap((d) => [...d.directors, ...d.departments.flatMap((x) => x.posts)]), ...ch.departments.flatMap((x) => x.posts)];
   for (const [c, n, title] of PEOPLE.slice(1)) {
@@ -38,11 +39,9 @@ async function main() {
   }
   await O('POST', `${E}/direction/enable`, {}); // entreprise déjà utilisée : le propriétaire active les espaces de direction
   await O('POST', `${E}/workflows/install`, {});
-  const rc = cl['respco@exemple.com']; const vd = cl['vendeur@exemple.com']; const cd = cl['chantier@exemple.com'];
+  await O('POST', `${E}/extras/enable`, {});
+  const rc = cl['respco@exemple.com']; const vd = cl['vendeur@exemple.com'];
   for (const [n, cli, amt, bud] of [['École de Bafoussam', 'Mairie de Bafoussam', 45000000, 36000000], ['Entrepôt de Douala', 'Société Logipôle', 120000000, 99000000], ['Villa Bonanjo', 'M. Etoundi', 28000000, 24000000]]) { const r = await vd('POST', `${W}/affaires`, { name: n, client: cli, amount: amt, budget: bud }); if (r.json && r.json.id && n !== 'Villa Bonanjo') await rc('POST', `${W}/affaires/${r.json.id}/stage`, { stage: 'negociation' }); }
-  await cd('POST', `${W}/qhse`, { kind: 'incident', title: 'Chute de coffrage sans blessé', place: 'Chantier École', severity: 'high' });
-  await cd('POST', `${W}/qhse`, { kind: 'accident', title: 'Coupure à la main', place: 'Chantier Entrepôt', persons: 1, daysLost: 3, severity: 'normal' });
-  await cd('POST', `${W}/qhse`, { kind: 'nonconformity', title: 'Béton hors tolérance (dalle R+1)', place: 'Chantier École', severity: 'high' });
   console.log(`\nDEMO DIRECTION PRÊTE : ${base}   org=${org}\nMot de passe : ${PASS}`);
   for (const [c, n, t] of PEOPLE) console.log(`  ${c.padEnd(26)} ${n}${t ? ' — ' + t : ''}`);
   console.log('Ctrl+C pour arrêter.');
