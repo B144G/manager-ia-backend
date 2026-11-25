@@ -22,13 +22,13 @@ const LV = { none: 0, view: 1, write: 2, manage: 3 };
 // ---------- Catalogue des espaces : un module appartient à UN espace ----------
 const SPACES = [
   { id: 'direction', icon: 'dashboard', title: 'Direction et pilotage', desc: "Vue d'ensemble de l'entreprise, indicateurs, organisation.", modules: ['dashboard', 'aifollow', 'structure', 'processes', 'memory', 'history', 'agents', 'alerts'] },
-  { id: 'commercial', icon: 'crm', title: 'Commercial', desc: 'Clients, devis, factures, prospects, marketing, service client.', modules: ['commercial', 'crm', 'sales', 'parties', 'marketing', 'support'] },
+  { id: 'commercial', icon: 'crm', title: 'Commercial', desc: 'Clients, devis, factures, prospects, marketing, service client.', modules: ['commercial', 'affaires', 'crm', 'sales', 'parties', 'marketing', 'support'] },
   { id: 'finances', icon: 'accounting', title: 'Comptabilité et finances', desc: 'Comptabilité, trésorerie, budget, fiscalité.', modules: ['accounting', 'treasury', 'budget', 'fiscal'] },
   { id: 'stock', icon: 'stock', title: 'Stock et achats', desc: 'Stock, entrepôt, achats, fournisseurs.', modules: ['stock', 'purchasing'] },
   { id: 'rh', icon: 'hr', title: 'Ressources humaines', desc: 'Personnel, congés, paie, talents et compétences.', modules: ['hr', 'talents', 'payroll'] },
-  { id: 'operations', icon: 'production', title: 'Opérations', desc: 'Production, logistique, chantiers, maintenance.', modules: ['production', 'logistics', 'construction', 'maintenance'] },
+  { id: 'operations', icon: 'production', title: 'Opérations', desc: 'Production, logistique, chantiers, maintenance.', modules: ['production', 'logistics', 'construction', 'maintenance', 'qhse'] },
   { id: 'projets', icon: 'projects', title: 'Projets et réunions', desc: 'Mes tâches, projets, réunions, bibliothèque. Ouvert à tout le monde.', modules: ['projects', 'meetings', 'chat', 'library', 'profil', 'partners'], baseline: true },
-  { id: 'gestion', icon: 'legal', title: 'Administration et juridique', desc: 'Documents administratifs, contrats, conformité.', modules: ['administration', 'legal'] },
+  { id: 'gestion', icon: 'legal', title: 'Administration et juridique', desc: 'Documents administratifs, contrats, conformité.', modules: ['administration', 'legal', 'audit_interne'] },
   { id: 'compte', icon: 'team', title: 'Administration du compte', desc: 'Équipe, sécurité, intégrations, abonnement.', modules: ['team', 'entreprise', 'integrations', 'billing'] },
 ];
 // Espaces de DIRECTION de département (un par directeur : pilotage, validations, tâches propres) : n'existent que si le réglage « espaces de direction » est actif (src/workspace/ent-direction.js).
@@ -78,7 +78,7 @@ const SEG = {
   support: 'support', projects: 'projects', budget: 'budget', stock: 'stock', crm: 'crm', parties: 'parties', sales: 'sales', 'sales-mine': 'sales', commercial: 'commercial',
   aifollow: 'aifollow', 'wa-scope': 'sales', hr: 'hr', talents: 'talents', accounting: 'accounting', treasury: 'treasury', library: 'library', history: 'history',
   purchasing: 'purchasing', meetings: 'meetings', chat: 'chat', integrations: 'integrations', payroll: 'payroll', fiscal: 'fiscal', marketing: 'marketing', logistics: 'logistics',
-  production: 'production', construction: 'construction', maintenance: 'maintenance', legal: 'legal', memory: 'memory', agents: 'agents', structure: 'structure',
+  production: 'production', construction: 'construction', maintenance: 'maintenance', qhse: 'qhse', affaires: 'affaires', audit_interne: 'audit_interne', legal: 'legal', memory: 'memory', agents: 'agents', structure: 'structure',
   administration: 'administration', audit: 'team', 'ownership-transfer': 'team',
 };
 for (const id of DIRECTION.DIR_IDS) SEG[id] = id; // routes d'un espace de direction : /<id>/…

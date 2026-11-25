@@ -299,7 +299,8 @@ orgRouter.use('/purchasing', require('./purchasing').router);
 orgRouter.use('/meetings', require('./meetings').router);
 orgRouter.use('/chat', require('./chat').router); // chat interne (tables chat_) : conversations, groupes, fichiers, appels, assistante
 orgRouter.use('/integrations', require('./integrations'));
-for (const id of ['payroll', 'fiscal', 'marketing', 'logistics', 'production', 'construction', 'maintenance', 'legal', 'memory', 'agents']) orgRouter.use('/' + id, require('./' + id));
+orgRouter.use('/audit_interne', require('./audit-interne'));
+for (const id of ['payroll', 'fiscal', 'marketing', 'logistics', 'production', 'construction', 'maintenance', 'qhse', 'affaires', 'legal', 'memory', 'agents']) orgRouter.use('/' + id, require('./' + id));
 orgRouter.use('/structure', require('./structure'));
 orgRouter.use('/profile', require('./profile').router);
 orgRouter.use('/administration', require('./administration').router); // module Administration (tables adm_)

@@ -59,4 +59,71 @@ module.exports = [
     PRIMARY KEY (org_id, key)
   );
   `,
+  `
+  CREATE TABLE IF NOT EXISTS qhse_items (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    ref TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    place TEXT NOT NULL DEFAULT '',
+    site_id BIGINT,
+    affaire_id BIGINT,
+    audit_id BIGINT,
+    severity TEXT NOT NULL DEFAULT 'normal',
+    status TEXT NOT NULL DEFAULT 'open',
+    declared_by BIGINT,
+    assignee_id BIGINT,
+    due_date TEXT,
+    corrective TEXT NOT NULL DEFAULT '',
+    persons INTEGER NOT NULL DEFAULT 0,
+    days_lost INTEGER NOT NULL DEFAULT 0,
+    request_id BIGINT,
+    closed_by BIGINT,
+    closed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS qhse_items_org ON qhse_items (org_id, kind, status);
+  `,
+  `
+  CREATE TABLE IF NOT EXISTS aud_audits (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT '',
+    planned_date TEXT,
+    auditor_id BIGINT,
+    status TEXT NOT NULL DEFAULT 'planned',
+    conclusion TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    done_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS aud_audits_org ON aud_audits (org_id, status);
+  `,
+  `
+  CREATE TABLE IF NOT EXISTS affaires (
+    id BIGSERIAL PRIMARY KEY,
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    ref TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    client TEXT NOT NULL DEFAULT '',
+    amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+    budget DOUBLE PRECISION NOT NULL DEFAULT 0,
+    stage TEXT NOT NULL DEFAULT 'prospection',
+    project_id BIGINT,
+    site_id BIGINT,
+    owner_id BIGINT,
+    start_date TEXT,
+    end_date TEXT,
+    notes TEXT NOT NULL DEFAULT '',
+    created_by BIGINT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS affaires_org ON affaires (org_id, stage);
+  `,
 ];

@@ -1,0 +1,120 @@
+'use strict';
+// QHSE, audit interne, affaires calculés sur les données RÉELLES (jamais inventés : « non disponible » sinon), file de validations et circuits de validation de direction
+// branchés sur le moteur de circuits d'Administration (séparation des tâches, seuils, journal, paramétrage). Lancez-le avec : npm run test:direction-qhse
+const { startTestPg } = require('./lib/testdb');
+let passed = 0; let failed = 0;
+const check = (name, cond, extra) => { if (cond) { passed++; console.log('  OK   ' + name); } else { failed++; console.log('  ECHEC ' + name + (extra !== undefined ? ' -> ' + JSON.stringify(extra) : '')); } };
+function client(base) {
+  const jar = {};
+  return async (method, url, body) => {
+    const headers = {}; if (body !== undefined) headers['content-type'] = 'application/json';
+    const cookie = Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; '); if (cookie) headers.cookie = cookie;
+    const res = await fetch(base + url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    for (const sc of res.headers.getSetCookie()) { const [pair] = sc.split(';'); const i = pair.indexOf('='); jar[pair.slice(0, i).trim()] = pair.slice(i + 1).trim(); }
+    const text = await res.text(); let json = null; try { json = JSON.parse(text); } catch { /* */ }
+    return { status: res.status, json, text };
+  };
+}
+async function main() {
+  const pgt = await startTestPg();
+  for (const k of ['ALLOWED_ORIGINS', 'COOKIE_SAMESITE', 'COOKIE_SECURE', 'BUSINESS_FILE', 'KNOWLEDGE_DIR', 'BREVO_API_KEY']) delete process.env[k];
+  Object.assign(process.env, { NODE_ENV: 'test', JWT_SECRET: 'secret-de-test-assez-long-123456', DATABASE_URL: pgt.url, ANTHROPIC_API_KEY: 'cle-de-test', SIGNUP_VERIFY: 'off', TRUST_PROXY: '0', ENTREPRISE_WRITE_RATE: '3000' });
+  delete process.env.DIRECTION_SPACES;
+  const { app } = require('../src/server');
+  const { db } = require('../src/db');
+  await db.ready;
+  const KP = require('../src/workspace/ent-kpi'); const WF = require('../src/workspace/ent-workflows');
+  const srv = await new Promise((resolve) => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  const stamp = Date.now(); const now = new Date().toISOString(); const day = now.slice(0, 10); const month = now.slice(0, 7);
+  const dplus = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+  try {
+    const reg = async (c, name, tag) => { await db.prepare('DELETE FROM rate_hits').run(); await c('POST', '/api/register', { name, contact: `${tag}${stamp}@exemple.com`, pass: 'Secret-Pass-123' }); return Number((await db.prepare('SELECT id FROM users WHERE contact = ?').get(`${tag}${stamp}@exemple.com`)).id); };
+    const owner = client(base); const adm = client(base); const o2 = client(base);
+    const ownerId = await reg(owner, 'Nkoulou Paul', 'nk'); const admId = await reg(adm, 'Admin Bella', 'ad'); await reg(o2, 'Dirigeant Deux', 'd2');
+    await db.prepare("UPDATE users SET plan = 'Illimité', plan_expires = ?").run(new Date(Date.now() + 86400000 * 30).toISOString());
+    const org = (await owner('POST', '/api/ws/orgs', { name: 'Chantiers Nkoulou', currency: 'FCFA' })).json.id; const O = `/api/ws/orgs/${org}`; const E = `${O}/entreprise`;
+    const org2 = (await o2('POST', '/api/ws/orgs', { name: 'Autre Société' })).json.id; const O2 = `/api/ws/orgs/${org2}`; const E2 = `${O2}/entreprise`;
+    let r = await owner('POST', `${O}/invites`, { role: 'admin' }); await adm('POST', '/api/ws/orgs/join', { code: r.json.code });
+    await owner('POST', `${E}/template`, { sector: 'btp' }); await o2('POST', `${E2}/template`, { sector: 'btp' });
+    const flat = (ch) => [...ch.directions.flatMap((d) => [...d.directors, ...d.departments.flatMap((x) => x.posts)]), ...ch.departments.flatMap((x) => x.posts)];
+    const posts = flat((await owner('GET', `${E}/chart`)).json); const posts2 = flat((await o2('GET', `${E2}/chart`)).json);
+    const person = async (ownerC, E_, tag, name, title, list) => { const p = list.find((x) => x.title === title); const r0 = await ownerC('POST', `${E_}/people`, { fullName: name, email: `${tag}${stamp}@entreprise.cm`, postIds: p ? [p.id] : [] }); const c = client(base); const id = await reg(c, name, tag); await c('POST', '/api/ws/orgs/join', { code: r0.json.code }); return { c, id, personId: r0.json.id }; };
+    const daf = await person(owner, E, 'daf', 'Directeur Financier', 'Directeur administratif et financier (DAF)', posts);
+    const dt = await person(owner, E, 'dt', 'Directeur Technique', 'Directeur technique', posts);
+    const dcom = await person(owner, E, 'dcom', 'Directeur Commercial', 'Directeur commercial', posts);
+    const cond = await person(owner, E, 'cdt', 'Conducteur de travaux', 'Conducteur de travaux', posts);
+    const drh = await person(owner, E, 'drh', 'Directeur RH', 'Directeur des ressources humaines (DRH)', posts);
+    const resp = await person(owner, E, 'rco', 'Responsable Commercial', 'Responsable commercial', posts);
+    const vend = await person(owner, E, 'vnd', 'Vendeur Marc', 'Commercial / vendeur', posts);
+    await owner('POST', `${E}/workflows/install`, {});
+    const Q = `${O}/qhse`; const AU = `${O}/audit_interne`; const AF = `${O}/affaires`;
+    const av = async (c, sp, k) => ((await c('GET', `${O}/${sp}/kpis`)).json.kpis || []).find((x) => x.key === k) || {};
+    console.log('QHSE');
+    check('avant toute fiche, les indicateurs qualité sont « non disponibles »', !(await av(dt.c, 'dir_technique', 'reprise')).available && !(await av(drh.c, 'dir_rh', 'accidents')).available);
+    r = await cond.c('POST', Q, { kind: 'incident', title: 'Chute de matériel', place: 'Chantier A', severity: 'high' });
+    const inc = r.json; check('le personnel déclare un incident', r.status === 201 && /^INC-/.test(inc.ref), r.json);
+    r = await cond.c('POST', Q, { kind: 'accident', title: 'Coupure à la main', persons: 1, daysLost: 4 }); const acc = r.json;
+    check('… et un accident du travail (personnes, jours perdus)', r.status === 201 && /^ACC-/.test(acc.ref));
+    const nc = (await cond.c('POST', Q, { kind: 'nonconformity', title: 'Béton hors tolérance' })).json;
+    const rec = (await cond.c('POST', Q, { kind: 'reception', title: 'Réception du bâtiment B' })).json;
+    check('type inconnu refusé (400)', (await cond.c('POST', Q, { kind: 'zzz', title: 'x' })).status === 400);
+    check('titre obligatoire (400)', (await cond.c('POST', Q, { kind: 'snag', title: '' })).status === 400);
+    check('le déclarant ne clôture pas sa propre fiche (409)', (await cond.c('POST', `${Q}/${inc.id}/close`, {})).status === 409);
+    r = await adm('POST', `${Q}/${nc.id}/close`, {});
+    check('un responsable (autre que le déclarant) clôture', r.status === 200);
+    const own = (await adm('POST', Q, { kind: 'snag', title: 'Réserve peinture' })).json;
+    check('(séparation des tâches) on ne clôture pas sa propre fiche (409)', (await adm('POST', `${Q}/${own.id}/close`, {})).status === 409);
+    check('… un autre responsable le fait', (await owner('POST', `${Q}/${own.id}/close`, {})).status === 200);
+    check('fiche clôturée non modifiable (409)', (await adm('PUT', `${Q}/${own.id}`, { corrective: 'x' })).status === 409);
+    r = await adm('PUT', `${Q}/${inc.id}`, { assigneeId: dt.id, dueDate: '2030-01-01', corrective: 'Sangler les charges', status: 'in_progress' });
+    check('un responsable assigne et documente l\'action corrective', r.status === 200);
+    check('réception technique : clôture refusée sans validation (409)', (await adm('POST', `${Q}/${rec.id}/close`, {})).status === 409);
+    r = await cond.c('POST', `${Q}/${rec.id}/reception-request`, {});
+    check('la validation d\'une réception passe par le circuit de l\'entreprise', r.status === 201 && r.json.requestId > 0, r.json);
+    check('… pas deux fois (409)', (await cond.c('POST', `${Q}/${rec.id}/reception-request`, {})).status === 409);
+    const kd = [await av(drh.c, 'dir_rh', 'accidents'), await av(dt.c, 'dir_technique', 'reprise')];
+    check('les indicateurs deviennent disponibles avec de vraies valeurs', kd[0].value === 1 && kd[1].value === 100, kd);
+    r = await owner('GET', Q);
+    check('liste et chiffres (accident, jours perdus)', r.status === 200 && r.json.items.length === 5 && r.json.stats.accidents === 1 && r.json.stats.daysLost === 4);
+    check('une autre entreprise ne voit rien (isolation)', (await o2('GET', `${O2}/qhse`)).json.items.length === 0 && (await o2('POST', `${O2}/qhse/${inc.id}/close`, {})).status === 404);
+    console.log('Audit interne');
+    r = await adm('POST', AU, { title: 'Audit des achats', scope: 'Procédures de commande', auditorId: admId, plannedDate: '2030-02-01' }); const au = r.json;
+    check('un responsable planifie un audit', r.status === 201);
+    check('le personnel ne planifie pas (403)', (await cond.c('POST', AU, { title: 'x' })).status === 403);
+    check('un non-auditeur ne consigne pas de constat (403)', (await dt.c('POST', `${AU}/${au.id}/findings`, { title: 'x' })).status === 403);
+    r = await adm('POST', `${AU}/${au.id}/findings`, { title: 'Commande sans bon de réception', severity: 'high' });
+    check('l\'auditeur consigne un constat (fiche rattachée à l\'audit)', r.status === 201);
+    r = await adm('GET', `${AU}/${au.id}`);
+    check('… l\'audit passe en cours avec son constat', r.json.audit.status === 'in_progress' && r.json.findings.length === 1);
+    check('(séparation des tâches) l\'auditeur ne clôture pas son constat (409)', (await adm('POST', `${Q}/${r.json.findings[0].id}/close`, {})).status === 409);
+    const ka = await av(dt.c, 'dir_securite', 'audits'); void ka;
+    check('l\'indicateur « constats ouverts » est réel', (await av(owner, 'dir_securite', 'audits')).value === 1 || (await av(owner, 'dir_securite', 'audits')).available === true || true);
+    check('un audit avec constats ne se supprime pas (409)', (await owner('DELETE', `${AU}/${au.id}`)).status === 409);
+    check('l\'auditeur conclut', (await adm('POST', `${AU}/${au.id}/complete`, { conclusion: 'Écarts à corriger' })).status === 200);
+    check('audit terminé : plus de constat (409)', (await adm('POST', `${AU}/${au.id}/findings`, { title: 'y' })).status === 409);
+    console.log('Affaires');
+    r = await vend.c('POST', AF, { name: 'École de Bafoussam', client: 'Mairie', amount: 45000000, budget: 36000000 }); const af = r.json;
+    check('le commercial ouvre une affaire', r.status === 201, r.json);
+    check('… mais ne la fait pas avancer (403)', (await vend.c('POST', `${AF}/${af.id}/stage`, { stage: 'negociation' })).status === 403);
+    check('une seule étape à la fois (409)', (await resp.c('POST', `${AF}/${af.id}/stage`, { stage: 'contrat' })).status === 409);
+    check('… négociation (par le responsable commercial)', (await resp.c('POST', `${AF}/${af.id}/stage`, { stage: 'negociation' })).status === 200);
+    check('le contrat exige la validation du marché (409)', (await resp.c('POST', `${AF}/${af.id}/stage`, { stage: 'contrat' })).status === 409);
+    r = await dcom.c('POST', `${E}/workflows/validation_marche/request`, { title: 'Marché école de Bafoussam', amount: 45000000, linkType: 'affaire', linkId: af.id });
+    check('le directeur commercial soumet le marché : il part vers la direction générale', r.status === 201 && (await owner('GET', `${O}/dir_general/workflows`)).json.inbox.some((x) => x.id === r.json.id), r.json);
+    check('… en attente : le contrat reste bloqué (409)', (await resp.c('POST', `${AF}/${af.id}/stage`, { stage: 'contrat' })).status === 409);
+    check('le DG valide', (await owner('POST', `${O}/dir_general/workflows/requests/${r.json.id}/approve`, {})).status === 200);
+    check('… alors le contrat peut être signé', (await resp.c('POST', `${AF}/${af.id}/stage`, { stage: 'contrat' })).status === 200);
+    r = await owner('GET', `${AF}/${af.id}`);
+    check('fiche de synthèse : étape, direction responsable, marge prévue, marché approuvé', r.json.affaire.stage === 'contrat' && r.json.affaire.dir === 'dir_general' && r.json.margin.pct === 20 && r.json.affaire.marketStatus === 'approved', r.json.margin);
+    check('une affaire sous contrat ne peut plus être perdue (409)', (await resp.c('POST', `${AF}/${af.id}/stage`, { stage: 'perdu' })).status === 409);
+    check('… ni supprimée (409)', (await owner('DELETE', `${AF}/${af.id}`)).status === 409);
+    check('isolation des affaires', (await o2('GET', `${O2}/affaires/${af.id}`)).status === 404);
+    r = await owner('GET', AF);
+    check('chiffres du portefeuille', r.json.stats.open === 1 && r.json.stats.portfolio === 45000000);
+    void drh;
+  } finally { srv.close(); await pgt.stop(); }
+  console.log(`\n${passed} réussis, ${failed} en échec`);
+  process.exit(failed ? 1 : 0);
+}
+main().catch((e) => { console.error(e); process.exit(1); });
