@@ -26,6 +26,7 @@ const PUBLIC = new Set([
   'GET /api/ws/public/quote/:token', 'POST /api/ws/public/quote/:token/accept', 'POST /api/ws/public/quote/:token/refuse', // COMMERCIAL : devis consulté / accepté / refusé par le client final via un jeton secret non devinable dans l'adresse
   'GET /api/ws/public/track/:token', // FUSION (ligne A) : suivi de livraison pour le client final, protégé par un jeton secret non devinable dans l'adresse
   'GET /api/ws/public/brand/:token/manifest.webmanifest', 'GET /api/ws/public/brand-of/:kind/:token', // MARQUE : manifeste de l'application d'une entreprise et marque de ses pages publiques, par jeton secret (aucune donnée interne ; voir docs/marque-entreprise.md)
+  'POST /api/entreprise-auth/login', 'POST /api/entreprise-auth/login/2fa', 'POST /api/entreprise-auth/activate', 'POST /api/entreprise-auth/resume', // COMPTE D'ENTREPRISE (étape 2) : connexion employé (code d'entreprise + e-mail + secret), première connexion par invitation, retour par appareil de confiance : publics par nature, messages génériques, verrouillage, débit limité (voir docs/compte-entreprise.md)
   'GET /api/ws/public/testimonials', // AVIS : témoignages approuvés par l'administrateur ET consentis par leur auteur (aucune donnée privée ; voir docs/avis.md)
   'GET /api/ws/public/geo/:token', 'POST /api/ws/public/geo/:token', // TRANSPORT GÉO : le client indique sa position (adresse, point, GPS avec consentement) via un jeton secret de 48 caractères, valable 48 h, débit limité
 ]);
