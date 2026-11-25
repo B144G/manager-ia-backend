@@ -1,4 +1,4 @@
-# Compte d'entreprise (étape 1 sur 6)
+# Compte d'entreprise (étapes 1 à 6)
 
 MABAH passe d'un modèle « un compte = une personne » à un modèle où **l'entreprise est le titulaire du compte**, et où chaque employé garde **sa propre identité** à l'intérieur (traçabilité, révocation, droits par personne). Ce document décrit la cible complète, ce qui est livré à l'étape 1, ce qui reste, les limites, la mise en ligne et le retour arrière.
 
@@ -19,11 +19,11 @@ Règle de fond : **les affectations de personnes se font PAR organisation**. Le 
 | Étape | Contenu | État |
 |---|---|---|
 | 1 | Entreprise au-dessus des organisations, structure, postes, affectations, assistant, modèles par secteur, lien avec les espaces par rôle, écran « Entreprise et organigramme » | **livrée** |
-| 2 | Connexion employé par code d'entreprise + e-mail + secret personnel, appareils de confiance, redirection automatique vers son espace | à faire |
-| 3 | Moteur de profils de rôle : interface propre à chaque métier, jusqu'au chauffeur | à faire |
-| 4 | Organisations liées par lien d'association, avec copie de la structure + espaces partagés entre organisations liées (chat, réunions, bibliothèque) | à faire |
-| 5 | Module Partenaires + canaux, réunions et documents partagés avec un partenaire | à faire |
-| 6 | Limites par abonnement (personnes, organisations, départements…) au niveau de l'entreprise | à faire |
+| 2 | Connexion employé par code d'entreprise + e-mail + secret personnel (mot de passe ou PIN), appareils de confiance 30 à 90 jours avec retour automatique, double authentification des postes sensibles | **livrée** |
+| 3 | Moteur de profils de rôle : interface propre à chaque poste, jusqu'au chauffeur (22 profils de base) | **livrée** |
+| 4 | Organisations liées par lien d'association (code à usage unique, copie de la structure, DG commun) | **livrée** |
+| 5 | Module Partenaires + espaces partagés (chat, réunions, bibliothèque) entre organisations liées et avec des partenaires | **livrée** |
+| 6 | Limites par abonnement appliquées partout, écran d'usage, quota IA partagé | **livrée** |
 
 ## 2. Modèle de données
 
@@ -36,6 +36,22 @@ Migrations **400 à 404** (fichier `src/migrations/compte-entreprise.js`), addit
 | 402 | `ent_directions`, `ent_departments`, `ent_posts` | structure **d'une organisation** (`org_id`). Un poste porte son type (directeur, responsable, équipe), son nombre de places, ses accès (`spaces`, JSON espace → visiteur / membre / responsable) et `tkey` (clé du modèle, pour ne jamais dupliquer). |
 | 403 | `ent_assignments`, `ent_setup` | affectation personne ↔ poste **par organisation** ; avancement de l'assistant, secteur appliqué, réglage « lien avec les droits ». |
 | 404 | (données) | rattachement des organisations existantes : une entreprise par organisation, chaque membre reçoit une fiche, **le propriétaire devient directeur général**. Idempotente. |
+
+Tables ajoutées aux étapes suivantes (migrations additives, `src/migrations/compte-entreprise-2.js` à `-5.js`) :
+
+| N° | Tables | Rôle |
+|---|---|---|
+| 410 | `ent_credentials` | secret personnel de la personne (empreinte bcrypt du mot de passe ou du PIN, méthode, dernière connexion) |
+| 411 | `ent_devices` | appareils de confiance : jeton long (seule l'empreinte est stockée), libellé, session ouverte, expiration (30 à 90 jours), révocation |
+| 412 | `entreprises.sensitive_2fa` | double authentification exigée pour les profils sensibles (activée par défaut) |
+| 420 / 421 | `ent_profiles`, `ent_posts.profile_key` | profils de rôle modifiés par organisation ; profil choisi pour un poste |
+| 430 à 432 | `ent_links`, `orgs.linked_via`, `ent_link_log` | liens d'association (empreinte, expiration, révocation, copie de structure), origine d'une organisation liée, journal des rattachements |
+| 440 | `ent_partnerships` | partenariat entre deux organisations d'entreprises différentes (invitation, confirmation des deux côtés, type vu de chaque côté, durée, révocation) |
+| 441 | `shared_spaces`, `shared_space_orgs`, `shared_space_members` | **espace partagé** : une organisation propriétaire, les organisations participantes, les personnes membres avec droits lecture / écriture / validation |
+| 442 | `shared_space_objects`, `shared_messages`, `shared_files`, `shared_validations` | objets partagés explicitement (copies), discussion, fichiers déposés, validations |
+| 443 | `shared_audit` | journal d'audit des partenariats et des espaces (visible des deux côtés, jamais de contenu) |
+
+Réserves : 405 à 409, 413 à 419, 422 à 429, 433 à 439 et 310 à 399 sont des migrations vides réservées.
 
 Étapes futures déjà compatibles : la personne (`ent_people`) est liée à l'entreprise et non à une organisation, ce qui permet la connexion par code d'entreprise (étape 2) ; la structure est copiable d'une organisation à l'autre (`tkey`, étape 4) ; les limites iront dans `entreprises.limits_json` (étape 6).
 
@@ -62,9 +78,9 @@ Migrations **400 à 404** (fichier `src/migrations/compte-entreprise.js`), addit
 ### Routes (`/api/ws/orgs/:orgId/entreprise/…`)
 `GET /` vue d'ensemble · `GET /templates` · `POST /template` · `PUT /info` · `GET /chart` · `PUT /dg` (propriétaire) · `POST|PUT|DELETE /directions|/departments|/posts` · `GET|POST /people`, `PUT|DELETE /people/:id`, `POST /people/:id/invite` · `POST /assignments`, `DELETE /assignments/:id` · `PUT /setup` · `PUT /settings` (propriétaire) · `GET /log`.
 
-## 3 bis. Cible : espaces partagés (chat, réunions, bibliothèque) — NON réalisés à l'étape 1
+## 3 bis. Espaces partagés (chat, réunions, bibliothèque) : conception, réalisée à l'étape 5
 
-Exigence du fondateur : chaque entreprise a sa page de chat ; il y a des chats, des **réunions** et une **bibliothèque** entre organisations liées d'une même entreprise (étape 4) et entre entreprises partenaires (étape 5). Rien de cela n'est construit à l'étape 1 ; l'isolation actuelle (tout est filtré par `org_id`) n'est pas modifiée. Le modèle ci-dessous est réservé (migrations 430 à 449) et se branche sans rien casser.
+Exigence du fondateur : chaque entreprise a sa page de chat ; il y a des chats, des **réunions** et une **bibliothèque** entre organisations liées d'une même entreprise (étape 4) et entre entreprises partenaires (étape 5). Conçu à l'étape 1, réalisé à l'étape 5 (voir 4 bis ; tables réelles : `shared_spaces`, `shared_space_orgs`, `shared_space_members`, `shared_space_objects`, `shared_messages`, `shared_files`, `shared_validations`, `shared_audit`, migrations 440 à 443). L'isolation actuelle (tout est filtré par `org_id`) n'est pas modifiée. La conception d'origine ci-dessous a servi de base ; la réalisation en diffère sur un point : le chat partagé a ses propres messages (`shared_messages`) au lieu de réutiliser `ci_*`, ce qui évite de toucher au chat interne.
 
 **Concept unique : l'« espace partagé »** (`shared_spaces`), réutilisé par les trois modules.
 
@@ -97,25 +113,70 @@ Cas d'usage : (1) chat interne par organisation (existe) ; (2) canaux entre orga
 
 Le module « Organisation » (postes libres) existant reste en place, sans changement.
 
-## 5. Limites honnêtes (étape 1)
+## 4 bis. Étapes 2 à 6 : ce qui est livré
 
-- Une entreprise = une organisation pour l'instant : relier plusieurs organisations (filiales) et copier la structure est l'étape 4. Le modèle est prêt, pas l'interface.
-- La connexion reste celle d'aujourd'hui : l'employé crée son compte puis saisit son code personnel. Pas encore de code d'entreprise, d'appareils de confiance ni de redirection automatique (étape 2).
-- Les profils de rôle (interface propre au chauffeur, au magasinier…) n'existent pas : le poste donne des espaces, pas encore un écran sur mesure (étape 3).
-- Pas de limites par abonnement au niveau de l'entreprise (étape 6) ; seules les limites existantes de l'offre de la personne s'appliquent, y compris au nombre de personnes à l'arrivée.
-- Retirer une personne de l'équipe se fait toujours depuis « Équipe et antennes » (cela supprime ses affectations) ; on ne retire d'ici que les invitations en attente.
-- Le menu « Entreprise et organigramme » est dans l'espace Compte : une personne qui n'y a pas accès ne voit pas l'organigramme dans son menu (la route reste lisible).
-- Les textes des modèles sont fournis en français, anglais, allemand et espagnol ; un nom de département ou de poste saisi par l'entreprise n'est évidemment pas traduit.
-- Accès « comptable » et « trésorier » : poste de niveau responsable de l'espace Finances (la comptabilité exige le rang administrateur) ; à ajuster poste par poste si besoin.
+### Étape 2 : connexion employé (`src/routes/entreprise-auth.js`, page `/connexion-entreprise`)
+- **Code d'entreprise** : 6 caractères sans O/0/I/1 (ex. `ABC-123`), identifiant public (pas un secret), visible des administrateurs (Entreprise › onglet Entreprise), renouvelable par le propriétaire.
+- **Première connexion** (`POST /api/entreprise-auth/activate`) : code d'entreprise + code d'invitation personnel + e-mail + secret choisi (mot de passe, ou PIN de 6 à 8 chiffres sans suite ni répétition). Le compte est créé, la personne rejoint l'organisation et retrouve son poste. Un PIN ne devient jamais un mot de passe de l'ancienne connexion.
+- **Connexion** (`POST /login`) : code + e-mail + secret ; messages d'erreur génériques et identiques (on ne révèle ni le code, ni l'e-mail) ; verrouillage progressif après 8 échecs (15 min, puis plus long) ; limitation de débit partagée.
+- **Appareils de confiance** : à la connexion, « retenir cet appareil » 30, 60 ou 90 jours ; cookie `mia_dev` (jeton long, empreinte seule en base). `POST /resume` rouvre la session sans ressaisie (redirection automatique vers l'espace) ; jamais d'erreur, la page de connexion s'affiche sinon. Liste et révocation par la personne (Sécurité du compte) et par l'administrateur (Entreprise) ; changer son secret ferme tous les appareils ; un compte suspendu n'est pas reconnecté.
+- **Double authentification** : obligatoire pour la direction générale, les directeurs et les postes de la finance / trésorerie **qui utilisent la connexion employé** (réglage de l'entreprise, propriétaire). Elle est vérifiée à chaque accès aux données (`loadOrg`) ; si la personne a déjà activé la double authentification, le code est demandé à la connexion. Les comptes actuels (propriétaires compris) ne sont **jamais** concernés tant qu'ils n'ont pas de secret employé.
+- **Reconnaissance** : la réponse indique l'organisation (la dernière utilisée par défaut), le rôle et les postes / départements.
+- L'**ancienne connexion** (contact + mot de passe, `/api/login`) est conservée telle quelle ; un compte actuel active la connexion employé avec son mot de passe actuel (`PUT /secret`).
+
+### Étape 3 : profils de rôle (`src/workspace/ent-profiles.js`, écran « Mon espace de travail »)
+- **22 profils de base** : DG, DAF, comptable, trésorier, caissier, contrôleur de gestion, directeur commercial, commercial / vendeur, directeur de production, chef de production, métreur (BTP), directeur logistique, dispatcheur, chauffeur, acheteur, magasinier, DRH, directeur IT et maintenance, directeur sécurité, directeur marketing, directeur stockage et achats, assistant(e) de direction, chef de projet / consultant.
+- Un profil = **blocs** du tableau de bord (indicateurs d'un espace, 12 listes prêtes : factures en retard, stock sous le seuil, livraisons du jour, interventions ouvertes…, mes tâches, composants du chauffeur), **écrans** proposés, **actions rapides**, **mode mobile** (standard, compact, chauffeur). Il s'appuie sur les modules existants.
+- **Chauffeur (écran mobile)** : missions du jour, itinéraire, preuve de livraison (écran de tournée existant), plein de carburant (`/logistics/fuel`), signalement d'incident (crée une intervention de maintenance).
+- **Un profil ne donne aucun droit.** Un bloc, une liste ou un écran auquel la personne n'a pas accès (espace, module) est simplement absent de son profil ; les droits restent ceux du poste et du système d'espaces par rôle.
+- Modifiable par l'entreprise (onglet Profils) : blocs, écrans, actions rapides, mode mobile, avec validation stricte (aucun contenu libre exécutable) et retour au profil de base. Le profil d'un poste se choisit (sinon déduit du modèle). Une personne affectée à un poste arrive sur « Mon espace de travail » ; les comptes sans poste, propriétaire compris, gardent leur arrivée habituelle.
+
+### Étape 4 : organisations liées (`src/workspace/ent-links.js`)
+- Le propriétaire de l'organisation principale (ou un DG administrateur) crée un **lien d'association** (`ASSO-…`, à copier, montré une seule fois, 1 à 30 jours, à usage unique, révocable ; seule l'empreinte est stockée).
+- La personne qui crée l'organisation colle le code dans « Code d'association » : l'organisation rejoint la **même entreprise** (pas une nouvelle), la **structure est copiée** (option, sans les personnes), la **direction générale est commune** (les DG sont ajoutés administrateurs de la filiale), et **les affectations restent propres à chaque organisation**.
+- L'**abonnement de l'entreprise principale** s'applique à l'organisation liée (personnes, antennes, IA) ; le nombre d'organisations est limité par cet abonnement.
+- Les réglages qui engagent toute l'entreprise (informations, DG, code, double authentification, liens) sont réservés à la direction générale / organisation principale ; les organisations liées les voient sans les modifier. La direction générale peut faire entrer dans une filiale une personne d'une autre organisation de l'entreprise.
+
+### Étape 5 : partenaires et espaces partagés (`src/workspace/ent-partners.js`)
+- **Partenaires** : code `PART-…` à usage unique, expiration, **confirmation des deux côtés**, types (client, fournisseur, sous-traitant, transporteur, distributeur, cabinet comptable, partenaire stratégique) vus de chaque côté, contacts, durée, **révocation immédiate**, journal visible des deux côtés, limites par type selon l'abonnement. Entre organisations d'une même entreprise, on utilise les liens d'association, pas un partenariat.
+- **Espace partagé** (chat, réunion, bibliothèque), entre partenaires **et** entre organisations liées : une organisation propriétaire, les organisations participantes, des **personnes désignées une à une** (chaque côté désigne les siennes), droits lecture / écriture / validation, durée, archivage, journal d'audit. Un canal de discussion est créé automatiquement à la confirmation d'un partenariat.
+- **Réunions** : l'ordre du jour et le procès-verbal **validé** sont partagés sous forme de **copie** (« Republier » pour mettre à jour) ; décisions et tâches restent chez chacun ; les invités à droit de validation approuvent ou refusent (tracé).
+- **Bibliothèque** : un dossier ou un document désigné est lisible (jamais le reste de la bibliothèque), un dépôt de fichiers (lecture + dépôt) limité par l'abonnement, chaque accès journalisé, expiration et retrait immédiats.
+- **Révocation ou expiration** d'un partenariat : espaces archivés en lecture seule, accès aux réunions et documents partagés coupé tout de suite, historique de discussion lisible.
+- Les modules Chat interne, Réunions et Bibliothèque ne sont **pas modifiés** : leurs tables gardent leur isolation par organisation ; l'espace partagé n'expose que des copies ou des fichiers désignés, à des personnes désignées.
+
+### Étape 6 : limites par abonnement (`src/workspace/ent-limits.js`)
+- Trois paliers déduits des limites d'organisations existantes de l'offre (base, Pro, illimité) : organisations, personnes, antennes, messages IA, directions, départements, postes, personnes de l'entreprise, profils personnalisés, partenaires (total et par type), espaces partagés, objets par espace, taille des fichiers déposés. Jamais plus bas que les limites déjà appliquées ailleurs.
+- Appliquées partout : création de structure, modèles par secteur (tout ou rien), personnes, profils, partenaires, espaces, objets, fichiers, organisations liées. Refus avec un message clair invitant à changer d'offre.
+- Le **quota IA est partagé** entre les organisations liées (abonnement de l'entreprise principale) ; une organisation seule garde son quota propre.
+- **Écran « Abonnement et usage »** (Entreprise, administrateurs) : barres d'usage pour chaque limite.
+
+## 5. Limites honnêtes
+
+- Les **liens d'association** et les **partenariats** ne s'utilisent qu'avec une personne qui possède déjà un compte MABAH (ou en crée un) : il n'y a pas d'envoi automatique du code par e-mail, on le copie et on le transmet.
+- **Rattacher** une organisation déjà existante à une entreprise, ou **détacher** une organisation liée, n'est pas encore possible : le lien d'association se colle à la création de l'organisation.
+- La connexion employé ne couvre que les personnes **avec une adresse e-mail** (identifiant de connexion) ; le secret oublié se réinitialise par l'administrateur (nouveau code d'invitation) ; la réinitialisation par e-mail de l'ancienne connexion n'est pas branchée à ce secret.
+- Un PIN protège moins qu'un mot de passe long : il est protégé par le verrouillage, la limitation de débit et, pour les postes sensibles, la double authentification ; un appareil de confiance volé reste valable jusqu'à sa révocation ou son expiration (90 jours au plus).
+- Les profils de rôle organisent l'écran d'accueil : ils ne créent pas de nouveaux modules. L'incident du chauffeur exige un véhicule relié à la maintenance ; la preuve de livraison et l'itinéraire sont ceux de l'écran de tournée existant.
+- Les réunions partagées sont des **copies** : une modification interne n'est visible qu'après « Republier » ; un document de bibliothèque est lu dans sa version courante (pas de verrouillage de version).
+- Les messages d'erreur du serveur qui contiennent un nombre (limites d'abonnement) restent en français ; les autres sont traduits.
+- Les limites sont déduites des offres existantes (3 paliers) : un forfait « sur mesure » reçoit le palier correspondant à son nombre d'organisations ; ajuster finement exigera une table de tarifs dédiée.
+- Retirer une personne de l'équipe se fait toujours depuis « Équipe et antennes » (cela supprime ses affectations et ferme ses sessions) ; on ne retire d'ici que les invitations en attente.
+- Le menu « Entreprise et organigramme » et « Partenaires et espaces partagés » sont dans les espaces Compte et Projets ; l'organigramme est lisible de tout membre, les partenaires seulement pour les espaces dont on est membre.
+- Les textes des modèles sont fournis en français, anglais, allemand et espagnol ; un nom saisi par l'entreprise n'est évidemment pas traduit.
+- Comptable et trésorier : poste de niveau responsable de l'espace Finances (la comptabilité exige le rang administrateur) ; à ajuster poste par poste.
 
 ## 6. Mise en ligne
 
-1. Pousser la branche (voir le rapport) : **les migrations 400 à 404 s'appliquent toutes seules au démarrage** du serveur sur Render (rien à lancer à la main). Elles sont additives : aucune table existante n'est modifiée sauf l'ajout de la colonne `orgs.entreprise_id`.
+1. Pousser la branche (voir le rapport) : **les migrations 400 à 443 s'appliquent toutes seules au démarrage** du serveur sur Render (rien à lancer à la main). Elles sont additives : aucune table existante n'est modifiée sauf l'ajout de la colonne `orgs.entreprise_id`.
 2. Vérifier au démarrage : l'application répond ; `GET /api/ws/orgs/<id>/entreprise` renvoie l'entreprise de l'organisation (créée par la migration ou à la première visite).
 3. Pousser le site (Vercel) : l'écran apparaît dans l'espace Compte.
-4. Aucune variable d'environnement obligatoire. Facultatives : `ENTREPRISE_RIGHTS=off` (interrupteur général, voir plus bas) et `ENTREPRISE_WRITE_RATE` (écritures par 10 minutes, 400 par défaut).
+4. Aucune variable d'environnement obligatoire. Facultatives : `ENTREPRISE_RIGHTS=off` (interrupteur général du lien postes → droits, voir plus bas) et `ENTREPRISE_WRITE_RATE` (écritures par 10 minutes, 400 par défaut).
+5. Après la mise en ligne, un administrateur ouvre Entreprise › onglet Entreprise : le **code d'entreprise** y est affiché ; c'est lui que les employés saisiront sur la page `/connexion-entreprise`.
 
 ## 7. Retour arrière
+
+- **Étapes 2 à 6** : elles sont additives. Sans secret employé, personne n'utilise la connexion employé (l'ancienne connexion reste la seule en usage) ; sans lien ni partenariat, aucune organisation n'est liée ; sans profil de poste, l'écran d'accueil reste l'actuel. Pour couper la double authentification des postes sensibles : réglage de l'entreprise (propriétaire). Pour révoquer tous les appareils de confiance d'une personne : Sécurité du compte ou administrateur. Un lien d'association ou un partenariat se révoque à tout moment ; la révocation d'un partenariat archive ses espaces.
 
 - **Par entreprise** : le propriétaire coupe « Affectations et droits » (onglet Entreprise) ou `PUT /entreprise/settings {rightsLink:false}` : la structure reste, les accès redeviennent ceux d'avant. Rétablir remet tout sans ressaisie.
 - **Pour toutes les entreprises** : variable d'environnement **`ENTREPRISE_RIGHTS=off`** sur Render (retirer la variable pour revenir) ; aucune structure ni affectation n'est perdue.
@@ -123,4 +184,4 @@ Le module « Organisation » (postes libres) existant reste en place, sans chang
 
 ## 8. Tests et démonstration
 
-`npm run test:entreprise` (126 vérifications : migrations et rattachement rejoué, aucun changement pour les comptes actuels, droits de chaque route, assistant, modèles par secteur, invitation et arrivée, droits donnés par un poste, retour arrière, isolation entre entreprises et organisations, DG, journal, suppression, limitation de débit) ; inclus dans `npm test`. Démonstration : `scripts/demo/entreprise-seed.js` puis `scripts/demo/entreprise-captures.js` ; captures dans `docs/captures-entreprise/`.
+Tests : `test:entreprise` (étape 1), `test:entreprise-auth` (étape 2, 74 vérifications), `test:entreprise-profils` (étape 3, 50), `test:entreprise-liens` (étape 4, 62), `test:entreprise-partenaires` (étape 5, 106), `test:entreprise-limites` (étape 6, 26), tous dans `npm test`. `npm run test:entreprise` (126 vérifications : migrations et rattachement rejoué, aucun changement pour les comptes actuels, droits de chaque route, assistant, modèles par secteur, invitation et arrivée, droits donnés par un poste, retour arrière, isolation entre entreprises et organisations, DG, journal, suppression, limitation de débit) ; inclus dans `npm test`. Démonstration : `scripts/demo/entreprise-seed.js` puis `scripts/demo/entreprise-captures.js` ; captures dans `docs/captures-entreprise/`.
