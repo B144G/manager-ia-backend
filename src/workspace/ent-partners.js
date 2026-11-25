@@ -377,7 +377,7 @@ shared.get('/spaces/:id/objects/:oid', async (req, res) => {
   const { s } = await spaceOf(req, req.params.id, { needMember: true });
   const o = await objectOf(req, s, req.params.oid);
   if (!live(o)) throw new HttpError(403, "Ce partage est terminé (révoqué ou expiré) : l'accès est coupé.");
-  const out = { id: Number(o.id), type: o.object_type, title: o.title, rights: o.rights, org: Number(o.org_id) === Number(req.org.id) ? 'mine' : 'other', snapshot: parseJSON(o.snapshot, {}), expiresAt: o.expires_at };
+  const out = { id: Number(o.id), objectId: Number(o.object_id), type: o.object_type, title: o.title, rights: o.rights, org: Number(o.org_id) === Number(req.org.id) ? 'mine' : 'other', snapshot: parseJSON(o.snapshot, {}), expiresAt: o.expires_at };
   if (o.object_type === 'library_folder') out.docs = (await db.prepare('SELECT id, name, mime, size, version FROM lib_docs WHERE folder_id = ? AND org_id = ? AND deleted_at IS NULL ORDER BY name LIMIT 200').all(o.object_id, o.org_id)).map((d) => ({ id: Number(d.id), name: d.name, mime: d.mime, size: Number(d.size), version: Number(d.version) }));
   out.validations = (await db.prepare('SELECT v.decision, v.comment, v.created_at AS at, u.name, og.name AS org FROM shared_validations v JOIN users u ON u.id = v.user_id JOIN orgs og ON og.id = v.org_id WHERE v.object_id = ? ORDER BY v.id DESC').all(o.id)).map((v) => ({ decision: v.decision, comment: v.comment, at: v.at, name: v.name, org: v.org }));
   res.json(out);
