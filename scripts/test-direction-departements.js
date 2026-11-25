@@ -68,9 +68,9 @@ async function main() {
     check('à l\'ouverture il arrive sur son espace de direction (arrivée par espace, pas « Mon espace de travail »)', r.json.spaces.landing === 'dir_commercial' && r.json.spaces.choose === false && r.json.profile.landing === false && r.json.profile.directionSpace === 'dir_commercial', [r.json.spaces.landing, r.json.profile]);
     check('les écrans de direction n\'apparaissent que dans les espaces, jamais dans le menu général', !r.json.modules.some((m) => m.id.startsWith('dir_')) && r.json.spaces.spaces.find((s) => s.id === 'dir_commercial').modules.some((m) => m.id === 'dir_commercial'));
     sp = await mine(s1.c, O);
-    check('le vendeur : Commercial en membre, JAMAIS un espace de direction', sp.commercial === 'write' && !Object.keys(sp).some((k) => k.startsWith('dir_')), sp);
+    check('le vendeur : Commercial en membre, JAMAIS un espace de direction', sp.r_commercial_vendeur === 'write' && !sp.commercial && !Object.keys(sp).some((k) => k.startsWith('dir_')), sp);
     sp = await mine(s2.c, O);
-    check('le comptable : Comptabilité et finances, pas de direction', !!sp.finances && !Object.keys(sp).some((k) => k.startsWith('dir_')), sp);
+    check('le comptable : Comptabilité et finances, pas de direction', !!sp.r_finance_comptable && !Object.keys(sp).some((k) => k.startsWith('dir_')), sp);
     sp = await mine(nop.c, O);
     check('une personne sans poste (repli sûr) n\'a aucun espace de direction', !Object.keys(sp).some((k) => k.startsWith('dir_')) && sp.commercial === 'write', sp);
 
@@ -220,7 +220,7 @@ async function main() {
     check('le directeur a maintenant son espace de direction et l\'espace opérationnel en visiteur', sp.dir_commercial === 'manage' && sp.commercial === 'view', sp);
     r = await dcl.c('POST', `${O3}/crm/customers`, { name: 'Client refusé' });
     check('… il ne peut plus écrire dans l\'espace opérationnel (403)', r.status === 403);
-    check('le personnel reste opérationnel et sans direction', (await mine(stf.c, O3)).commercial === 'write' && !Object.keys(await mine(stf.c, O3)).some((k) => k.startsWith('dir_')));
+    check('le personnel reste opérationnel et sans direction', (await mine(stf.c, O3)).r_commercial_vendeur === 'write' && !Object.keys(await mine(stf.c, O3)).some((k) => k.startsWith('dir_')));
     r = await o3('POST', `${E3}/direction/disable`);
     sp = await mine(dcl.c, O3);
     check('retour arrière par réglage : l\'espace de direction disparaît (le directeur retrouve l\'espace opérationnel visiteur issu de son poste converti)', r.status === 200 && !Object.keys(sp).some((k) => k.startsWith('dir_')) && (await dcl.c('GET', `${O3}/dir_commercial/summary`)).status === 403, sp);

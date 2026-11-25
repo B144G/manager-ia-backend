@@ -126,4 +126,5 @@ module.exports = [
   );
   CREATE INDEX IF NOT EXISTS affaires_org ON affaires (org_id, stage);
   `,
+  `ALTER TABLE ent_setup ADD COLUMN IF NOT EXISTS extra_modules INTEGER NOT NULL DEFAULT 0`,
 ];

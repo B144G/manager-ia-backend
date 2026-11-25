@@ -51,6 +51,7 @@ const DEPARTMENTS = [
   { key: 'commercial', name: 'Commercial', direction: 'dcom', on: ALL, posts: [
     { key: 'resp_com', title: 'Responsable commercial', kind: 'head', spaces: { commercial: 'manage', stock: 'view' } },
     { key: 'vendeur', title: 'Commercial / vendeur', hc: 3, spaces: { commercial: 'write', stock: 'view' } },
+    { key: 'resp_terrain', title: 'Responsable commercial terrain', spaces: { commercial: 'write' } },
     { key: 'assist_com', title: 'Assistant(e) commercial(e)', spaces: { commercial: 'write' } },
     { key: 'service_client', title: 'Agent du service client', spaces: { commercial: 'write' } },
   ] },
@@ -111,4 +112,4 @@ const LEGACY_DIRECTOR_SPACES = {
   dir_dprod: { operations: 'manage', stock: 'view', direction: 'view' }, dir_dlog: { operations: 'manage', stock: 'view', direction: 'view' }, dir_dit: { operations: 'manage', direction: 'view' },
   dir_dstock: { stock: 'manage', finances: 'view', direction: 'view' }, dir_dsec: { gestion: 'manage', direction: 'view' }, dir_drh: { rh: 'manage', direction: 'view' }, dir_dmkt: { commercial: 'manage', direction: 'view' },
 };
-module.exports = { LEGACY_DIRECTOR_SPACES, SECTORS, SECTOR_IDS, DIRECTIONS, DEPARTMENTS, planFor };
+module.exports = { DEPARTMENTS_RAW: DEPARTMENTS, LEGACY_DIRECTOR_SPACES, SECTORS, SECTOR_IDS, DIRECTIONS, DEPARTMENTS, planFor };

@@ -50,6 +50,15 @@ async function main() {
     await owner('POST', `${E}/workflows/install`, {});
     const Q = `${O}/qhse`; const AU = `${O}/audit_interne`; const AF = `${O}/affaires`;
     const av = async (c, sp, k) => ((await c('GET', `${O}/${sp}/kpis`)).json.kpis || []).find((x) => x.key === k) || {};
+    console.log('Masqués par défaut');
+    const modsOf = async (c) => (await c('GET', O)).json.modules.map((m) => m.id);
+    check('sans activation : ni écran, ni route, ni espace (404)', !(await modsOf(owner)).includes('qhse') && (await owner('GET', Q)).status === 404 && (await owner('GET', AF)).status === 404 && (await owner('GET', AU)).status === 404);
+    check('… les espaces ne les listent pas', !JSON.stringify((await owner('GET', O)).json.spaces).match(/qhse|affaires|audit_interne/));
+    check('seul le propriétaire active (403 pour un administrateur)', (await adm('POST', `${E}/extras/enable`, {})).status === 403);
+    check('le propriétaire active', (await owner('POST', `${E}/extras/enable`, {})).status === 200 && (await modsOf(owner)).includes('qhse'));
+    process.env.EXTRA_MODULES = 'off';
+    check('variable d\'environnement : coupe tout, même activé (404)', (await owner('GET', Q)).status === 404 && !(await modsOf(owner)).includes('affaires'));
+    delete process.env.EXTRA_MODULES;
     console.log('QHSE');
     check('avant toute fiche, les indicateurs qualité sont « non disponibles »', !(await av(dt.c, 'dir_technique', 'reprise')).available && !(await av(drh.c, 'dir_rh', 'accidents')).available);
     r = await cond.c('POST', Q, { kind: 'incident', title: 'Chute de matériel', place: 'Chantier A', severity: 'high' });
@@ -77,7 +86,7 @@ async function main() {
     check('les indicateurs deviennent disponibles avec de vraies valeurs', kd[0].value === 1 && kd[1].value === 100, kd);
     r = await owner('GET', Q);
     check('liste et chiffres (accident, jours perdus)', r.status === 200 && r.json.items.length === 5 && r.json.stats.accidents === 1 && r.json.stats.daysLost === 4);
-    check('une autre entreprise ne voit rien (isolation)', (await o2('GET', `${O2}/qhse`)).json.items.length === 0 && (await o2('POST', `${O2}/qhse/${inc.id}/close`, {})).status === 404);
+    check('une autre entreprise ne voit rien (isolation)', (await o2('GET', `${O2}/qhse`)).status === 404 && (await o2('POST', `${O2}/qhse/${inc.id}/close`, {})).status === 404);
     console.log('Audit interne');
     r = await adm('POST', AU, { title: 'Audit des achats', scope: 'Procédures de commande', auditorId: admId, plannedDate: '2030-02-01' }); const au = r.json;
     check('un responsable planifie un audit', r.status === 201);

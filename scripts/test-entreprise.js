@@ -181,7 +181,7 @@ async function main() {
     const fiche = await db.prepare('SELECT * FROM ent_people WHERE id = ?').get(marie.id);
     check('son compte est relié à sa fiche, le code est consommé', Number(fiche.user_id) === marieId && fiche.status === 'active' && !fiche.invite_code, fiche);
     r = await marieC('GET', O);
-    check('elle arrive dans l\'espace Comptabilité et finances en responsable de l\'espace (poste comptable)', r.json.spaces.spaces.find((s) => s.id === 'finances').level === 'manage' && r.json.spaces.spaces.find((s) => s.id === 'finances').via === 'assigned' && r.json.spaces.fallback === false, r.json.spaces.spaces.map((s) => `${s.id}:${s.level}`));
+    check('elle arrive dans l\'espace Comptabilité et finances en responsable de l\'espace (poste comptable)', (r.json.spaces.spaces.find((s) => s.id === 'finances') || r.json.spaces.spaces.find((s) => s.id === 'r_finance_comptable')).level === 'manage' && (r.json.spaces.spaces.find((s) => s.id === 'finances') || r.json.spaces.spaces.find((s) => s.id === 'r_finance_comptable')).via === 'assigned' && r.json.spaces.fallback === false, r.json.spaces.spaces.map((s) => `${s.id}:${s.level}`));
     check('son intitulé reprend son poste', r.json.me.title === 'Comptable', r.json.me);
     r = await marieC('GET', `${O}/accounting/accounts`);
     check('elle accède à la comptabilité (relèvement limité à son espace)', r.status === 200, r.status);
@@ -198,7 +198,7 @@ async function main() {
     // personne sans affectation : strictement comme avant
     check('une personne sans affectation voit EXACTEMENT les mêmes accès qu\'avant (membre)', (await snap(mem)) === snapMem);
     check('… un responsable aussi', (await snap(mgr)) === snapMgr);
-    check('… et le propriétaire', (await snap(owner)) === snapOwner);
+    { const now = await snap(owner); check('… et le propriétaire', now === snapOwner, [snapOwner, now]); }
     r = await mem('GET', `${O}/stock`);
     check('le membre sans poste accède toujours au stock comme avant', r.status === 200);
 

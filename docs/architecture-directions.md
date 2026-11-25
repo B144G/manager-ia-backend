@@ -94,8 +94,8 @@ Commercial (marché) → technique (étude, planning) → finances (budget) → 
 
 ## 5. Priorités
 - **P1** (fait) : cockpits réels, circuits de validation, séparation des tâches.
-- **P2** (fait) : QHSE (incidents, accidents, inspections), non-conformités et réserves, réception technique, audit interne, gestion des affaires.
-- **P3** (documenté) : sanctions disciplinaires, devis quantitatifs et métrés, contrôle de gestion dédié, avances au personnel.
+- **Recadrage du fondateur** : seuls comptent les espaces de direction séparés (P1) et « un espace = un rôle » (§9). Les modules QHSE, Audit interne et Affaires (§6), construits avant ce recadrage, sont **masqués par défaut** (§10). Rien d'autre n'est construit.
+- **P3** (documenté, rien à construire) : sanctions disciplinaires, devis quantitatifs et métrés, contrôle de gestion dédié, avances au personnel.
 
 ## 6. Modules ajoutés en P2
 
@@ -122,3 +122,75 @@ Limites honnêtes : le taux de reprise est un indicateur de substitution (nous n
 
 ## 8. Captures (démonstration locale)
 `docs/captures-direction/` : directeur commercial (espace de direction) face au commercial (espace d'équipe), le directeur commercial en visiteur sur l'espace de son équipe, affaires, QHSE, directeur technique — en clair, sombre et mobile. Produites par `scripts/demo-direction.js` (entreprise BTP de démonstration, ports 3420/5420) et `scripts/demo/capture-direction.js`.
+
+## 9. Un espace = un rôle (catalogue unique)
+
+**Principe.** Le département n'est qu'un regroupement d'organigramme. Chaque rôle (poste du modèle d'entreprise) a son propre espace, avec uniquement les écrans de son métier. Une personne ne voit dans son pied de page que les espaces des rôles qu'elle détient (multi-rôles : union, sans doublon). Pour accéder à l'espace Marketing, il faut être marketeur ; un commercial, un assistant commercial ou le directeur commercial ne l'ont pas, sauf affectation explicite du propriétaire.
+
+**Source unique de vérité** : `src/workspace/ent-roles.js` (rôle → écrans propres + écrans partagés d'un autre métier, déclarés un à un). Un même écran peut figurer dans plusieurs espaces de rôle (la contrainte « un module = un seul espace » est levée) ; l'accès à un écran est le niveau le plus haut parmi les espaces de la personne qui le contiennent, contrôlé côté serveur (visiteur : lecture ; membre : écriture ; responsable : gestion).
+
+**Qui reçoit quoi.**
+- Directeurs : espace de direction (§2) ; l'espace opérationnel de leur équipe seulement en visiteur ; jamais les espaces de rôle de leur équipe.
+- Personnel : l'espace de SON rôle (niveau du modèle : responsable de département = responsable, sinon membre ou le niveau d'origine du poste) + « Projets et réunions » (ouvert à tous).
+- Poste personnalisé par le propriétaire, poste sans rôle au catalogue (agent de sécurité) : ses espaces d'origine, inchangés.
+- Personne sans poste affecté : **repli sûr** sur les 9 espaces historiques (aucun accès perdu), jamais d'espace de rôle ni de direction.
+- Propriétaire et administrateurs : les 9 espaces historiques complets ; un espace de rôle seulement s'il leur est affecté explicitement.
+- « Aucun » affecté explicitement sur un espace historique retire aussi les espaces de rôle de ce métier.
+
+**Mode simple et retour arrière.** Les 9 espaces historiques restent : ils sont le repli et le **mode simple**, que le propriétaire choisit en coupant le réglage « espaces de direction » (Entreprise › Espaces de direction) ; les espaces de rôle disparaissent alors avec eux et chacun retrouve ses espaces historiques. Interrupteur général : `DIRECTION_SPACES=off`. Aucune migration destructive.
+
+**Charge utile `spaces` inchangée** (id, libellé, icône, niveau, via, liste des modules) : la navigation l'affiche telle quelle.
+
+### Catalogue rôle → écrans → niveau
+| Espace de rôle | Poste du modèle (tkey) | Métier | Écrans propres | Écrans partagés d'un autre métier | Niveau |
+|---|---|---|---|---|---|
+| `r_finance_comptable` — Comptable | `finance.comptable` | finances | accounting, fiscal, treasury, budget | crm, parties | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_finance_tresorier` — Trésorier | `finance.tresorier` | finances | treasury, budget, accounting | crm | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_finance_caissier` — Caissier | `finance.caissier` | finances | treasury | crm | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_finance_controleur` — Contrôleur de gestion | `finance.controleur` | finances | budget, accounting | dashboard, aifollow, history | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_pilotage_resp_pilotage` — Responsable du pilotage | `pilotage.resp_pilotage` | direction | dashboard, aifollow, history, structure, processes, memory, agents | budget, accounting, audit_interne | responsable |
+| `r_pilotage_analyste` — Analyste de gestion | `pilotage.analyste` | direction | dashboard, aifollow, history | budget, accounting | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_pilotage_assistant_dir` — Assistant(e) de direction | `pilotage.assistant_dir` | gestion | administration | — | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_rh_resp_rh` — Responsable des ressources humaines | `rh.resp_rh` | rh | hr, talents, payroll | — | responsable |
+| `r_rh_paie` — Gestionnaire de paie | `rh.paie` | rh | payroll, hr | — | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_rh_recrutement` — Chargé(e) de recrutement | `rh.recrutement` | rh | talents, hr | — | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_commercial_resp_com` — Responsable commercial | `commercial.resp_com` | commercial | commercial, crm, sales, parties, support, affaires | — | responsable |
+| `r_commercial_resp_terrain` — Responsable commercial terrain | `commercial.resp_terrain` | commercial | commercial, crm, parties, affaires | — | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_commercial_vendeur` — Commercial / vendeur | `commercial.vendeur` | commercial | commercial, crm, parties, affaires | — | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_commercial_assist_com` — Assistant(e) commercial(e) | `commercial.assist_com` | commercial | sales, crm | — | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_commercial_service_client` — Agent du service client | `commercial.service_client` | commercial | support, crm | — | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_marketing_resp_mkt` — Responsable marketing | `marketing.resp_mkt` | marketing | marketing | — | responsable |
+| `r_marketing_community` — Community manager | `marketing.community` | marketing | marketing | — | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_production_chef_prod` — Chef de production | `production.chef_prod` | production | production | maintenance, stock, qhse | responsable |
+| `r_production_operateur` — Opérateur de production | `production.operateur` | production | production | — | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_production_qualite` — Contrôleur qualité | `production.qualite` | production | production | qhse | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_production_conducteur` — Conducteur de travaux | `production.conducteur` | chantiers | construction | stock, projects, qhse | responsable |
+| `r_production_metreur` — Métreur | `production.metreur` | chantiers | construction | stock | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_production_chef_chantier` — Chef de chantier | `production.chef_chantier` | chantiers | construction | qhse | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_production_chef_projet` — Chef de projet | `production.chef_projet` | projets | projects | — | responsable |
+| `r_production_consultant` — Consultant(e) | `production.consultant` | projets | projects | — | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_achats_resp_stock` — Responsable stock et achats | `achats.resp_stock` | stock | stock, purchasing | parties | responsable |
+| `r_achats_acheteur` — Acheteur | `achats.acheteur` | stock | purchasing, stock | parties | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_achats_magasinier` — Magasinier | `achats.magasinier` | stock | stock, purchasing | — | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_logistique_resp_log` — Responsable logistique | `logistique.resp_log` | logistique | logistics | maintenance, stock, qhse | responsable |
+| `r_logistique_dispatcheur` — Dispatcheur | `logistique.dispatcheur` | logistique | logistics | — | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_logistique_chef_parc` — Chef de parc | `logistique.chef_parc` | logistique | logistics | maintenance | responsable |
+| `r_logistique_chauffeur` — Chauffeur | `logistique.chauffeur` | logistique | logistics | — | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_logistique_livreur` — Livreur | `logistique.livreur` | logistique | logistics | — | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_informatique_resp_it` — Responsable informatique et maintenance | `informatique.resp_it` | maintenance | maintenance | logistics, integrations | responsable |
+| `r_informatique_technicien` — Technicien(ne) | `informatique.technicien` | maintenance | maintenance | — | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_informatique_mecanicien` — Mécanicien | `informatique.mecanicien` | maintenance | maintenance | — | membre (écriture) ; niveau du modèle si plus élevé |
+| `r_securite_resp_securite` — Responsable sécurité | `securite.resp_securite` | gestion | legal, administration, audit_interne | qhse | responsable |
+
+Métiers des écrans (détection des recouvrements) : voir `METIER_OF` dans `ent-roles.js`.
+
+### Garde-fous (testés : `npm run test:espaces-roles`)
+1. **L'espace est la porte, pas l'ensemble des droits.** À l'intérieur d'un écran partagé, le serveur applique le niveau (visiteur/membre/responsable) puis la portée propre à l'écran. État réel, vérifié dans le code :
+   - Commercial (pipeline, opportunités, prospects) : portée par rôle commercial (`commercial/perm.js`) — le commercial terrain ne voit que ses comptes ; l'assistant prépare sans valider ; le responsable voit tout. **OK**.
+   - Clients et ventes (CRM), comptabilité, stock, achats : portée par **antenne** (`A.scope`) seulement ; pas de filtre « mes éléments » : un vendeur qui ouvre le CRM voit les clients de son antenne. **Écart documenté**, comportement identique à avant ce chantier ; à décider par le fondateur (portée « mes clients »).
+   - Trésorerie et RH : rôles propres (`tre_roles`, `rh_roles`) en plus de l'espace. **OK**.
+2. **Petites entreprises** : le mode simple (9 espaces) reste choisissable ; une personne multi-rôles voit ses espaces de rôle sans doublon.
+3. **Catalogue testé** : aucun module orphelin, aucun recouvrement accidentel (un rôle ne reçoit un écran d'un autre métier que s'il est déclaré « partagé »), chaque rôle atteignable depuis un poste du modèle, cohérence avec les 22 profils de l'étape 3 (chaque rôle a son profil dont les écrans recoupent les siens).
+
+## 10. Modules complémentaires masqués par défaut (QHSE, Audit interne, Affaires)
+Construits avant le recadrage, conservés mais **invisibles** : sans activation du propriétaire (Entreprise › réglage « modules complémentaires », `POST /entreprise/extras/enable`), ni écran, ni route (404), ni entrée de menu ou d'espace. `EXTRA_MODULES=off` les coupe pour toutes les entreprises. Migrations 453–456 additives. Leurs commits sont distincts (voir le rapport final) : ils peuvent être exclus de la poussée sans toucher au cœur (directions séparées + espaces de rôle). Les indicateurs de cockpit qui en dépendent (accidents, constats d'audit, conformité, reprise) restent « non disponibles » tant qu'ils sont masqués.

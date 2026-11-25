@@ -5,7 +5,7 @@ const { db, nowISO } = require('../db');
 const { parseJSON } = require('../util');
 
 const LV = { none: 0, view: 1, write: 2, manage: 3 };
-const SPACE_IDS = ['direction', 'commercial', 'finances', 'stock', 'rh', 'operations', 'projets', 'gestion', 'compte', 'dir_general', 'dir_technique', 'dir_commercial', 'dir_finances', 'dir_rh', 'dir_production', 'dir_logistique', 'dir_stock', 'dir_marketing', 'dir_it', 'dir_securite'];
+const SPACE_IDS = [...require('./ent-roles').ROLE_IDS, 'direction', 'commercial', 'finances', 'stock', 'rh', 'operations', 'projets', 'gestion', 'compte', 'dir_general', 'dir_technique', 'dir_commercial', 'dir_finances', 'dir_rh', 'dir_production', 'dir_logistique', 'dir_stock', 'dir_marketing', 'dir_it', 'dir_securite'];
 
 /** Interrupteur général : ENTREPRISE_RIGHTS=off|0|false|non coupe le lien structure → droits pour toutes les entreprises (la structure reste visible). */
 const globalOff = () => /^(off|0|false|no|non|disabled|desactive|désactivé)$/i.test(String(process.env.ENTREPRISE_RIGHTS || '').trim());
@@ -91,10 +91,16 @@ async function structureLevels(orgId, userId) {
   const out = {};
   const up = (sp, lv) => { if (SPACE_IDS.includes(sp) && LV[lv] > LV[out[sp] || 'none']) out[sp] = lv; };
   if (dg && dirOn) up('dir_general', 'manage'); // cockpit de la direction générale
-  if (dg) { up('direction', 'manage'); for (const sp of SPACE_IDS) if (sp !== 'direction' && sp !== 'compte' && sp !== 'projets' && (!sp.startsWith('dir_') || (dirOn && sp !== 'dir_general'))) up(sp, 'view'); }
+  if (dg) { up('direction', 'manage'); for (const sp of SPACE_IDS) if (!require('./ent-roles').isRole(sp) && sp !== 'direction' && sp !== 'compte' && sp !== 'projets' && (!sp.startsWith('dir_') || (dirOn && sp !== 'dir_general'))) up(sp, 'view'); }
+  const RL = require('./ent-roles');
   for (const p of posts) {
     const own = p.kind === 'director' ? await D.dirSpaceOfPost(p) : null;
-    for (const [sp, lv] of Object.entries(parseJSON(p.spaces, {}))) {
+    const spaces = parseJSON(p.spaces, {});
+    // Mode « un espace = un rôle » (avec les espaces de direction) : un poste du modèle resté tel quel ouvre l'espace de SON rôle, et lui seul.
+    // Un poste personnalisé par le propriétaire, un poste sans rôle au catalogue ou un directeur gardent leurs espaces d'origine.
+    const role = dirOn && p.kind !== 'director' && p.tkey ? RL.BY_TKEY[p.tkey] : null;
+    if (role && RL.untouched(p.tkey, spaces)) { up(role.id, RL.levelOfPost(p.tkey, p.kind, spaces)); continue; }
+    for (const [sp, lv] of Object.entries(spaces)) {
       if (D.isDir(sp)) { // espace de direction : seulement un poste de DIRECTEUR, responsable de SON espace ; ailleurs en consultation au plus ; jamais pour le personnel
         if (!dirOn || p.kind !== 'director') continue;
         up(sp, sp === own ? lv : (lv === 'manage' || lv === 'write' ? 'view' : lv));

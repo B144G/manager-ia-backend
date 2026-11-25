@@ -1,4 +1,5 @@
 'use strict';
+const EXTRAS = require('./ent-extras');
 // Espace de travail IA : organisations, équipe, antennes, invitations. Chaque sous-application a son propre fichier.
 const crypto = require('crypto');
 const express = require('express');
@@ -129,7 +130,8 @@ orgRouter.get('/', async (req, res) => {
   const branches = await db.prepare('SELECT id, name, location FROM branches WHERE org_id = ? ORDER BY name').all(req.org.id);
   const members = await db.prepare('SELECT user_id, role, title, branch_id FROM org_members WHERE org_id = ?').all(req.org.id);
   const me = { role: req.member.role, roleLabel: A.ROLE_LABEL[req.member.role], title: req.member.title, branchId: req.member.branch_id, userId: req.user.id };
-  let mods = modules.filter((m) => A.RANK[req.member.role] >= A.RANK[m.min] && !m.id.startsWith('dir_')); // les écrans de direction n'existent que dans leurs espaces (jamais dans le menu général)
+  const extrasOn = await EXTRAS.enabled(req.org.id); // modules complémentaires masqués par défaut
+  let mods = modules.filter((m) => A.RANK[req.member.role] >= A.RANK[m.min] && !m.id.startsWith('dir_') && (!EXTRAS.IDS.includes(m.id) || extrasOn)); // les écrans de direction n'existent que dans leurs espaces (jamais dans le menu général)
   if (!await require('./tre-lib').hasAccess(req)) mods = mods.filter((m) => m.id !== 'treasury'); // Trésorerie : réservée au responsable, aux trésoriers et aux administrateurs
   res.json({
     org: { ...orgView(req.org), plan: await A.ownerPlan(req.org) },
@@ -299,8 +301,10 @@ orgRouter.use('/purchasing', require('./purchasing').router);
 orgRouter.use('/meetings', require('./meetings').router);
 orgRouter.use('/chat', require('./chat').router); // chat interne (tables chat_) : conversations, groupes, fichiers, appels, assistante
 orgRouter.use('/integrations', require('./integrations'));
-orgRouter.use('/audit_interne', require('./audit-interne'));
-for (const id of ['payroll', 'fiscal', 'marketing', 'logistics', 'production', 'construction', 'maintenance', 'qhse', 'affaires', 'legal', 'memory', 'agents']) orgRouter.use('/' + id, require('./' + id));
+orgRouter.use('/audit_interne', EXTRAS.gate, require('./audit-interne'));
+orgRouter.use('/qhse', EXTRAS.gate, require('./qhse'));
+orgRouter.use('/affaires', EXTRAS.gate, require('./affaires'));
+for (const id of ['payroll', 'fiscal', 'marketing', 'logistics', 'production', 'construction', 'maintenance', 'legal', 'memory', 'agents']) orgRouter.use('/' + id, require('./' + id));
 orgRouter.use('/structure', require('./structure'));
 orgRouter.use('/profile', require('./profile').router);
 orgRouter.use('/administration', require('./administration').router); // module Administration (tables adm_)

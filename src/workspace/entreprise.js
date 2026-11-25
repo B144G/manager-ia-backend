@@ -1,4 +1,5 @@
 'use strict';
+const EXTRAS = require('./ent-extras');
 // Compte d'entreprise (étape 1) : entreprise, direction générale, directions du pilotage, départements, postes, personnes et affectations.
 // Routes : /api/ws/orgs/:orgId/entreprise/…  Droits TOUJOURS vérifiés ici (lecture : tout membre ; écriture : administrateur ; direction générale et lien avec les droits : propriétaire).
 // Chaque requête est filtrée par organisation (org_id) et par entreprise ; un identifiant d'une autre organisation répond « introuvable ».
@@ -109,6 +110,7 @@ router.get('/', async (req, res) => {
     can: { edit: A.can(req, 'admin'), owner: A.can(req, 'owner') },
     companyCode: A.can(req, 'admin') ? AL.display(await AL.ensureCompanyCode(req.ent)) : undefined, // identifiant public de connexion employé (étape 2), pas un secret
     sensitive2fa: Boolean(Number(req.ent.sensitive_2fa)),
+    extras: { enabled: await EXTRAS.enabled(req.org.id), globalOff: EXTRAS.globalOff(), modules: EXTRAS.IDS },
     direction: { enabled: await DIR.enabled(req.org.id), globalOff: DIR.globalOff(), spaces: DIR.DIR_IDS.map((id) => ({ id, title: DIR.DIRS[id].title, opSpace: DIR.DIRS[id].op })) },
   });
 });
@@ -552,6 +554,17 @@ router.post('/direction/enable', A.need('owner'), async (req, res) => {
   void plan;
   await audit(req, 'ent_direction', req.org.id, 'enable', null, { converted });
   res.json({ ok: true, enabled: true, converted });
+});
+router.post('/extras/enable', A.need('owner'), async (req, res) => {
+  if (EXTRAS.globalOff()) throw new HttpError(409, 'Les modules complémentaires sont suspendus pour toutes les entreprises par un réglage du service.');
+  await EXTRAS.setEnabled(req.org.id, req.user.id, true);
+  await audit(req, 'ent_extras', req.org.id, 'enable', null, null);
+  res.json({ ok: true, enabled: true });
+});
+router.post('/extras/disable', A.need('owner'), async (req, res) => {
+  await EXTRAS.setEnabled(req.org.id, req.user.id, false);
+  await audit(req, 'ent_extras', req.org.id, 'disable', null, null);
+  res.json({ ok: true, enabled: false });
 });
 router.post('/direction/disable', A.need('owner'), async (req, res) => {
   await DIR.setEnabled(req.org.id, req.user.id, false);

@@ -34,9 +34,13 @@ const SPACES = [
 // Espaces de DIRECTION de département (un par directeur : pilotage, validations, tâches propres) : n'existent que si le réglage « espaces de direction » est actif (src/workspace/ent-direction.js).
 const DIRECTION = require('./ent-direction');
 for (const id of DIRECTION.DIR_IDS) SPACES.push({ id, icon: DIRECTION.DIRS[id].icon, title: DIRECTION.DIRS[id].title, desc: DIRECTION.DIRS[id].desc, modules: [id], dir: true });
+// Espaces de RÔLE (un espace = un rôle, catalogue unique : ent-roles.js). Actifs seulement avec les espaces de direction ; jamais par repli ni pour les administrateurs.
+const ROLESET = require('./ent-roles');
+for (const r of ROLESET.ROLES) SPACES.push({ id: r.id, icon: r.icon, title: r.title, desc: r.desc, modules: r.modules, role: true, parent: r.parent });
 const SPACE_IDS = SPACES.map((s) => s.id);
-const SPACE_OF = {};
-for (const s of SPACES) for (const m of s.modules) SPACE_OF[m] = s.id;
+const SPACE_OF = {}; // module → espace historique (ou de direction) qui le contient
+const SPACES_OF = {}; // module → TOUS les espaces qui le contiennent (un module peut figurer dans plusieurs espaces de rôle)
+for (const s of SPACES) for (const m of s.modules) { if (!s.role) SPACE_OF[m] = s.id; (SPACES_OF[m] = SPACES_OF[m] || []).push(s.id); }
 const NO_ELEVATE = new Set(['compte']);
 
 // ---------- Rôles fonctionnels : un modèle d'affectation (le propriétaire peut l'ajuster espace par espace) ----------
@@ -65,7 +69,7 @@ function presetOf(ids) {
   for (const id of ids) {
     const f = FUNC_ROLES.find((x) => x.id === id);
     if (!f) continue;
-    if (f.others) for (const s of SPACES) if (s.id !== 'compte' && !s.baseline && !s.dir) up(s.id, f.others); // jamais les espaces de direction
+    if (f.others) for (const s of SPACES) if (s.id !== 'compte' && !s.baseline && !s.dir && !s.role) up(s.id, f.others); // jamais les espaces de direction
     for (const [sp, lv] of Object.entries(f.spaces)) up(sp, lv);
   }
   return out;
@@ -113,9 +117,9 @@ async function levelsFor(orgId, userId, role) {
   if (fallback) {
     const { modules } = require('./modules');
     const seen = new Set(modules.filter((m) => A.RANK[role] >= A.RANK[m.min]).map((m) => m.id));
-    for (const s of SPACES) if (!s.dir && s.modules.some((m) => seen.has(m))) up(s.id, 'write'); // jamais un espace de direction par repli
+    for (const s of SPACES) if (!s.dir && !s.role && s.modules.some((m) => seen.has(m))) up(s.id, 'write'); // jamais un espace de direction ni de rôle par repli
   }
-  if (A.RANK[role] >= A.RANK.admin) for (const s of SPACES) { if (!s.dir || dirOn) up(s.id, 'manage'); }
+  if (A.RANK[role] >= A.RANK.admin) for (const s of SPACES) { if (s.role) continue; if (!s.dir || dirOn) up(s.id, 'manage'); }
   else {
     if (A.RANK[role] >= A.RANK.manager) up('direction', 'view');
     if (await db.prepare('SELECT 1 FROM tre_roles WHERE org_id = ? AND user_id = ?').get(orgId, userId)) up('finances', 'write');
@@ -125,10 +129,11 @@ async function levelsFor(orgId, userId, role) {
   }
   const levels = {}; const via = {};
   for (const s of SPACES) {
-    if (s.dir && !dirOn) continue; // pas d'espace de direction tant que le réglage est coupé
-    const e = explicit[s.id] !== undefined ? explicit[s.id] : (struct ? struct[s.id] : undefined); const d = derived[s.id] || 'none'; // l'affectation explicite du propriétaire (même « aucun ») l'emporte sur la structure
+    if ((s.dir || s.role) && !dirOn) continue; // pas d'espace de direction ni de rôle tant que le réglage est coupé
+    const e = explicit[s.id] !== undefined ? explicit[s.id] : (s.role && explicit[s.parent] === 'none') ? 'none' : (struct ? struct[s.id] : undefined); const d = derived[s.id] || 'none'; // « aucun » sur l'espace historique d'un métier retire aussi ses espaces de rôle ; l'affectation explicite du propriétaire (même « aucun ») l'emporte sur la structure
     // Le propriétaire et les administrateurs gardent toujours l'accès complet (ils affectent les espaces : jamais de blocage de leur propre compte).
     const fixed = A.RANK[role] >= A.RANK.admin;
+    if (s.role && fixed && e === undefined) continue; // les administrateurs ont déjà tous les espaces historiques : un espace de rôle n'apparaît que s'il leur est affecté
     const lv = fixed ? 'manage' : (e !== undefined ? e : d);
     if (lv !== 'none') { levels[s.id] = lv; via[s.id] = fixed ? 'role' : e !== undefined ? 'assigned' : s.baseline && d === 'write' ? 'base' : 'role'; }
   }
@@ -165,12 +170,13 @@ async function forMember(req) {
   const pref = await db.prepare('SELECT last_space FROM member_space_prefs WHERE org_id = ? AND user_id = ?').get(req.org.id, req.user.id);
   const last = pref && eff.levels[pref.last_space] ? pref.last_space : null;
   const { modules } = require('./modules');
-  const visible = new Set(modules.filter((m) => A.RANK[eff.role] >= A.RANK[m.min]).map((m) => m.id));
+  const extrasOn = await require('./ent-extras').enabled(req.org.id);
+  const visible = new Set(modules.filter((m) => A.RANK[eff.role] >= A.RANK[m.min] && (extrasOn || !require('./ent-extras').IDS.includes(m.id))).map((m) => m.id));
   const spaces = SPACES.filter((s) => eff.levels[s.id]).map((s) => ({
     id: s.id, icon: s.icon, title: s.title, desc: s.desc, level: eff.levels[s.id], via: eff.via[s.id],
     // (Seulement pour un espace AFFECTÉ par le propriétaire ; un espace dérivé des droits actuels ne montre que les écrans déjà ouverts au rôle.)
     // Un visiteur ou un responsable peut ouvrir des écrans que son rôle d'organisation ne montre pas (le serveur relève ses droits dans l'espace).
-    modules: s.modules.filter((m) => visible.has(m) || (eff.via[s.id] === 'assigned' && LV[eff.levels[s.id]] >= LV.view && !NO_ELEVATE.has(s.id))).map((m) => ({ id: m, title: (modules.find((x) => x.id === m) || {}).title || m })),
+    modules: s.modules.filter((m) => (extrasOn || !require('./ent-extras').IDS.includes(m)) && (visible.has(m) || (eff.via[s.id] === 'assigned' && LV[eff.levels[s.id]] >= LV.view && !NO_ELEVATE.has(s.id)))).map((m) => ({ id: m, title: (modules.find((x) => x.id === m) || {}).title || m })),
   }));
   const l = landing(eff, last);
   return { enabled: true, openRead: eff.openRead, spaces, funcRoles: eff.funcs, last, landing: l.space, choose: l.choose, fallback: Boolean(eff.fallback) };
@@ -183,8 +189,9 @@ async function guard(req, res, next) {
   const eff = await effective(req);
   if (!eff.enabled) return next();
   const read = req.method === 'GET' || req.method === 'HEAD';
-  const sp = SPACE_OF[mod];
-  const lv = sp ? eff.levels[sp] : null;
+  // Un module peut figurer dans plusieurs espaces : le niveau retenu est le plus haut parmi les espaces de la personne qui le contiennent.
+  let sp = null; let lv = null;
+  for (const id of SPACES_OF[mod] || []) { const l2 = eff.levels[id]; if (l2 && (!lv || LV[l2] > LV[lv])) { sp = id; lv = l2; } }
   if (!lv) {
     if (read && eff.openRead) return next(); // réglage « consultation ouverte » : lecture avec les droits habituels
     throw Object.assign(new HttpError(403, "Cet écran n'est pas dans vos espaces. Demandez au propriétaire de vous y donner accès (en consultation ou en travail)."), { errorCode: 'space_denied' });
@@ -199,6 +206,7 @@ async function guard(req, res, next) {
 
 // ---------- Tableau de bord d'un espace ----------
 async function dashboardOf(req, space) {
+  if (ROLESET.isRole(space)) return { ...(await dashboardOf(req, SPACES.find((s) => s.id === space).parent)), space }; // espace de rôle : aperçu du métier
   if (DIRECTION.isDir(space)) return { ...(await dashboardOf(req, DIRECTION.DIRS[space].op)), space }; // espace de direction : indicateurs du département (espace opérationnel lié)
   const o = req.org.id; const sc = A.scope(req);
   const today = nowISO().slice(0, 10);
@@ -289,7 +297,7 @@ router.get('/overview', async (req, res) => {
   if (!eff.enabled || !(eff.levels.direction || A.can(req, 'admin'))) throw new HttpError(403, "Vue d'ensemble réservée à la direction.");
   const out = [];
   for (const s of SPACES) {
-    if (s.id === 'direction' || s.dir) continue;
+    if (s.id === 'direction' || s.dir || s.role) continue;
     // Chaque carte n'est calculée que pour un espace que la personne peut au moins consulter (jamais de fuite d'indicateurs).
     if (!eff.levels[s.id] && !A.can(req, 'admin')) continue;
     const d = await dashboardOf(req, s.id);
@@ -311,7 +319,7 @@ router.put('/settings', A.need('owner'), async (req, res) => {
   res.json({ ok: true, enabled: enabled && !globalOff(), openRead, globalOff: globalOff() });
 });
 
-router.get('/settings', A.need('admin'), async (req, res) => { const dirOn = await DIRECTION.enabled(req.org.id); res.json({ ...(await settingsOf(req.org.id)), catalogue: SPACES.filter((s) => !s.dir || dirOn).map(({ id, icon, title, desc, modules }) => ({ id, icon, title, desc, modules })), funcRoles: FUNC_ROLES.map((f) => ({ id: f.id, title: f.title, desc: f.desc, preset: presetOf([f.id]) })) }); });
+router.get('/settings', A.need('admin'), async (req, res) => { const dirOn = await DIRECTION.enabled(req.org.id); res.json({ ...(await settingsOf(req.org.id)), catalogue: SPACES.filter((s) => (!s.dir && !s.role) || dirOn).map(({ id, icon, title, desc, modules }) => ({ id, icon, title, desc, modules })), funcRoles: FUNC_ROLES.map((f) => ({ id: f.id, title: f.title, desc: f.desc, preset: presetOf([f.id]) })) }); });
 
 router.get('/assignments', A.need('admin'), async (req, res) => {
   const members = await db.prepare('SELECT m.user_id, m.role, m.title, u.name FROM org_members m JOIN users u ON u.id = m.user_id WHERE m.org_id = ? ORDER BY m.id').all(req.org.id);
@@ -365,4 +373,4 @@ router.get('/log', A.need('admin'), async (req, res) => {
   res.json({ log: rows });
 });
 
-module.exports = { router, guard, forMember, dashboardOf, effective, settingsOf, levelsFor, presetOf, moduleOfPath, SPACES, SPACE_OF, FUNC_ROLES, SEG };
+module.exports = { router, guard, forMember, dashboardOf, effective, settingsOf, levelsFor, presetOf, moduleOfPath, SPACES, SPACE_OF, SPACES_OF, FUNC_ROLES, SEG };

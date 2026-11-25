@@ -84,7 +84,9 @@ async function mayInitiate(req, w) {
   if (A.can(req, 'admin')) return true;
   const eff = await require('./spaces').effective(req);
   if (!eff.enabled) return true;
-  return w.initiatorSpaces.some((sp) => eff.levels[sp] === 'write' || eff.levels[sp] === 'manage');
+  const RLS = require('./ent-roles'); // un espace de rôle compte comme l'espace historique de son métier
+  const ok = new Set(w.initiatorSpaces); for (const r of RLS.ROLES) if (ok.has(r.parent)) ok.add(r.id);
+  return [...ok].some((sp) => eff.levels[sp] === 'write' || eff.levels[sp] === 'manage');
 }
 async function initiable(req) {
   const out = [];
