@@ -126,6 +126,7 @@ orgRouter.get('/', async (req, res) => {
     me, branches, modules: mods, brand: req.brand, // marque de l'entreprise (valeurs par défaut = affichage d'origine)
     limits: { members: lim.members, branches: lim.branches, aiMonth: lim.aiMonth, aiUsed: await A.aiUsed(req.org), aiResetAt: (await A.quotaWindow(req.org)).end, membersUsed: members.length },
     intakeToken: A.can(req, 'admin') ? req.org.intake_token : undefined,
+    profile: await require('./ent-profiles').summaryFor(req), // profil de rôle du poste (étape 3) ; null = aucun poste, écran habituel inchangé
     spaces: await require('./spaces').forMember(req), // Espaces par rôle (réglage d'entreprise, désactivé par défaut)
     features: { metaChannels: config.metaChannelsVisible, waQr: config.waQr.enabled },
   });

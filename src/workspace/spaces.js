@@ -27,7 +27,7 @@ const SPACES = [
   { id: 'stock', icon: 'stock', title: 'Stock et achats', desc: 'Stock, entrepôt, achats, fournisseurs.', modules: ['stock', 'purchasing'] },
   { id: 'rh', icon: 'hr', title: 'Ressources humaines', desc: 'Personnel, congés, paie, talents et compétences.', modules: ['hr', 'talents', 'payroll'] },
   { id: 'operations', icon: 'production', title: 'Opérations', desc: 'Production, logistique, chantiers, maintenance.', modules: ['production', 'logistics', 'construction', 'maintenance'] },
-  { id: 'projets', icon: 'projects', title: 'Projets et réunions', desc: 'Mes tâches, projets, réunions, bibliothèque. Ouvert à tout le monde.', modules: ['projects', 'meetings', 'chat', 'library'], baseline: true },
+  { id: 'projets', icon: 'projects', title: 'Projets et réunions', desc: 'Mes tâches, projets, réunions, bibliothèque. Ouvert à tout le monde.', modules: ['projects', 'meetings', 'chat', 'library', 'profil'], baseline: true },
   { id: 'gestion', icon: 'legal', title: 'Administration et juridique', desc: 'Documents administratifs, contrats, conformité.', modules: ['administration', 'legal'] },
   { id: 'compte', icon: 'team', title: 'Administration du compte', desc: 'Équipe, sécurité, intégrations, abonnement.', modules: ['team', 'entreprise', 'integrations', 'billing'] },
 ];
@@ -71,7 +71,7 @@ function presetOf(ids) {
 // ---------- Correspondance chemin d'API → module ----------
 // null = commun à tous (jamais bloqué ici : il garde ses propres règles de rôle). Un chemin inconnu est traité comme commun.
 const SEG = {
-  dashboard: null, entreprise: null, decisions: null, share: null, geo: null, mail: null, feedback: null, profile: null, ai: null, data: null, notices: null, spaces: null,
+  dashboard: null, entreprise: null, profil: null, decisions: null, share: null, geo: null, mail: null, feedback: null, profile: null, ai: null, data: null, notices: null, spaces: null,
   support: 'support', projects: 'projects', budget: 'budget', stock: 'stock', crm: 'crm', parties: 'parties', sales: 'sales', 'sales-mine': 'sales', commercial: 'commercial',
   aifollow: 'aifollow', 'wa-scope': 'sales', hr: 'hr', talents: 'talents', accounting: 'accounting', treasury: 'treasury', library: 'library', history: 'history',
   purchasing: 'purchasing', meetings: 'meetings', chat: 'chat', integrations: 'integrations', payroll: 'payroll', fiscal: 'fiscal', marketing: 'marketing', logistics: 'logistics',
@@ -357,4 +357,4 @@ router.get('/log', A.need('admin'), async (req, res) => {
   res.json({ log: rows });
 });
 
-module.exports = { router, guard, forMember, effective, settingsOf, levelsFor, presetOf, moduleOfPath, SPACES, SPACE_OF, FUNC_ROLES, SEG };
+module.exports = { router, guard, forMember, dashboardOf, effective, settingsOf, levelsFor, presetOf, moduleOfPath, SPACES, SPACE_OF, FUNC_ROLES, SEG };

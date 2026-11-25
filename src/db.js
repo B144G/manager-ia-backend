@@ -3835,6 +3835,9 @@ MIGRATIONS.push(...require('./migrations/compte-entreprise'));
 // Étape 2 (410 et suivantes) : connexion employé et appareils de confiance (405 à 409 réservées).
 while (MIGRATIONS.length < 409) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1} AS reserve`);
 MIGRATIONS.push(...require('./migrations/compte-entreprise-2'));
+// Étape 3 (420 et suivantes) : profils de rôle (413 à 419 réservées).
+while (MIGRATIONS.length < 419) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1} AS reserve`);
+MIGRATIONS.push(...require('./migrations/compte-entreprise-3'));
 
 db.ready = db.migrate(MIGRATIONS);
 

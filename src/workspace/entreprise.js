@@ -10,6 +10,7 @@ const W = require('./w3');
 const E = require('./ent-lib');
 const T = require('./ent-templates');
 const AL = require('./ent-auth-lib');
+const PR = require('./ent-profiles');
 const limits = require('../middleware/limits');
 const { HttpError, parseJSON } = require('../util');
 
@@ -450,6 +451,58 @@ router.put('/settings', A.need('owner'), async (req, res) => {
     .run(req.org.id, JSON.stringify(cur.steps), cur.template, link ? 1 : 0, req.user.id, nowISO());
   await audit(req, 'ent_settings', req.org.id, 'update', { rightsLink: cur.rightsLink }, { rightsLink: link });
   res.json({ ok: true, rightsLink: link, globalOff: E.globalOff() });
+});
+
+// ---------- Profils de rôle (étape 3) : le profil ne donne aucun droit, il organise l'écran de la personne ----------
+const moduleIds = () => require('./modules').modules.map((m) => m.id);
+router.get('/profiles', async (req, res) => {
+  const list = await PR.profilesOf(req.org.id);
+  const used = await db.prepare('SELECT title, tkey, profile_key FROM ent_posts WHERE org_id = ? AND active = 1').all(req.org.id);
+  res.json({
+    profiles: list.map((p) => ({ key: p.key, title: p.title, desc: p.desc, custom: p.custom, config: p.config, posts: used.filter((x) => PR.keyOfPost(x) === p.key).map((x) => x.title) })),
+    catalogue: { blockTypes: PR.BLOCK_TYPES, spaces: E.SPACE_IDS, lists: Object.entries(PR.SOURCES).map(([key, s]) => ({ key, title: s.title, module: s.module })), components: Object.entries(PR.COMPONENTS).map(([key, module]) => ({ key, module })), layouts: PR.LAYOUTS, modules: require('./modules').modules.map((m) => ({ id: m.id, title: m.title })) },
+    can: { edit: A.can(req, 'admin') },
+  });
+});
+router.put('/profiles/:key', A.need('admin'), async (req, res) => {
+  const key = String(req.params.key);
+  if (!PR.BASE[key]) throw new HttpError(404, 'Profil introuvable.');
+  const cfg = PR.cleanConfig((req.body || {}).config, moduleIds(), HttpError);
+  const before = (await PR.profilesOf(req.org.id)).find((p) => p.key === key);
+  await db.prepare(`INSERT INTO ent_profiles (org_id, key, config, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT (org_id, key) DO UPDATE SET config = EXCLUDED.config, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at`).run(req.org.id, key, JSON.stringify(cfg), req.user.id, nowISO());
+  await audit(req, 'ent_profile', req.org.id, 'update', { key, blocks: before.config.blocks.length }, { key, blocks: cfg.blocks.length, modules: cfg.modules.length });
+  res.json({ ok: true });
+});
+router.delete('/profiles/:key', A.need('admin'), async (req, res) => {
+  const key = String(req.params.key);
+  if (!PR.BASE[key]) throw new HttpError(404, 'Profil introuvable.');
+  await db.prepare('DELETE FROM ent_profiles WHERE org_id = ? AND key = ?').run(req.org.id, key);
+  await audit(req, 'ent_profile', req.org.id, 'reset', { key }, null);
+  res.json({ ok: true });
+});
+router.put('/posts/:id/profile', A.need('admin'), async (req, res) => {
+  const p = await loadPost(req, req.params.id);
+  const key = (req.body || {}).key;
+  if (key !== null && key !== undefined && key !== '' && !PR.BASE[key]) throw new HttpError(400, 'Profil inconnu.');
+  const v = key ? key : null;
+  await db.prepare('UPDATE ent_posts SET profile_key = ? WHERE id = ?').run(v, p.id);
+  if ((req.body || {}).applyRights === true && v) { // reprendre les accès par défaut du profil (jamais « responsable du compte » sans être propriétaire)
+    const spaces = cleanSpaces(req, PR.BASE[v].config.spaces);
+    await db.prepare('UPDATE ent_posts SET spaces = ? WHERE id = ?').run(JSON.stringify(spaces), p.id);
+  }
+  await audit(req, 'ent_post', p.id, 'profile', { profile: p.profile_key || null }, { profile: v });
+  res.json({ ok: true });
+});
+/** Mon profil : celui de mon poste, avec seulement les blocs, modules et actions auxquels j'ai accès. */
+router.get('/my-profile', async (req, res) => {
+  const { key, posts } = await PR.profileKeyFor(req);
+  const sp = require('./spaces');
+  const mine = { posts: posts.map((x) => x.title) };
+  if (!key) return res.json({ profile: null, ...mine });
+  const profile = (await PR.profilesOf(req.org.id)).find((p) => p.key === key);
+  const r = await PR.resolve(req, profile, await sp.forMember(req), sp.dashboardOf);
+  res.json({ profile: { key, title: profile.title, desc: profile.desc, layout: profile.config.mobile.layout, custom: profile.custom }, ...r, ...mine });
 });
 
 router.get('/log', A.need('admin'), async (req, res) => {
