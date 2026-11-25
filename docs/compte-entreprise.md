@@ -21,13 +21,13 @@ Règle de fond : **les affectations de personnes se font PAR organisation**. Le 
 | 1 | Entreprise au-dessus des organisations, structure, postes, affectations, assistant, modèles par secteur, lien avec les espaces par rôle, écran « Entreprise et organigramme » | **livrée** |
 | 2 | Connexion employé par code d'entreprise + e-mail + secret personnel, appareils de confiance, redirection automatique vers son espace | à faire |
 | 3 | Moteur de profils de rôle : interface propre à chaque métier, jusqu'au chauffeur | à faire |
-| 4 | Organisations liées par lien d'association, avec copie de la structure | à faire |
-| 5 | Module Partenaires | à faire |
+| 4 | Organisations liées par lien d'association, avec copie de la structure + espaces partagés entre organisations liées (chat, réunions, bibliothèque) | à faire |
+| 5 | Module Partenaires + canaux, réunions et documents partagés avec un partenaire | à faire |
 | 6 | Limites par abonnement (personnes, organisations, départements…) au niveau de l'entreprise | à faire |
 
 ## 2. Modèle de données
 
-Migrations **400 à 404** (fichier `src/migrations/compte-entreprise.js`), additives et rejouables ; 310 à 399 sont réservées (migrations vides). Réservation de numéros pour la suite : 410–419 étape 2, 420–429 étape 3, 430–439 étape 4, 440–449 étape 5, 450–459 étape 6.
+Migrations **400 à 404** (fichier `src/migrations/compte-entreprise.js`), additives et rejouables ; 310 à 399 sont réservées (migrations vides). Réservation de numéros pour la suite : 410–419 étape 2, 420–429 étape 3, 430–439 étape 4 (liens d'association, début des espaces partagés), 440–449 étape 5 (partenaires, suite des espaces partagés), 450–459 étape 6.
 
 | N° | Table | Rôle |
 |---|---|---|
@@ -61,6 +61,29 @@ Migrations **400 à 404** (fichier `src/migrations/compte-entreprise.js`), addit
 
 ### Routes (`/api/ws/orgs/:orgId/entreprise/…`)
 `GET /` vue d'ensemble · `GET /templates` · `POST /template` · `PUT /info` · `GET /chart` · `PUT /dg` (propriétaire) · `POST|PUT|DELETE /directions|/departments|/posts` · `GET|POST /people`, `PUT|DELETE /people/:id`, `POST /people/:id/invite` · `POST /assignments`, `DELETE /assignments/:id` · `PUT /setup` · `PUT /settings` (propriétaire) · `GET /log`.
+
+## 3 bis. Cible : espaces partagés (chat, réunions, bibliothèque) — NON réalisés à l'étape 1
+
+Exigence du fondateur : chaque entreprise a sa page de chat ; il y a des chats, des **réunions** et une **bibliothèque** entre organisations liées d'une même entreprise (étape 4) et entre entreprises partenaires (étape 5). Rien de cela n'est construit à l'étape 1 ; l'isolation actuelle (tout est filtré par `org_id`) n'est pas modifiée. Le modèle ci-dessous est réservé (migrations 430 à 449) et se branche sans rien casser.
+
+**Concept unique : l'« espace partagé »** (`shared_spaces`), réutilisé par les trois modules.
+
+| Table (prévue) | Contenu |
+|---|---|
+| `shared_spaces` | `id`, `kind` (`chat`, `meeting`, `library`), `owner_org_id` (entité propriétaire), `link_id` (lien d'association, étape 4, ou partenariat, étape 5), `title`, `status` (actif / archivé en lecture seule), `expires_at`, `created_by`, `revoked_at` |
+| `shared_space_parties` | une ligne par entité destinataire : organisation liée (`org_id`) ou partenaire (`entreprise_id`), avec `rights` par défaut (lecture / écriture / validation) |
+| `shared_space_members` | **appartenance explicite par personne** (`user_id`, `org_id` d'origine, `rights` lecture / écriture / validation, `added_by`, `removed_at`) : personne n'entre dans un espace partagé par son seul rôle |
+| `shared_space_objects` | objets partagés explicitement : `object_type` (`chat_conversation`, `meeting`, `agenda`, `minutes`, `library_folder`, `library_document`), `object_id`, `org_id` propriétaire, `rights`, `expires_at` |
+| `shared_space_audit` | qui a consulté, déposé, modifié, retiré, révoqué ; jamais le contenu |
+
+Règles de sécurité (communes) : l'espace ne donne accès **qu'aux objets listés** dans `shared_space_objects` et **qu'aux personnes listées** ; aucun accès aux discussions, réunions ou documents internes de l'autre côté ; chaque lecture passe par un contrôle serveur « personne ∈ membres ET objet ∈ objets ET non expiré ET non révoqué » ; **révoquer** un lien ou un partenariat archive tous ses espaces en lecture seule (le contenu déjà échangé reste chez chacun, rien n'est effacé) ; fichiers partagés limités aux types d'objets autorisés par le lien ; journal d'audit systématique.
+
+Cas d'usage : (1) chat interne par organisation (existe) ; (2) canaux entre organisations liées : direction générale commune, départements homologues (DAF principal ↔ comptable de la filiale B) ; (3) canal partenaire créé à la connexion d'un partenaire, membres désignés des DEUX côtés ; (4) réunions inter-organisations ou avec partenaires : invités des deux côtés, ordre du jour et procès-verbal partagés seulement aux invités, les décisions et tâches restant chez chacun selon ce qui est partagé ; (5) bibliothèque partagée : dossiers ou documents partagés (lecture seule, ou lecture + dépôt), avec expiration et révocation.
+
+**Comment les modules actuels s'y branchent (sans changer leur isolation)**
+- **Chat** (`ci_*`, migrations 300+) : toutes les tables portent `org_id` et les membres sont des `ci_members` (utilisateurs de l'organisation). Extension simple : une conversation partagée est une ligne de `ci_conversations` de l'organisation propriétaire, exposée à l'autre côté **uniquement** via `shared_space_objects` ; l'autre côté n'écrit pas dans les tables de la première, il passe par des routes dédiées `/shared/...` qui vérifient l'appartenance. Ce qu'il faudrait changer : (a) `ci_members` suppose des membres de l'organisation propriétaire (chargement d'organisation par `loadOrg`) : les participants externes seraient portés par `shared_space_members` et non ajoutés à `org_members` ; (b) les messages gardent un `org_id` unique : la liste des conversations d'une personne doit fusionner ses conversations internes et ses espaces partagés ; (c) fichiers (`ci_files`) et appels : n'autoriser que les types prévus par le lien. Aucune migration existante n'est modifiée ; seules des tables de liaison et de nouvelles routes sont nécessaires.
+- **Réunions** (`mtg_*`) : une réunion partagée est une `mtg_meetings` de l'organisation organisatrice ; ordre du jour et PV sont publiés vers l'autre côté comme objets (`agenda`, `minutes`), en copie de lecture au moment du partage ; décisions et tâches restent créées chez chacun. Invités externes via `shared_space_members`.
+- **Bibliothèque** (`lib_*`, avec droits par rôle, par personne et délégations) : un dossier ou document partagé devient un objet de l'espace (lecture, ou lecture + dépôt, expiration, révocation) ; les droits existants de la bibliothèque ne sont pas touchés et le reste de la bibliothèque n'est jamais visible de l'extérieur ; les accès sont journalisés.
 
 ## 4. Comparaison avec le modèle actuel
 
