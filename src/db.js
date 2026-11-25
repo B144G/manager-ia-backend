@@ -3832,6 +3832,9 @@ MIGRATIONS.push(...require('./migrations/chat-interne'));
 // Compte d'entreprise (400 et suivantes) : les emplacements 310 à 399 sont réservés (migrations vides). Toujours en fin de tableau.
 while (MIGRATIONS.length < 399) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1} AS reserve`);
 MIGRATIONS.push(...require('./migrations/compte-entreprise'));
+// Étape 2 (410 et suivantes) : connexion employé et appareils de confiance (405 à 409 réservées).
+while (MIGRATIONS.length < 409) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1} AS reserve`);
+MIGRATIONS.push(...require('./migrations/compte-entreprise-2'));
 
 db.ready = db.migrate(MIGRATIONS);
 

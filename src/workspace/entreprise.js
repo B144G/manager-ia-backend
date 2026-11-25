@@ -9,6 +9,7 @@ const A = require('./access');
 const W = require('./w3');
 const E = require('./ent-lib');
 const T = require('./ent-templates');
+const AL = require('./ent-auth-lib');
 const limits = require('../middleware/limits');
 const { HttpError, parseJSON } = require('../util');
 
@@ -94,6 +95,8 @@ router.get('/', async (req, res) => {
     counts: { directions: await count('SELECT COUNT(*) c FROM ent_directions WHERE org_id = ? AND active = 1', o), departments: await count('SELECT COUNT(*) c FROM ent_departments WHERE org_id = ? AND active = 1', o), posts: posts.length, people: (await peopleRows(req)).length, vacancies },
     sectors: T.SECTORS, sizes: SIZES, spaces: E.SPACE_IDS,
     can: { edit: A.can(req, 'admin'), owner: A.can(req, 'owner') },
+    companyCode: A.can(req, 'admin') ? AL.display(await AL.ensureCompanyCode(req.ent)) : undefined, // identifiant public de connexion employé (étape 2), pas un secret
+    sensitive2fa: Boolean(Number(req.ent.sensitive_2fa)),
   });
 });
 
@@ -417,7 +420,29 @@ router.put('/setup', A.need('admin'), async (req, res) => {
   res.json({ ok: true, steps, completed: complete });
 });
 /** Retour arrière par entreprise : couper le lien « affectation → espaces » (la structure reste, les accès reviennent à ce qu'ils étaient sans elle). */
+router.post('/company-code', A.need('owner'), async (req, res) => {
+  const code = await AL.regenerateCompanyCode(req.ent);
+  await audit(req, 'ent_settings', req.ent.id, 'company_code', null, null);
+  res.json({ companyCode: AL.display(code) });
+});
+router.get('/devices', A.need('admin'), async (req, res) => {
+  const rows = await db.prepare(`SELECT d.id, d.label, d.created_at, d.last_seen, d.expires_at, p.full_name, p.id AS person_id FROM ent_devices d JOIN ent_people p ON p.id = d.person_id
+    WHERE p.entreprise_id = ? AND d.revoked_at IS NULL AND d.expires_at > ? ORDER BY d.last_seen DESC`).all(req.ent.id, nowISO());
+  res.json({ devices: rows.map((d) => ({ id: Number(d.id), person: d.full_name, personId: Number(d.person_id), label: d.label, createdAt: d.created_at, lastSeen: d.last_seen, expiresAt: d.expires_at })) });
+});
+router.delete('/devices/:id', A.need('admin'), async (req, res) => {
+  const d = await db.prepare('SELECT d.* FROM ent_devices d JOIN ent_people p ON p.id = d.person_id WHERE d.id = ? AND p.entreprise_id = ?').get(A.id(req.params.id), req.ent.id);
+  if (!d) throw new HttpError(404, 'Appareil introuvable.');
+  await require('../routes/entreprise-auth').revokeDevice(d, 'administrateur');
+  await audit(req, 'ent_device', d.id, 'revoke', { personId: Number(d.person_id) }, null);
+  res.json({ ok: true });
+});
 router.put('/settings', A.need('owner'), async (req, res) => {
+  if ((req.body || {}).sensitive2fa !== undefined) {
+    await db.prepare('UPDATE entreprises SET sensitive_2fa = ? WHERE id = ?').run(req.body.sensitive2fa ? 1 : 0, req.ent.id);
+    await audit(req, 'ent_settings', req.ent.id, 'update', null, { sensitive2fa: Boolean(req.body.sensitive2fa) });
+    if ((req.body || {}).rightsLink === undefined) return res.json({ ok: true, sensitive2fa: Boolean(req.body.sensitive2fa) });
+  }
   const cur = await E.setupOf(req.org.id);
   const link = (req.body || {}).rightsLink === undefined ? cur.rightsLink : Boolean((req.body || {}).rightsLink);
   await db.prepare(`INSERT INTO ent_setup (org_id, steps, template, rights_link, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)

@@ -103,6 +103,7 @@ app.use('/api', (req, res, next) => {
 app.get('/api/health', async (req, res) => { try { await db.prepare('SELECT 1 AS ok').get(); res.json({ ok: true, db: true }); } catch (e) { res.status(503).json({ ok: false, db: false }); } });
 app.use('/api', limits.global, originCheck);
 app.use('/api', require('./routes/auth'));
+app.use('/api/entreprise-auth', require('./routes/entreprise-auth').router); // connexion employé (compte d'entreprise) : code d'entreprise + e-mail + secret personnel
 app.use('/api', require('./routes/contact'));
 app.use('/api', require('./routes/assistant'));
 app.use('/api', require('./routes/payments'));

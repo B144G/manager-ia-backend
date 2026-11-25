@@ -64,6 +64,8 @@ async function loadOrg(req, res, next) {
   req.member = member;
   // Organisation qui exige la double authentification de ses administrateurs : sans elle, plus d'accès aux données (le compte reste libre d'activer la double authentification).
   if (Number(org.require_2fa) && RANK[member.role] >= RANK.admin && !Number(req.user.totp_enabled)) throw Object.assign(new HttpError(403, "Cette organisation exige la double authentification pour les administrateurs : activez-la dans Sécurité du compte."), { errorCode: 'twofa_required' });
+  // Compte d'entreprise : un compte qui utilise la connexion employé, avec un profil sensible (DG, directeur, finance), doit avoir activé la double authentification.
+  if (await require('./ent-auth-lib').mustEnrollTwofa(org, req.user)) throw Object.assign(new HttpError(403, 'Votre poste exige la double authentification : activez-la dans Sécurité du compte pour accéder aux données de l\'entreprise.'), { errorCode: 'twofa_required' });
   next();
 }
 
