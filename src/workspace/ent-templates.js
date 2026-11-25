@@ -14,16 +14,16 @@ const SECTOR_IDS = SECTORS.map((s) => s.id);
 
 // Directions du pilotage. `on` = secteurs où la direction est active d'emblée (les autres sont proposées, désactivées : on peut les activer).
 const DIRECTIONS = [
-  { key: 'daf', name: 'Direction administrative et financière', director: { title: 'Directeur administratif et financier (DAF)', spaces: { finances: 'manage', direction: 'view', commercial: 'view' } } },
-  { key: 'dtech', name: 'Direction technique', on: ['btp'], director: { title: 'Directeur technique', spaces: { operations: 'manage', direction: 'view', stock: 'view' } } },
-  { key: 'dcom', name: 'Direction commerciale', director: { title: 'Directeur commercial', spaces: { commercial: 'manage', stock: 'view', direction: 'view' } } },
-  { key: 'dprod', name: 'Direction de la production', director: { title: 'Directeur de production', spaces: { operations: 'manage', stock: 'view', direction: 'view' } } },
-  { key: 'dlog', name: 'Direction de la logistique', director: { title: 'Directeur de la logistique', spaces: { operations: 'manage', stock: 'view', direction: 'view' } } },
-  { key: 'dit', name: 'Direction informatique et maintenance', director: { title: 'Directeur informatique et maintenance', spaces: { operations: 'manage', direction: 'view' } } },
-  { key: 'dstock', name: 'Direction du stockage et des achats', director: { title: 'Directeur du stockage et des achats', spaces: { stock: 'manage', finances: 'view', direction: 'view' } } },
-  { key: 'dsec', name: 'Direction de la sécurité', director: { title: 'Directeur de la sécurité', spaces: { gestion: 'manage', direction: 'view' } } },
-  { key: 'drh', name: 'Direction des ressources humaines', director: { title: 'Directeur des ressources humaines (DRH)', spaces: { rh: 'manage', direction: 'view' } } },
-  { key: 'dmkt', name: 'Direction marketing', director: { title: 'Directeur marketing', spaces: { commercial: 'manage', direction: 'view' } } },
+  { key: 'daf', name: 'Direction administrative et financière', director: { title: 'Directeur administratif et financier (DAF)', spaces: { dir_finances: 'manage', finances: 'view', direction: 'view', commercial: 'view' } } },
+  { key: 'dtech', name: 'Direction technique', on: ['btp'], director: { title: 'Directeur technique', spaces: { dir_production: 'manage', operations: 'view', direction: 'view', stock: 'view' } } },
+  { key: 'dcom', name: 'Direction commerciale', director: { title: 'Directeur commercial', spaces: { dir_commercial: 'manage', commercial: 'view', stock: 'view', direction: 'view' } } },
+  { key: 'dprod', name: 'Direction de la production', director: { title: 'Directeur de production', spaces: { dir_production: 'manage', operations: 'view', stock: 'view', direction: 'view' } } },
+  { key: 'dlog', name: 'Direction de la logistique', director: { title: 'Directeur de la logistique', spaces: { dir_logistique: 'manage', operations: 'view', stock: 'view', direction: 'view' } } },
+  { key: 'dit', name: 'Direction informatique et maintenance', director: { title: 'Directeur informatique et maintenance', spaces: { dir_it: 'manage', operations: 'view', direction: 'view' } } },
+  { key: 'dstock', name: 'Direction du stockage et des achats', director: { title: 'Directeur du stockage et des achats', spaces: { dir_stock: 'manage', stock: 'view', finances: 'view', direction: 'view' } } },
+  { key: 'dsec', name: 'Direction de la sécurité', director: { title: 'Directeur de la sécurité', spaces: { dir_securite: 'manage', gestion: 'view', direction: 'view' } } },
+  { key: 'drh', name: 'Direction des ressources humaines', director: { title: 'Directeur des ressources humaines (DRH)', spaces: { dir_rh: 'manage', rh: 'view', direction: 'view' } } },
+  { key: 'dmkt', name: 'Direction marketing', director: { title: 'Directeur marketing', spaces: { dir_marketing: 'manage', commercial: 'view', direction: 'view' } } },
 ];
 
 const ALL = ['commerce', 'btp', 'transport', 'services', 'autre'];
@@ -105,4 +105,10 @@ function planFor(sector) {
   return { sector: sec, directions: dirs, departments: deps };
 }
 
-module.exports = { SECTORS, SECTOR_IDS, DIRECTIONS, DEPARTMENTS, planFor };
+/** Anciens accès des postes de directeur (avant les espaces de direction) : sert à convertir un poste NON personnalisé quand le propriétaire active les espaces de direction. */
+const LEGACY_DIRECTOR_SPACES = {
+  dir_daf: { finances: 'manage', direction: 'view', commercial: 'view' }, dir_dtech: { operations: 'manage', direction: 'view', stock: 'view' }, dir_dcom: { commercial: 'manage', stock: 'view', direction: 'view' },
+  dir_dprod: { operations: 'manage', stock: 'view', direction: 'view' }, dir_dlog: { operations: 'manage', stock: 'view', direction: 'view' }, dir_dit: { operations: 'manage', direction: 'view' },
+  dir_dstock: { stock: 'manage', finances: 'view', direction: 'view' }, dir_dsec: { gestion: 'manage', direction: 'view' }, dir_drh: { rh: 'manage', direction: 'view' }, dir_dmkt: { commercial: 'manage', direction: 'view' },
+};
+module.exports = { LEGACY_DIRECTOR_SPACES, SECTORS, SECTOR_IDS, DIRECTIONS, DEPARTMENTS, planFor };

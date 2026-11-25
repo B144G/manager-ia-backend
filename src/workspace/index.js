@@ -129,7 +129,7 @@ orgRouter.get('/', async (req, res) => {
   const branches = await db.prepare('SELECT id, name, location FROM branches WHERE org_id = ? ORDER BY name').all(req.org.id);
   const members = await db.prepare('SELECT user_id, role, title, branch_id FROM org_members WHERE org_id = ?').all(req.org.id);
   const me = { role: req.member.role, roleLabel: A.ROLE_LABEL[req.member.role], title: req.member.title, branchId: req.member.branch_id, userId: req.user.id };
-  let mods = modules.filter((m) => A.RANK[req.member.role] >= A.RANK[m.min]);
+  let mods = modules.filter((m) => A.RANK[req.member.role] >= A.RANK[m.min] && !m.id.startsWith('dir_')); // les écrans de direction n'existent que dans leurs espaces (jamais dans le menu général)
   if (!await require('./tre-lib').hasAccess(req)) mods = mods.filter((m) => m.id !== 'treasury'); // Trésorerie : réservée au responsable, aux trésoriers et aux administrateurs
   res.json({
     org: { ...orgView(req.org), plan: await A.ownerPlan(req.org) },
@@ -263,6 +263,7 @@ orgRouter.get('/activity', async (req, res) => {
 // ---------- Sous-applications ----------
 // Espaces par rôle : routes de gestion, puis garde appliquée à TOUTES les routes de sous-applications ci-dessous (sans effet tant que le réglage est désactivé).
 orgRouter.use('/spaces', require('./spaces').router);
+for (const id of require('./ent-direction').DIR_IDS) orgRouter.use('/' + id, require('./ent-direction').routerFor(id)); // espaces de direction de département : routes /dir_… (gardées par l'espace de direction correspondant)
 orgRouter.use('/entreprise', require('./entreprise').router);
 orgRouter.use('/partners', require('./ent-partners').partners); // partenaires entre entreprises (étape 5) : droits vérifiés dans le routeur
 orgRouter.use('/shared', require('./ent-partners').shared); // espaces partagés (chat, réunions, bibliothèque) : membres désignés, objets explicites // compte d'entreprise : structure, postes, personnes, affectations (droits vérifiés dans le routeur)

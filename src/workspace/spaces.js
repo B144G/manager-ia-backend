@@ -31,6 +31,9 @@ const SPACES = [
   { id: 'gestion', icon: 'legal', title: 'Administration et juridique', desc: 'Documents administratifs, contrats, conformité.', modules: ['administration', 'legal'] },
   { id: 'compte', icon: 'team', title: 'Administration du compte', desc: 'Équipe, sécurité, intégrations, abonnement.', modules: ['team', 'entreprise', 'integrations', 'billing'] },
 ];
+// Espaces de DIRECTION de département (un par directeur : pilotage, validations, tâches propres) : n'existent que si le réglage « espaces de direction » est actif (src/workspace/ent-direction.js).
+const DIRECTION = require('./ent-direction');
+for (const id of DIRECTION.DIR_IDS) SPACES.push({ id, icon: DIRECTION.DIRS[id].icon, title: DIRECTION.DIRS[id].title, desc: DIRECTION.DIRS[id].desc, modules: [id], dir: true });
 const SPACE_IDS = SPACES.map((s) => s.id);
 const SPACE_OF = {};
 for (const s of SPACES) for (const m of s.modules) SPACE_OF[m] = s.id;
@@ -62,7 +65,7 @@ function presetOf(ids) {
   for (const id of ids) {
     const f = FUNC_ROLES.find((x) => x.id === id);
     if (!f) continue;
-    if (f.others) for (const s of SPACES) if (s.id !== 'compte' && !s.baseline) up(s.id, f.others);
+    if (f.others) for (const s of SPACES) if (s.id !== 'compte' && !s.baseline && !s.dir) up(s.id, f.others); // jamais les espaces de direction
     for (const [sp, lv] of Object.entries(f.spaces)) up(sp, lv);
   }
   return out;
@@ -78,6 +81,7 @@ const SEG = {
   production: 'production', construction: 'construction', maintenance: 'maintenance', legal: 'legal', memory: 'memory', agents: 'agents', structure: 'structure',
   administration: 'administration', audit: 'team', 'ownership-transfer': 'team',
 };
+for (const id of DIRECTION.DIR_IDS) SEG[id] = id; // routes d'un espace de direction : /<id>/…
 const moduleOfPath = (p) => { const seg = String(p || '').split('/')[1] || ''; return SEG[seg] === undefined ? null : SEG[seg]; };
 
 // ---------- Réglage de l'organisation et droits effectifs ----------
@@ -103,14 +107,15 @@ async function levelsFor(orgId, userId, role) {
   // Repli sûr : une personne à qui le propriétaire n'a affecté AUCUN espace garde ses accès actuels. Ses espaces sont dérivés de ses droits :
   // tout espace dont au moins un écran est ouvert à son rôle lui est accordé en « membre » (ses droits habituels, jamais relevés).
   // Compte d'entreprise : la structure (postes, direction générale) donne des espaces à la personne AFFECTÉE ; null = affectée à rien, rien ne change.
+  const dirOn = await DIRECTION.enabled(orgId); // espaces de direction : actifs seulement si le propriétaire les a activés
   const struct = await require('./ent-lib').structureLevels(orgId, userId);
   const fallback = rows.length === 0 && !struct && A.RANK[role] < A.RANK.admin;
   if (fallback) {
     const { modules } = require('./modules');
     const seen = new Set(modules.filter((m) => A.RANK[role] >= A.RANK[m.min]).map((m) => m.id));
-    for (const s of SPACES) if (s.modules.some((m) => seen.has(m))) up(s.id, 'write');
+    for (const s of SPACES) if (!s.dir && s.modules.some((m) => seen.has(m))) up(s.id, 'write'); // jamais un espace de direction par repli
   }
-  if (A.RANK[role] >= A.RANK.admin) for (const s of SPACES) up(s.id, 'manage');
+  if (A.RANK[role] >= A.RANK.admin) for (const s of SPACES) { if (!s.dir || dirOn) up(s.id, 'manage'); }
   else {
     if (A.RANK[role] >= A.RANK.manager) up('direction', 'view');
     if (await db.prepare('SELECT 1 FROM tre_roles WHERE org_id = ? AND user_id = ?').get(orgId, userId)) up('finances', 'write');
@@ -120,6 +125,7 @@ async function levelsFor(orgId, userId, role) {
   }
   const levels = {}; const via = {};
   for (const s of SPACES) {
+    if (s.dir && !dirOn) continue; // pas d'espace de direction tant que le réglage est coupé
     const e = explicit[s.id] !== undefined ? explicit[s.id] : (struct ? struct[s.id] : undefined); const d = derived[s.id] || 'none'; // l'affectation explicite du propriétaire (même « aucun ») l'emporte sur la structure
     // Le propriétaire et les administrateurs gardent toujours l'accès complet (ils affectent les espaces : jamais de blocage de leur propre compte).
     const fixed = A.RANK[role] >= A.RANK.admin;
@@ -192,6 +198,7 @@ async function guard(req, res, next) {
 
 // ---------- Tableau de bord d'un espace ----------
 async function dashboardOf(req, space) {
+  if (DIRECTION.isDir(space)) return { ...(await dashboardOf(req, DIRECTION.DIRS[space].op)), space }; // espace de direction : indicateurs du département (espace opérationnel lié)
   const o = req.org.id; const sc = A.scope(req);
   const today = nowISO().slice(0, 10);
   const n = async (sql, ...a) => { try { return Number((await db.prepare(sql).get(o, ...a)).c) || 0; } catch { return 0; } };
@@ -281,7 +288,7 @@ router.get('/overview', async (req, res) => {
   if (!eff.enabled || !(eff.levels.direction || A.can(req, 'admin'))) throw new HttpError(403, "Vue d'ensemble réservée à la direction.");
   const out = [];
   for (const s of SPACES) {
-    if (s.id === 'direction') continue;
+    if (s.id === 'direction' || s.dir) continue;
     // Chaque carte n'est calculée que pour un espace que la personne peut au moins consulter (jamais de fuite d'indicateurs).
     if (!eff.levels[s.id] && !A.can(req, 'admin')) continue;
     const d = await dashboardOf(req, s.id);
@@ -303,7 +310,7 @@ router.put('/settings', A.need('owner'), async (req, res) => {
   res.json({ ok: true, enabled: enabled && !globalOff(), openRead, globalOff: globalOff() });
 });
 
-router.get('/settings', A.need('admin'), async (req, res) => res.json({ ...(await settingsOf(req.org.id)), catalogue: SPACES.map(({ id, icon, title, desc, modules }) => ({ id, icon, title, desc, modules })), funcRoles: FUNC_ROLES.map((f) => ({ id: f.id, title: f.title, desc: f.desc, preset: presetOf([f.id]) })) }));
+router.get('/settings', A.need('admin'), async (req, res) => { const dirOn = await DIRECTION.enabled(req.org.id); res.json({ ...(await settingsOf(req.org.id)), catalogue: SPACES.filter((s) => !s.dir || dirOn).map(({ id, icon, title, desc, modules }) => ({ id, icon, title, desc, modules })), funcRoles: FUNC_ROLES.map((f) => ({ id: f.id, title: f.title, desc: f.desc, preset: presetOf([f.id]) })) }); });
 
 router.get('/assignments', A.need('admin'), async (req, res) => {
   const members = await db.prepare('SELECT m.user_id, m.role, m.title, u.name FROM org_members m JOIN users u ON u.id = m.user_id WHERE m.org_id = ? ORDER BY m.id').all(req.org.id);

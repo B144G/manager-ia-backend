@@ -73,8 +73,8 @@ async function copyStructure(srcOrgId, dstOrgId) {
   }
   for (const pr of await db.prepare('SELECT * FROM ent_profiles WHERE org_id = ?').all(srcOrgId))
     await db.prepare('INSERT INTO ent_profiles (org_id, key, config, updated_by, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING').run(dstOrgId, pr.key, pr.config, pr.updated_by, now);
-  const st = await db.prepare('SELECT template FROM ent_setup WHERE org_id = ?').get(srcOrgId);
-  if (st) await db.prepare("INSERT INTO ent_setup (org_id, steps, template, updated_at) VALUES (?, '{}', ?, ?) ON CONFLICT DO NOTHING").run(dstOrgId, st.template, now);
+  const st = await db.prepare('SELECT template, dir_spaces FROM ent_setup WHERE org_id = ?').get(srcOrgId);
+  if (st) await db.prepare("INSERT INTO ent_setup (org_id, steps, template, dir_spaces, updated_at) VALUES (?, '{}', ?, ?, ?) ON CONFLICT DO NOTHING").run(dstOrgId, st.template, st.dir_spaces, now);
   return { directions: dmap.size, departments: pmap.size, posts };
 }
 

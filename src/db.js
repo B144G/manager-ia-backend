@@ -3844,6 +3844,9 @@ MIGRATIONS.push(...require('./migrations/compte-entreprise-4'));
 // Étape 5 (440 et suivantes) : partenaires et espaces partagés (433 à 439 réservées).
 while (MIGRATIONS.length < 439) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1} AS reserve`);
 MIGRATIONS.push(...require('./migrations/compte-entreprise-5'));
+// Espaces de direction de département (450 et suivantes) : 444 à 449 réservées.
+while (MIGRATIONS.length < 449) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1} AS reserve`);
+MIGRATIONS.push(...require('./migrations/direction-departements'));
 
 db.ready = db.migrate(MIGRATIONS);
 

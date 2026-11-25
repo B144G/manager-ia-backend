@@ -5,7 +5,7 @@ const { db, nowISO } = require('../db');
 const { parseJSON } = require('../util');
 
 const LV = { none: 0, view: 1, write: 2, manage: 3 };
-const SPACE_IDS = ['direction', 'commercial', 'finances', 'stock', 'rh', 'operations', 'projets', 'gestion', 'compte'];
+const SPACE_IDS = ['direction', 'commercial', 'finances', 'stock', 'rh', 'operations', 'projets', 'gestion', 'compte', 'dir_commercial', 'dir_finances', 'dir_rh', 'dir_production', 'dir_logistique', 'dir_stock', 'dir_marketing', 'dir_it', 'dir_securite'];
 
 /** Interrupteur général : ENTREPRISE_RIGHTS=off|0|false|non coupe le lien structure → droits pour toutes les entreprises (la structure reste visible). */
 const globalOff = () => /^(off|0|false|no|non|disabled|desactive|désactivé)$/i.test(String(process.env.ENTREPRISE_RIGHTS || '').trim());
@@ -80,17 +80,26 @@ async function structureLevels(orgId, userId) {
   if (globalOff()) return null;
   const st = await db.prepare('SELECT rights_link FROM ent_setup WHERE org_id = ?').get(orgId);
   if (st && !Number(st.rights_link)) return null;
-  const posts = await db.prepare(`SELECT p.spaces FROM ent_assignments a
+  const posts = await db.prepare(`SELECT p.spaces, p.kind, p.direction_id, p.tkey FROM ent_assignments a
     JOIN ent_people pe ON pe.id = a.person_id JOIN ent_posts p ON p.id = a.post_id
     LEFT JOIN ent_departments d ON d.id = p.department_id
     WHERE a.org_id = ? AND pe.user_id = ? AND p.active = 1 AND (p.department_id IS NULL OR d.active = 1)`).all(orgId, userId);
   const dg = await db.prepare(`SELECT 1 AS x FROM ent_dg g JOIN ent_people pe ON pe.id = g.person_id JOIN orgs o ON o.entreprise_id = g.entreprise_id
     WHERE o.id = ? AND pe.user_id = ?`).get(orgId, userId);
   if (!posts.length && !dg) return null;
+  const D = require('./ent-direction'); const dirOn = await D.enabled(orgId);
   const out = {};
   const up = (sp, lv) => { if (SPACE_IDS.includes(sp) && LV[lv] > LV[out[sp] || 'none']) out[sp] = lv; };
-  if (dg) { up('direction', 'manage'); for (const sp of SPACE_IDS) if (sp !== 'direction' && sp !== 'compte' && sp !== 'projets') up(sp, 'view'); }
-  for (const p of posts) for (const [sp, lv] of Object.entries(parseJSON(p.spaces, {}))) up(sp, lv);
+  if (dg) { up('direction', 'manage'); for (const sp of SPACE_IDS) if (sp !== 'direction' && sp !== 'compte' && sp !== 'projets' && (!sp.startsWith('dir_') || dirOn)) up(sp, 'view'); }
+  for (const p of posts) {
+    const own = p.kind === 'director' ? await D.dirSpaceOfPost(p) : null;
+    for (const [sp, lv] of Object.entries(parseJSON(p.spaces, {}))) {
+      if (D.isDir(sp)) { // espace de direction : seulement un poste de DIRECTEUR, responsable de SON espace ; ailleurs en consultation au plus ; jamais pour le personnel
+        if (!dirOn || p.kind !== 'director') continue;
+        up(sp, sp === own ? lv : (lv === 'manage' || lv === 'write' ? 'view' : lv));
+      } else up(sp, lv);
+    }
+  }
   return out;
 }
 

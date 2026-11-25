@@ -6,7 +6,7 @@ const { db, nowISO } = require('../db');
 const A = require('./access');
 const { parseJSON } = require('../util');
 
-const SPACE_IDS = ['direction', 'commercial', 'finances', 'stock', 'rh', 'operations', 'projets', 'gestion', 'compte'];
+const SPACE_IDS = ['direction', 'commercial', 'finances', 'stock', 'rh', 'operations', 'projets', 'gestion', 'compte', 'dir_commercial', 'dir_finances', 'dir_rh', 'dir_production', 'dir_logistique', 'dir_stock', 'dir_marketing', 'dir_it', 'dir_securite'];
 const LAYOUTS = ['standard', 'driver', 'compact'];
 const BLOCK_TYPES = ['tiles', 'tasks', 'list', 'component'];
 const COMPONENTS = { driver: 'logistics', fuel: 'logistics', incident: 'maintenance' }; // composant → module nécessaire
@@ -61,6 +61,15 @@ const CATALOG = [
   P('assistant', 'Assistant(e) de direction', 'Agenda, tâches, documents.', ['pilotage.assistant_dir'], { blocks: [tasks(), tiles('projets')], modules: ['meetings', 'projects', 'administration', 'library', 'chat'], quick: [q('Réunions', 'meetings'), q('Tâches', 'projects')], spaces: { direction: 'write', gestion: 'write' } }),
   P('consultant', 'Chef de projet / consultant', 'Projets en cours, tâches et réunions.', ['production.chef_projet', 'production.consultant'], { blocks: [tiles('projets'), list('tasks_late'), tasks()], modules: ['projects', 'meetings', 'library', 'chat'], quick: [q('Projets et tâches', 'projects'), q('Réunions', 'meetings')], spaces: { projets: 'manage', commercial: 'view' } }),
 ];
+// Profils de DIRECTEUR : ils arrivent sur l'espace de direction de leur département (pilotage), séparé de l'espace opérationnel du personnel ; l'espace opérationnel n'y est qu'en consultation.
+const DIRECTOR_PROFILES = { daf: ['dir_finances', 'finances'], dir_commercial: ['dir_commercial', 'commercial'], dir_production: ['dir_production', 'operations'], dir_logistique: ['dir_logistique', 'operations'], dir_it: ['dir_it', 'operations'], dir_securite: ['dir_securite', 'gestion'], dir_marketing: ['dir_marketing', 'commercial'], dir_achats: ['dir_stock', 'stock'], drh: ['dir_rh', 'rh'] };
+for (const [key, [dir, op]] of Object.entries(DIRECTOR_PROFILES)) {
+  const p = CATALOG.find((x) => x.key === key);
+  p.config.directionSpace = dir;
+  const i = p.config.blocks.findIndex((b) => b.type === 'tiles');
+  if (i >= 0) p.config.blocks[i] = { type: 'tiles', space: dir }; else p.config.blocks.unshift({ type: 'tiles', space: dir });
+  p.config.spaces = { [dir]: 'manage', [op]: 'view', direction: 'view' };
+}
 const BASE = Object.fromEntries(CATALOG.map((p) => [p.key, p]));
 
 // ---------- Validation d'une configuration (modifiée par l'entreprise) ----------
@@ -87,7 +96,9 @@ function cleanConfig(cfg, moduleIds, HttpError) {
   if (!LAYOUTS.includes(layout)) bad('Mode mobile inconnu.');
   const spaces = {};
   for (const [k, v] of Object.entries(cfg.spaces || {})) { if (!SPACE_IDS.includes(k) || !['view', 'write', 'manage'].includes(v)) bad('Accès du profil non valides.'); spaces[k] = v; }
-  return { blocks: outB, modules, quick, mobile: { layout }, spaces };
+  const out = { blocks: outB, modules, quick, mobile: { layout }, spaces };
+  if (cfg.directionSpace && SPACE_IDS.includes(cfg.directionSpace) && String(cfg.directionSpace).startsWith('dir_')) out.directionSpace = cfg.directionSpace;
+  return out;
 }
 
 /** Profil effectif d'une organisation : la version modifiée si elle existe, sinon le profil de base. */
@@ -145,7 +156,8 @@ async function summaryFor(req) {
     const { key, posts } = await profileKeyFor(req);
     if (!key) return null;
     const p = (await profilesOf(req.org.id)).find((x) => x.key === key);
-    return { key, title: p.title, layout: p.config.mobile.layout, landing: posts.length > 0 };
+    const dirLanding = Boolean(BASE[key] && BASE[key].config.directionSpace) && await require('./ent-direction').enabled(req.org.id); // directeur : il arrive sur son espace de direction (logique des espaces), pas sur « Mon espace de travail »
+    return { key, title: p.title, layout: p.config.mobile.layout, landing: posts.length > 0 && !dirLanding, directionSpace: dirLanding ? BASE[key].config.directionSpace : null };
   } catch { return null; }
 }
 

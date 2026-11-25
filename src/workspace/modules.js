@@ -33,6 +33,16 @@ const modules = [
   { id: 'structure', title: 'Organisation', min: 'member', ai: true },
   { id: 'processes', title: 'Fonctionnement', min: 'member', ai: true },
   { id: 'team', title: 'Équipe et antennes', min: 'member', ai: true },
+  // Espaces de direction de département (chaque module n'existe que dans son espace de direction, jamais dans le menu général)
+  { id: 'dir_commercial', title: 'Direction commerciale', min: 'member', ai: false },
+  { id: 'dir_finances', title: 'Direction administrative et financière', min: 'member', ai: false },
+  { id: 'dir_rh', title: 'Direction des ressources humaines', min: 'member', ai: false },
+  { id: 'dir_production', title: 'Direction de la production', min: 'member', ai: false },
+  { id: 'dir_logistique', title: 'Direction de la logistique', min: 'member', ai: false },
+  { id: 'dir_stock', title: 'Direction du stockage et des achats', min: 'member', ai: false },
+  { id: 'dir_marketing', title: 'Direction marketing', min: 'member', ai: false },
+  { id: 'dir_it', title: 'Direction informatique et maintenance', min: 'member', ai: false },
+  { id: 'dir_securite', title: 'Direction de la sécurité', min: 'member', ai: false },
   { id: 'partners', title: 'Partenaires et espaces partagés', min: 'member', ai: false }, // compte d'entreprise, étape 5
   { id: 'profil', title: 'Mon espace de travail', min: 'member', ai: false }, // profil de rôle du poste (compte d'entreprise, étape 3)
   { id: 'entreprise', title: 'Entreprise et organigramme', min: 'member', ai: false }, // compte d'entreprise : structure, postes, affectations

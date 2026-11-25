@@ -66,7 +66,7 @@ async function main() {
     check('création paresseuse : la première visite crée l\'entreprise', r.status === 200 && r.json.entreprise.name === 'Paresseuse' && Number((await db.prepare('SELECT entreprise_id FROM orgs WHERE id = ?').get(lazy)).entreprise_id) > 0, r.json);
 
     console.log('Rien ne change pour les comptes actuels');
-    const snap = async (c) => { const x = await c('GET', O); return JSON.stringify({ role: x.json.me.role, mods: x.json.modules.map((m) => m.id).filter((m) => m !== 'entreprise'), spaces: x.json.spaces.spaces.map((s) => `${s.id}:${s.level}:${s.via}`), fallback: x.json.spaces.fallback }); };
+    const snap = async (c) => { const x = await c('GET', O); return JSON.stringify({ role: x.json.me.role, mods: x.json.modules.map((m) => m.id).filter((m) => m !== 'entreprise'), spaces: x.json.spaces.spaces.filter((s) => !s.id.startsWith('dir_')).map((s) => `${s.id}:${s.level}:${s.via}`), fallback: x.json.spaces.fallback }); };
     const snapMem = await snap(mem); const snapMgr = await snap(mgr); const snapOwner = await snap(owner);
     r = await mem('GET', O);
     check('une personne sans affectation garde son repli sûr (niveau membre, aucun relèvement)', r.json.spaces.fallback === true && r.json.spaces.spaces.every((s) => s.level === 'write'), r.json.spaces);
@@ -135,7 +135,7 @@ async function main() {
     check('le secteur de l\'entreprise est enregistré', (await owner('GET', E)).json.entreprise.sector === 'btp');
     const fin = allDeps.find((d) => d.name === 'Finance'); const prod = allDeps.find((d) => d.name === 'Production');
     const comptable = fin.posts.find((p) => p.title === 'Comptable');
-    check('chaque poste a ses accès (comptable : responsable de Finances, directeur : responsable de son espace)', comptable.spaces.finances === 'manage' && r.json.directions.find((d) => d.name === 'Direction administrative et financière').directors[0].spaces.finances === 'manage');
+    check('chaque poste a ses accès (comptable : responsable de Finances, directeur : responsable de son espace)', comptable.spaces.finances === 'manage' && r.json.directions.find((d) => d.name === 'Direction administrative et financière').directors[0].spaces.dir_finances === 'manage'); // espaces de direction : le DAF est responsable de SA direction, l'espace Finances lui est en consultation
     // tout est modifiable
     r = await owner('PUT', `${E}/departments/${prod.id}`, { name: 'Réalisation et travaux' });
     check('un département se renomme', r.status === 200);

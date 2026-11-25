@@ -13,6 +13,7 @@ const AL = require('./ent-auth-lib');
 const PR = require('./ent-profiles');
 const LK = require('./ent-links');
 const Lim = require('./ent-limits');
+const DIR = require('./ent-direction');
 const overLimit = (what, n, max) => { if (n >= max) throw new HttpError(403, `Votre abonnement permet ${max} ${what} : la limite est atteinte. Passez à une offre supérieure pour en ajouter.`); };
 /** Réglages qui engagent TOUTE l'entreprise (informations, direction générale, code, double authentification) : propriétaire de l'organisation principale ou DG administrateur. Les organisations liées les voient sans les modifier. */
 const entWide = async (req, res, next) => { if (!await LK.canManage(req, req.ent)) throw new HttpError(403, "Réservé à la direction générale et à l'organisation principale de l'entreprise."); next(); };
@@ -42,12 +43,16 @@ router.use(async (req, res, next) => {
 // ---------- Aides ----------
 const own = (req, v, what) => { const n = A.id(v, 'Identifiant invalide.'); return n; };
 const pickName = (v, msg) => A.text(v, 120, { required: true, msg });
-const cleanSpaces = (req, v) => {
+const cleanSpaces = (req, v, ctx) => {
   if (v === undefined) return undefined;
   if (!v || typeof v !== 'object' || Array.isArray(v)) throw new HttpError(400, "Accès non valides : indiquez un niveau par espace.");
   const out = {};
   for (const [k, lv] of Object.entries(v)) {
     if (!E.SPACE_IDS.includes(k) || !LEVELS.includes(lv)) throw new HttpError(400, 'Espace ou niveau inconnu.');
+    if (DIR.isDir(k)) { // espace de direction : réservé aux postes de directeur ; responsable de SON espace seulement ; ailleurs, consultation
+      if (!ctx || ctx.kind !== 'director') throw new HttpError(400, "Les espaces de direction sont réservés aux postes de directeur : le personnel du département n'y a jamais accès.");
+      if (lv !== 'view' && ctx.own !== k) throw new HttpError(400, "Un directeur est responsable de l'espace de SA direction ; dans celui d'un autre département, il n'est que visiteur.");
+    }
     if (k === 'compte' && lv === 'manage' && !A.can(req, 'owner')) throw new HttpError(403, "Seul le propriétaire peut donner la responsabilité de l'espace Administration du compte.");
     out[k] = lv;
   }
@@ -103,6 +108,7 @@ router.get('/', async (req, res) => {
     can: { edit: A.can(req, 'admin'), owner: A.can(req, 'owner') },
     companyCode: A.can(req, 'admin') ? AL.display(await AL.ensureCompanyCode(req.ent)) : undefined, // identifiant public de connexion employé (étape 2), pas un secret
     sensitive2fa: Boolean(Number(req.ent.sensitive_2fa)),
+    direction: { enabled: await DIR.enabled(req.org.id), globalOff: DIR.globalOff(), spaces: DIR.DIR_IDS.map((id) => ({ id, title: DIR.DIRS[id].title, opSpace: DIR.DIRS[id].op })) },
   });
 });
 
@@ -186,6 +192,7 @@ router.post('/template', A.need('admin'), async (req, res) => {
     if (await tot('ent_directions') + addD > lim.directions || await tot('ent_departments') + addP > lim.departments || await tot('ent_posts') + addQ > lim.posts) throw new HttpError(403, 'Ce modèle dépasse les limites de votre abonnement : passez à une offre supérieure.');
   }
   const add = { directions: 0, departments: 0, posts: 0 };
+  const fresh = (await count('SELECT COUNT(*) c FROM ent_posts WHERE org_id = ?', o)) === 0 && !DIR.globalOff();
   await db.transaction(async () => {
     const dirId = {};
     for (const d of plan.directions) {
@@ -204,6 +211,7 @@ router.post('/template', A.need('admin'), async (req, res) => {
       }
     }
     await db.prepare('UPDATE entreprises SET sector = ?, updated_at = ? WHERE id = ?').run(sector, now, req.ent.id);
+    if (fresh) await DIR.setEnabled(o, req.user.id, true); // organisation neuve (aucune structure avant ce modèle) : espaces de direction actifs d'emblée ; une organisation existante garde son réglage
     await db.prepare(`INSERT INTO ent_setup (org_id, steps, template, updated_by, updated_at) VALUES (?, '{}', ?, ?, ?)
       ON CONFLICT (org_id) DO UPDATE SET template = EXCLUDED.template, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at`).run(o, sector, req.user.id, now);
   })();
@@ -290,7 +298,7 @@ router.post('/posts', A.need('admin'), async (req, res) => {
   const title = pickName(b.title, 'Indiquez le titre du poste.');
   const dept = await deptOrNull(req, b.departmentId); const dir = dept ? null : await dirOrNull(req, b.directionId);
   const kind = A.oneOf(b.kind, KINDS, 'staff', 'Type de poste inconnu.');
-  const spaces = cleanSpaces(req, b.spaces === undefined ? {} : b.spaces);
+  const spaces = cleanSpaces(req, b.spaces === undefined ? {} : b.spaces, { kind, own: await DIR.dirSpaceOfPost({ direction_id: dir }) });
   const hc = Math.min(Math.max(parseInt(b.headcount, 10) || 1, 1), 200);
   const sort = (await count('SELECT COALESCE(MAX(sort), 0) c FROM ent_posts WHERE org_id = ?', req.org.id)) + 1;
   const id = (await db.prepare('INSERT INTO ent_posts (org_id, direction_id, department_id, title, kind, spaces, headcount, sort, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)').run(req.org.id, dir, dept, title, kind, JSON.stringify(spaces), hc, sort, nowISO())).lastInsertRowid;
@@ -301,7 +309,7 @@ router.put('/posts/:id', A.need('admin'), async (req, res) => {
   const p = await loadPost(req, req.params.id); const b = req.body || {};
   const title = b.title === undefined ? p.title : pickName(b.title, 'Le titre ne peut pas être vide.');
   const kind = b.kind === undefined ? p.kind : A.oneOf(b.kind, KINDS, undefined, 'Type de poste inconnu.');
-  const spaces = b.spaces === undefined ? undefined : cleanSpaces(req, b.spaces);
+  const spaces = b.spaces === undefined ? undefined : cleanSpaces(req, b.spaces, { kind, own: await DIR.dirSpaceOfPost({ direction_id: b.directionId === undefined ? p.direction_id : b.directionId, tkey: p.tkey }) });
   const before = parseJSON(p.spaces, {});
   // Un administrateur ne peut pas retirer ni modifier à la place du propriétaire la responsabilité de l'espace compte déjà donnée : on ne touche qu'à ce qu'on a le droit de donner.
   if (spaces !== undefined && !A.can(req, 'owner') && before.compte === 'manage' && spaces.compte !== 'manage') throw new HttpError(403, "Seul le propriétaire peut modifier la responsabilité de l'espace Administration du compte.");
@@ -524,6 +532,32 @@ router.post('/people/:id/enroll', A.need('admin'), entWide, async (req, res) => 
   res.status(201).json({ ok: true });
 });
 
+// ---------- Espaces de direction de département ----------
+/** Active les espaces de direction : les postes de directeur issus du modèle (non personnalisés) passent au nouveau régime — espace de direction en responsable, espace opérationnel en visiteur. */
+router.post('/direction/enable', A.need('owner'), async (req, res) => {
+  if (DIR.globalOff()) throw new HttpError(409, 'Les espaces de direction sont suspendus pour toutes les entreprises par un réglage du service.');
+  const plan = T.planFor(req.ent.sector || 'autre'); let converted = 0;
+  await db.transaction(async () => {
+    await DIR.setEnabled(req.org.id, req.user.id, true);
+    for (const d of T.DIRECTIONS) {
+      const key = 'dir_' + d.key;
+      const p = await db.prepare('SELECT id, spaces FROM ent_posts WHERE org_id = ? AND tkey = ?').get(req.org.id, key);
+      const legacy = T.LEGACY_DIRECTOR_SPACES[key];
+      if (p && legacy && JSON.stringify(parseJSON(p.spaces, {})) === JSON.stringify(legacy)) { // seulement un poste resté tel que le modèle l'avait fait
+        await db.prepare('UPDATE ent_posts SET spaces = ? WHERE id = ?').run(JSON.stringify(d.director.spaces), p.id); converted++;
+      }
+    }
+  })();
+  void plan;
+  await audit(req, 'ent_direction', req.org.id, 'enable', null, { converted });
+  res.json({ ok: true, enabled: true, converted });
+});
+router.post('/direction/disable', A.need('owner'), async (req, res) => {
+  await DIR.setEnabled(req.org.id, req.user.id, false);
+  await audit(req, 'ent_direction', req.org.id, 'disable', null, null);
+  res.json({ ok: true, enabled: false });
+});
+
 // ---------- Profils de rôle (étape 3) : le profil ne donne aucun droit, il organise l'écran de la personne ----------
 const moduleIds = () => require('./modules').modules.map((m) => m.id);
 router.get('/profiles', async (req, res) => {
@@ -560,7 +594,8 @@ router.put('/posts/:id/profile', A.need('admin'), async (req, res) => {
   const v = key ? key : null;
   await db.prepare('UPDATE ent_posts SET profile_key = ? WHERE id = ?').run(v, p.id);
   if ((req.body || {}).applyRights === true && v) { // reprendre les accès par défaut du profil (jamais « responsable du compte » sans être propriétaire)
-    const spaces = cleanSpaces(req, PR.BASE[v].config.spaces);
+    const own = await DIR.dirSpaceOfPost(p);
+    const spaces = cleanSpaces(req, Object.fromEntries(Object.entries(PR.BASE[v].config.spaces).filter(([k]) => !DIR.isDir(k) || p.kind === 'director')), { kind: p.kind, own });
     await db.prepare('UPDATE ent_posts SET spaces = ? WHERE id = ?').run(JSON.stringify(spaces), p.id);
   }
   await audit(req, 'ent_post', p.id, 'profile', { profile: p.profile_key || null }, { profile: v });
