@@ -128,7 +128,15 @@ function windowOfUser(u) {
 }
 const quotaWindow = async (org) => windowOfUser(await getUserFresh(await planOwnerId(org)));
 /** Messages IA déjà utilisés par l'organisation sur la période en cours. */
-const aiUsed = async (org) => { const w = await quotaWindow(org); return (await db.prepare('SELECT COUNT(*) c FROM ai_usage WHERE org_id = ? AND created_at >= ? AND created_at < ?').get(org.id, w.start, w.end)).c; };
+const aiUsed = async (org) => {
+  const w = await quotaWindow(org);
+  // Compte d'entreprise : les organisations liées partagent le quota IA de l'abonnement de l'entreprise principale (une organisation seule : inchangé).
+  if (org.entreprise_id) {
+    const linked = await db.prepare('SELECT COUNT(*) c FROM orgs WHERE entreprise_id = ?').get(org.entreprise_id);
+    if (Number(linked.c) > 1) return Number((await db.prepare('SELECT COUNT(*) c FROM ai_usage WHERE org_id IN (SELECT id FROM orgs WHERE entreprise_id = ?) AND created_at >= ? AND created_at < ?').get(org.entreprise_id, w.start, w.end)).c);
+  }
+  return (await db.prepare('SELECT COUNT(*) c FROM ai_usage WHERE org_id = ? AND created_at >= ? AND created_at < ?').get(org.id, w.start, w.end)).c;
+};
 
 async function logActivity(orgId, userId, module, t) {
   await db.prepare('INSERT INTO activity (org_id, user_id, module, text, created_at) VALUES (?, ?, ?, ?, ?)').run(orgId, userId, module, String(t).slice(0, 300), nowISO());

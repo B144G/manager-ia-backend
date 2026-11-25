@@ -12,6 +12,8 @@ const T = require('./ent-templates');
 const AL = require('./ent-auth-lib');
 const PR = require('./ent-profiles');
 const LK = require('./ent-links');
+const Lim = require('./ent-limits');
+const overLimit = (what, n, max) => { if (n >= max) throw new HttpError(403, `Votre abonnement permet ${max} ${what} : la limite est atteinte. Passez à une offre supérieure pour en ajouter.`); };
 /** Réglages qui engagent TOUTE l'entreprise (informations, direction générale, code, double authentification) : propriétaire de l'organisation principale ou DG administrateur. Les organisations liées les voient sans les modifier. */
 const entWide = async (req, res, next) => { if (!await LK.canManage(req, req.ent)) throw new HttpError(403, "Réservé à la direction générale et à l'organisation principale de l'entreprise."); next(); };
 const limits = require('../middleware/limits');
@@ -104,6 +106,12 @@ router.get('/', async (req, res) => {
   });
 });
 
+/** Écran d'usage : ce que l'abonnement de l'entreprise permet et ce qui est utilisé (organisations liées comprises). */
+router.get('/usage', A.need('admin'), async (req, res) => {
+  const u = await Lim.usageOf(req.org);
+  const lim = await Lim.forOrg(req.org);
+  res.json({ ...u, plan: u.plan, tier: u.tier, extra: { fileMb: lim.fileMb, partnersPerType: lim.partnersPerType, objectsPerSpace: lim.objectsPerSpace, profiles: lim.profiles, profilesUsed: await count('SELECT COUNT(*) c FROM ent_profiles WHERE org_id = ?', req.org.id) }, linked: Boolean(req.org.linked_via) });
+});
 router.get('/templates', async (req, res) => {
   res.json({ sectors: T.SECTORS.map((s) => {
     const p = T.planFor(s.id);
@@ -167,6 +175,16 @@ router.get('/chart', async (req, res) => {
 router.post('/template', A.need('admin'), async (req, res) => {
   const sector = A.oneOf((req.body || {}).sector, T.SECTOR_IDS, undefined, 'Choisissez un secteur.');
   const plan = T.planFor(sector); const o = req.org.id; const now = nowISO();
+  { // le modèle s'applique en entier ou pas du tout : on vérifie d'abord que ce qu'il AJOUTE tient dans l'abonnement
+    const lim = await Lim.forOrg(req.org);
+    const keys = async (table) => new Set((await db.prepare(`SELECT tkey FROM ${table} WHERE org_id = ? AND tkey IS NOT NULL`).all(o)).map((r) => r.tkey));
+    const [kd, kp, kq] = [await keys('ent_directions'), await keys('ent_departments'), await keys('ent_posts')];
+    const addD = plan.directions.filter((d) => !kd.has(d.key)).length;
+    const addP = plan.departments.filter((d) => !kp.has(d.key)).length;
+    const addQ = plan.directions.filter((d) => !kq.has(d.director.key)).length + plan.departments.reduce((n, d) => n + d.posts.filter((x) => !kq.has(d.key + '.' + x.key)).length, 0);
+    const tot = async (t) => count(`SELECT COUNT(*) c FROM ${t} WHERE org_id = ?`, o);
+    if (await tot('ent_directions') + addD > lim.directions || await tot('ent_departments') + addP > lim.departments || await tot('ent_posts') + addQ > lim.posts) throw new HttpError(403, 'Ce modèle dépasse les limites de votre abonnement : passez à une offre supérieure.');
+  }
   const add = { directions: 0, departments: 0, posts: 0 };
   await db.transaction(async () => {
     const dirId = {};
@@ -212,7 +230,7 @@ router.put('/dg', A.need('owner'), entWide, async (req, res) => {
 
 // ---------- Directions du pilotage ----------
 router.post('/directions', A.need('admin'), async (req, res) => {
-  if (await count('SELECT COUNT(*) c FROM ent_directions WHERE org_id = ?', req.org.id) >= MAX.directions) throw new HttpError(403, `Limite de ${MAX.directions} directions atteinte.`);
+  overLimit('directions', await count('SELECT COUNT(*) c FROM ent_directions WHERE org_id = ?', req.org.id), (await Lim.forOrg(req.org)).directions);
   const name = pickName((req.body || {}).name, 'Indiquez le nom de la direction.');
   const sort = (await count('SELECT COALESCE(MAX(sort), 0) c FROM ent_directions WHERE org_id = ?', req.org.id)) + 1;
   const id = (await db.prepare('INSERT INTO ent_directions (org_id, name, sort, active, created_at) VALUES (?, ?, ?, 1, ?)').run(req.org.id, name, sort, nowISO())).lastInsertRowid;
@@ -239,7 +257,7 @@ router.delete('/directions/:id', A.need('admin'), async (req, res) => {
 
 // ---------- Départements ----------
 router.post('/departments', A.need('admin'), async (req, res) => {
-  if (await count('SELECT COUNT(*) c FROM ent_departments WHERE org_id = ?', req.org.id) >= MAX.departments) throw new HttpError(403, `Limite de ${MAX.departments} départements atteinte.`);
+  overLimit('départements', await count('SELECT COUNT(*) c FROM ent_departments WHERE org_id = ?', req.org.id), (await Lim.forOrg(req.org)).departments);
   const b = req.body || {}; const name = pickName(b.name, 'Indiquez le nom du département.');
   const sort = (await count('SELECT COALESCE(MAX(sort), 0) c FROM ent_departments WHERE org_id = ?', req.org.id)) + 1;
   const id = (await db.prepare('INSERT INTO ent_departments (org_id, direction_id, name, sort, active, created_at) VALUES (?, ?, ?, ?, 1, ?)').run(req.org.id, await dirOrNull(req, b.directionId), name, sort, nowISO())).lastInsertRowid;
@@ -267,7 +285,7 @@ router.delete('/departments/:id', A.need('admin'), async (req, res) => {
 
 // ---------- Postes ----------
 router.post('/posts', A.need('admin'), async (req, res) => {
-  if (await count('SELECT COUNT(*) c FROM ent_posts WHERE org_id = ?', req.org.id) >= MAX.posts) throw new HttpError(403, `Limite de ${MAX.posts} postes atteinte.`);
+  overLimit('postes', await count('SELECT COUNT(*) c FROM ent_posts WHERE org_id = ?', req.org.id), (await Lim.forOrg(req.org)).posts);
   const b = req.body || {};
   const title = pickName(b.title, 'Indiquez le titre du poste.');
   const dept = await deptOrNull(req, b.departmentId); const dir = dept ? null : await dirOrNull(req, b.directionId);
@@ -313,7 +331,7 @@ router.get('/people', async (req, res) => {
 
 router.post('/people', A.need('admin'), async (req, res) => {
   const b = req.body || {};
-  if (await count("SELECT COUNT(*) c FROM ent_people WHERE entreprise_id = ? AND status <> 'revoked'", req.ent.id) >= MAX.people) throw new HttpError(403, `Limite de ${MAX.people} personnes atteinte.`);
+  overLimit('personnes dans l\'entreprise', await count("SELECT COUNT(*) c FROM ent_people WHERE entreprise_id = ? AND status <> 'revoked'", req.ent.id), (await Lim.forOrg(req.org)).people);
   const fullName = A.text(b.fullName, 120, { required: true, msg: 'Indiquez le nom de la personne.' });
   const email = A.text(b.email, 120); const phone = A.text(b.phone, 40);
   if (email && !EMAIL.test(email)) throw new HttpError(400, 'Adresse e-mail invalide.');
@@ -521,6 +539,7 @@ router.put('/profiles/:key', A.need('admin'), async (req, res) => {
   const key = String(req.params.key);
   if (!PR.BASE[key]) throw new HttpError(404, 'Profil introuvable.');
   const cfg = PR.cleanConfig((req.body || {}).config, moduleIds(), HttpError);
+  if (!await db.prepare('SELECT 1 FROM ent_profiles WHERE org_id = ? AND key = ?').get(req.org.id, key)) overLimit('profils personnalisés', await count('SELECT COUNT(*) c FROM ent_profiles WHERE org_id = ?', req.org.id), (await Lim.forOrg(req.org)).profiles);
   const before = (await PR.profilesOf(req.org.id)).find((p) => p.key === key);
   await db.prepare(`INSERT INTO ent_profiles (org_id, key, config, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT (org_id, key) DO UPDATE SET config = EXCLUDED.config, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at`).run(req.org.id, key, JSON.stringify(cfg), req.user.id, nowISO());
