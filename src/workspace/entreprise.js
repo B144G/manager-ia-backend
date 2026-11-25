@@ -11,6 +11,9 @@ const E = require('./ent-lib');
 const T = require('./ent-templates');
 const AL = require('./ent-auth-lib');
 const PR = require('./ent-profiles');
+const LK = require('./ent-links');
+/** Réglages qui engagent TOUTE l'entreprise (informations, direction générale, code, double authentification) : propriétaire de l'organisation principale ou DG administrateur. Les organisations liées les voient sans les modifier. */
+const entWide = async (req, res, next) => { if (!await LK.canManage(req, req.ent)) throw new HttpError(403, "Réservé à la direction générale et à l'organisation principale de l'entreprise."); next(); };
 const limits = require('../middleware/limits');
 const { HttpError, parseJSON } = require('../util');
 
@@ -109,7 +112,7 @@ router.get('/templates', async (req, res) => {
 });
 
 // ---------- Informations propres de l'entreprise ----------
-router.put('/info', A.need('admin'), async (req, res) => {
+router.put('/info', A.need('admin'), entWide, async (req, res) => {
   const b = req.body || {}; const e = req.ent;
   const sector = b.sector === undefined ? e.sector : (b.sector === '' ? '' : A.oneOf(b.sector, T.SECTOR_IDS, undefined, 'Secteur inconnu.'));
   const size = b.size === undefined ? e.size : (b.size === '' ? '' : A.oneOf(b.size, SIZES, undefined, 'Taille inconnue.'));
@@ -191,7 +194,7 @@ router.post('/template', A.need('admin'), async (req, res) => {
 });
 
 // ---------- Direction générale (propriétaire) ----------
-router.put('/dg', A.need('owner'), async (req, res) => {
+router.put('/dg', A.need('owner'), entWide, async (req, res) => {
   const ids = [...new Set((Array.isArray((req.body || {}).personIds) ? req.body.personIds : []).map((x) => A.id(x, 'Personne invalide.')))];
   if (!ids.length) throw new HttpError(400, 'La direction générale compte au moins une personne.');
   for (const id of ids) { // seulement des personnes de CETTE entreprise
@@ -421,18 +424,18 @@ router.put('/setup', A.need('admin'), async (req, res) => {
   res.json({ ok: true, steps, completed: complete });
 });
 /** Retour arrière par entreprise : couper le lien « affectation → espaces » (la structure reste, les accès reviennent à ce qu'ils étaient sans elle). */
-router.post('/company-code', A.need('owner'), async (req, res) => {
+router.post('/company-code', A.need('owner'), entWide, async (req, res) => {
   const code = await AL.regenerateCompanyCode(req.ent);
   await audit(req, 'ent_settings', req.ent.id, 'company_code', null, null);
   res.json({ companyCode: AL.display(code) });
 });
 router.get('/devices', A.need('admin'), async (req, res) => {
   const rows = await db.prepare(`SELECT d.id, d.label, d.created_at, d.last_seen, d.expires_at, p.full_name, p.id AS person_id FROM ent_devices d JOIN ent_people p ON p.id = d.person_id
-    WHERE p.entreprise_id = ? AND d.revoked_at IS NULL AND d.expires_at > ? ORDER BY d.last_seen DESC`).all(req.ent.id, nowISO());
+    WHERE p.entreprise_id = ? AND d.revoked_at IS NULL AND d.expires_at > ? AND EXISTS (SELECT 1 FROM org_members m WHERE m.org_id = ? AND m.user_id = p.user_id) ORDER BY d.last_seen DESC`).all(req.ent.id, nowISO(), req.org.id);
   res.json({ devices: rows.map((d) => ({ id: Number(d.id), person: d.full_name, personId: Number(d.person_id), label: d.label, createdAt: d.created_at, lastSeen: d.last_seen, expiresAt: d.expires_at })) });
 });
 router.delete('/devices/:id', A.need('admin'), async (req, res) => {
-  const d = await db.prepare('SELECT d.* FROM ent_devices d JOIN ent_people p ON p.id = d.person_id WHERE d.id = ? AND p.entreprise_id = ?').get(A.id(req.params.id), req.ent.id);
+  const d = await db.prepare('SELECT d.* FROM ent_devices d JOIN ent_people p ON p.id = d.person_id WHERE d.id = ? AND p.entreprise_id = ? AND EXISTS (SELECT 1 FROM org_members m WHERE m.org_id = ? AND m.user_id = p.user_id)').get(A.id(req.params.id), req.ent.id, req.org.id);
   if (!d) throw new HttpError(404, 'Appareil introuvable.');
   await require('../routes/entreprise-auth').revokeDevice(d, 'administrateur');
   await audit(req, 'ent_device', d.id, 'revoke', { personId: Number(d.person_id) }, null);
@@ -440,6 +443,7 @@ router.delete('/devices/:id', A.need('admin'), async (req, res) => {
 });
 router.put('/settings', A.need('owner'), async (req, res) => {
   if ((req.body || {}).sensitive2fa !== undefined) {
+    if (!await LK.canManage(req, req.ent)) throw new HttpError(403, "Réservé à la direction générale et à l'organisation principale de l'entreprise.");
     await db.prepare('UPDATE entreprises SET sensitive_2fa = ? WHERE id = ?').run(req.body.sensitive2fa ? 1 : 0, req.ent.id);
     await audit(req, 'ent_settings', req.ent.id, 'update', null, { sensitive2fa: Boolean(req.body.sensitive2fa) });
     if ((req.body || {}).rightsLink === undefined) return res.json({ ok: true, sensitive2fa: Boolean(req.body.sensitive2fa) });
@@ -451,6 +455,55 @@ router.put('/settings', A.need('owner'), async (req, res) => {
     .run(req.org.id, JSON.stringify(cur.steps), cur.template, link ? 1 : 0, req.user.id, nowISO());
   await audit(req, 'ent_settings', req.org.id, 'update', { rightsLink: cur.rightsLink }, { rightsLink: link });
   res.json({ ok: true, rightsLink: link, globalOff: E.globalOff() });
+});
+
+// ---------- Organisations liées (étape 4) ----------
+router.get('/links', async (req, res) => {
+  const manage = await LK.canManage(req, req.ent);
+  const orgs = await db.prepare('SELECT id, name, linked_via, created_at, owner_id FROM orgs WHERE entreprise_id = ? ORDER BY id').all(req.ent.id);
+  const main = await LK.mainOrgOf(req.ent);
+  const out = { main: Number(main.id) === Number(req.org.id), mainOrgId: manage ? Number(main.id) : undefined, canManage: manage, current: { id: Number(req.org.id), name: req.org.name } };
+  if (!manage) return res.json(out); // une organisation liée voit seulement sa propre place ; la liste est pour la direction générale
+  const links = await db.prepare('SELECT id, hint, label, copy_structure, created_at, expires_at, used_at, used_org_id, revoked_at FROM ent_links WHERE entreprise_id = ? ORDER BY id DESC LIMIT 50').all(req.ent.id);
+  const members = await db.prepare('SELECT org_id, COUNT(*) c FROM org_members WHERE org_id IN (SELECT id FROM orgs WHERE entreprise_id = ?) GROUP BY org_id').all(req.ent.id);
+  const owner = await require('../db').getUserFresh(req.ent.owner_user_id);
+  const lim = A.limitsFor((owner || {}).plan || 'Gratuit');
+  res.json({ ...out,
+    orgs: orgs.map((o) => ({ id: Number(o.id), name: o.name, main: Number(o.id) === Number(main.id), linked: Boolean(o.linked_via), createdAt: o.created_at, members: Number((members.find((x) => Number(x.org_id) === Number(o.id)) || {}).c) || 0 })),
+    links: links.map((l) => { const st = l.revoked_at ? 'revoked' : l.used_at ? 'used' : Date.parse(l.expires_at) < Date.now() ? 'expired' : 'pending'; return { id: Number(l.id), hint: l.hint, label: l.label, copyStructure: Boolean(Number(l.copy_structure)), createdAt: l.created_at, expiresAt: l.expires_at, status: st, usedOrgId: l.used_org_id ? Number(l.used_org_id) : null }; }),
+    limits: { orgs: lim.orgs, orgsUsed: orgs.length },
+    log: (await db.prepare('SELECT l.action, l.detail, l.created_at AS at, u.name FROM ent_link_log l LEFT JOIN users u ON u.id = l.user_id WHERE l.entreprise_id = ? ORDER BY l.id DESC LIMIT 30').all(req.ent.id)),
+  });
+});
+router.post('/links', A.need('admin'), entWide, async (req, res) => {
+  await LK.assertOrgRoom(req.ent); // pas de lien si la limite d'organisations de l'abonnement est déjà atteinte
+  const l = await LK.createLink(req, req.ent, { label: (req.body || {}).label, days: (req.body || {}).days, copyStructure: (req.body || {}).copyStructure });
+  await audit(req, 'ent_link', l.id, 'create', null, { label: A.text((req.body || {}).label, 80) });
+  res.status(201).json({ id: l.id, code: l.token, expiresAt: l.expiresAt }); // le code n'est montré qu'une fois : seule son empreinte est conservée
+});
+router.delete('/links/:id', A.need('admin'), entWide, async (req, res) => {
+  const r = await db.prepare('UPDATE ent_links SET revoked_at = ? WHERE id = ? AND entreprise_id = ? AND used_at IS NULL AND revoked_at IS NULL').run(nowISO(), A.id(req.params.id), req.ent.id);
+  if (!r.changes) throw new HttpError(404, 'Lien introuvable, déjà utilisé ou déjà révoqué.');
+  await LK.log(req.ent.id, null, A.id(req.params.id), req.user.id, 'link_revoked');
+  await audit(req, 'ent_link', A.id(req.params.id), 'revoke', null, null);
+  res.json({ ok: true });
+});
+router.get('/people-elsewhere', A.need('admin'), entWide, async (req, res) => {
+  const rows = await db.prepare(`SELECT p.id, p.full_name FROM ent_people p WHERE p.entreprise_id = ? AND p.user_id IS NOT NULL AND p.status = 'active'
+    AND NOT EXISTS (SELECT 1 FROM org_members m WHERE m.org_id = ? AND m.user_id = p.user_id) ORDER BY p.full_name`).all(req.ent.id, req.org.id);
+  res.json({ people: rows.map((r) => ({ id: Number(r.id), name: r.full_name })) });
+});
+/** Direction générale : fait entrer dans CETTE organisation une personne de l'entreprise (déjà dans une autre organisation liée). Ses affectations restent propres à chaque organisation. */
+router.post('/people/:id/enroll', A.need('admin'), entWide, async (req, res) => {
+  const p = await db.prepare("SELECT * FROM ent_people WHERE id = ? AND entreprise_id = ? AND user_id IS NOT NULL AND status = 'active'").get(A.id(req.params.id), req.ent.id);
+  if (!p) throw new HttpError(404, 'Personne introuvable.');
+  if (await db.prepare('SELECT 1 FROM org_members WHERE org_id = ? AND user_id = ?').get(req.org.id, p.user_id)) throw new HttpError(409, 'Cette personne fait déjà partie de cette organisation.');
+  if (Number((await db.prepare('SELECT COUNT(*) c FROM org_members WHERE org_id = ?').get(req.org.id)).c) >= A.limitsFor(await A.ownerPlan(req.org)).members) throw new HttpError(403, "Cette organisation a atteint le nombre de personnes permis par l'offre de l'entreprise.");
+  const role = A.oneOf((req.body || {}).role, ['member', 'manager'], 'member', 'Rôle inconnu.');
+  await db.prepare('INSERT INTO org_members (org_id, user_id, role, title, created_at) VALUES (?, ?, ?, ?, ?)').run(req.org.id, p.user_id, role, A.text((req.body || {}).title, 80), nowISO());
+  await audit(req, 'ent_person', p.id, 'enroll', null, { name: p.full_name, role });
+  await LK.log(req.ent.id, req.org.id, null, req.user.id, 'person_enrolled', p.full_name);
+  res.status(201).json({ ok: true });
 });
 
 // ---------- Profils de rôle (étape 3) : le profil ne donne aucun droit, il organise l'écran de la personne ----------

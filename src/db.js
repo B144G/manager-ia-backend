@@ -3838,6 +3838,9 @@ MIGRATIONS.push(...require('./migrations/compte-entreprise-2'));
 // Étape 3 (420 et suivantes) : profils de rôle (413 à 419 réservées).
 while (MIGRATIONS.length < 419) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1} AS reserve`);
 MIGRATIONS.push(...require('./migrations/compte-entreprise-3'));
+// Étape 4 (430 et suivantes) : organisations liées (422 à 429 réservées).
+while (MIGRATIONS.length < 429) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1} AS reserve`);
+MIGRATIONS.push(...require('./migrations/compte-entreprise-4'));
 
 db.ready = db.migrate(MIGRATIONS);
 

@@ -99,7 +99,13 @@ async function memberOf(req, v) {
 }
 
 // ---------- Offres ----------
-const ownerPlan = async (org) => (await getUserFresh(org.owner_id) || {}).plan || 'Gratuit';
+/** Titulaire de l'abonnement : le propriétaire de l'organisation, ou celui de l'entreprise principale pour une organisation liée (compte d'entreprise, étape 4). */
+async function planOwnerId(org) {
+  if (!org.entreprise_id || !org.linked_via) return org.owner_id;
+  const e = await db.prepare('SELECT owner_user_id FROM entreprises WHERE id = ?').get(org.entreprise_id);
+  return (e && e.owner_user_id) || org.owner_id;
+}
+const ownerPlan = async (org) => (await getUserFresh(await planOwnerId(org)) || {}).plan || 'Gratuit';
 const limitsFor = (plan) => require('../services/custom-plan').limitsFor(plan); // offres habituelles, ou forfait sur mesure (« Sur mesure|somme|jours »)
 
 /**
@@ -120,7 +126,7 @@ function windowOfUser(u) {
   const d = new Date(now);
   return { start: new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).toISOString(), end: new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)).toISOString() };
 }
-const quotaWindow = async (org) => windowOfUser(await getUserFresh(org.owner_id));
+const quotaWindow = async (org) => windowOfUser(await getUserFresh(await planOwnerId(org)));
 /** Messages IA déjà utilisés par l'organisation sur la période en cours. */
 const aiUsed = async (org) => { const w = await quotaWindow(org); return (await db.prepare('SELECT COUNT(*) c FROM ai_usage WHERE org_id = ? AND created_at >= ? AND created_at < ?').get(org.id, w.start, w.end)).c; };
 

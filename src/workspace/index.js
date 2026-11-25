@@ -78,15 +78,19 @@ router.get('/orgs', async (req, res) => {
 router.post('/orgs', async (req, res) => {
   const b = req.body || {};
   const name = A.text(b.name, 100, { required: true, msg: "Indiquez le nom de l'organisation." });
+  const L = require('./ent-links');
+  const assoc = b.associationCode ? await L.usableLink(b.associationCode) : null; // lien d'association : l'organisation rejoint l'entreprise du lien (abonnement de l'entreprise principale)
+  if (assoc) await L.assertOrgRoom(assoc.ent);
   const lim = A.limitsFor(req.user.plan);
   const owned = (await db.prepare('SELECT COUNT(*) c FROM orgs WHERE owner_id = ?').get(req.user.id)).c;
-  if (owned >= lim.orgs) throw new HttpError(403, `Votre offre ${require('../services/custom-plan').label(req.user.plan)} permet ${lim.orgs} organisation(s). Passez à une offre supérieure pour en créer d'autres.`);
+  if (!assoc && owned >= lim.orgs) throw new HttpError(403, `Votre offre ${require('../services/custom-plan').label(req.user.plan)} permet ${lim.orgs} organisation(s). Passez à une offre supérieure pour en créer d'autres.`);
   const now = nowISO();
   const id = await db.transaction(async () => {
     const oid = (await db.prepare('INSERT INTO orgs (name, sector, description, currency, owner_id, intake_token, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(name, A.text(b.sector, 100), A.text(b.description, 1000), A.text(b.currency, 10) || 'FCFA', req.user.id, crypto.randomBytes(16).toString('hex'), now)).lastInsertRowid;
     await db.prepare("INSERT INTO org_members (org_id, user_id, role, title, created_at) VALUES (?, ?, 'owner', 'Dirigeant', ?)").run(oid, req.user.id, now);
-    await require('./ent-lib').createFor({ id: oid, name, currency: A.text(b.currency, 10) || 'FCFA', owner_id: req.user.id }, now); // l'entreprise, avec le créateur comme directeur général
+    if (assoc) await L.attach(oid, name, assoc, req.user.id); // organisation liée : même entreprise, direction générale commune, structure copiée
+    else await require('./ent-lib').createFor({ id: oid, name, currency: A.text(b.currency, 10) || 'FCFA', owner_id: req.user.id }, now); // l'entreprise, avec le créateur comme directeur général
     return oid;
   })();
   await A.logActivity(id, req.user.id, 'team', `Organisation « ${name} » créée`);
@@ -109,6 +113,12 @@ router.post('/orgs/join', async (req, res) => {
   await require('./ent-lib').onJoin(org, req.user, code); // relie le compte à sa fiche (code d'invitation personnel de l'assistant d'entreprise)
   await A.logActivity(org.id, req.user.id, 'team', `${req.user.name} a rejoint l'équipe`);
   res.json({ id: org.id });
+});
+
+/** Avant de créer une organisation liée : à quelle entreprise le lien d'association rattache-t-il ? (aucune donnée sensible) */
+router.post('/orgs/link/preview', limits.make(15 * 60 * 1000, 30, 'Trop de tentatives. Réessayez dans quelques minutes.', { shared: true, prefix: 'entlinkpreview' }), async (req, res) => {
+  const { link, ent } = await require('./ent-links').usableLink((req.body || {}).code);
+  res.json({ company: ent.name, copyStructure: Boolean(Number(link.copy_structure)), expiresAt: link.expires_at });
 });
 
 const orgRouter = express.Router({ mergeParams: true });
