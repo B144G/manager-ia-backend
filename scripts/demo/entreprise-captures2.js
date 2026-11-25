@@ -56,13 +56,13 @@ function cdp(wsUrl) {
     await c.send('Page.addScriptToEvaluateOnNewDocument', { source: `try{localStorage.setItem('mi_pwa_no','1')}catch(e){};document.addEventListener('DOMContentLoaded',()=>{const s=document.createElement('style');s.textContent='.ws-fab,#pwa-install{display:none!important}*{caret-color:transparent!important}';document.head.appendChild(s);});` });
     const nav = async (url) => { await c.send('Page.navigate', { url }); await sleep(700); };
     let orgId = null; const jars = {}; // une connexion par compte (la limite de connexions du serveur est volontairement basse)
-    for (const s of SHOTS) {
+    for (const s of SHOTS.filter((x) => !process.env.FROM || x.f >= process.env.FROM)) {
       await c.send('Network.clearBrowserCookies');
       await c.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: s.dark ? 'dark' : 'light' }] });
       if (s.mobile) await c.send('Emulation.setDeviceMetricsOverride', { width: 375, height: 812, deviceScaleFactor: 2, mobile: true }); else await c.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 2, mobile: false });
       await nav(`${SITE}/connexion`);
       if (s.u === 'anon') { /* page publique */ } else if (!jars[s.u]) {
-        const st = await c.evaluate(s.u === 'paul' ? `fetch('/api/entreprise-auth/login',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({companyCode:process_code,email:'paul@exemple.com',secret:'493817'})}).then(r=>r.status)` : `fetch('/api/login',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify(${JSON.stringify(U(s.u))})}).then(r=>r.status)`.replace('process_code', JSON.stringify(process.env.COMPANY_CODE || '')));
+        const st = await c.evaluate(s.u === 'paul' ? `fetch('/api/entreprise-auth/login',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({companyCode:${JSON.stringify(process.env.COMPANY_CODE || '')},email:'paul@exemple.com',secret:'493817'})}).then(r=>r.status)` : `fetch('/api/login',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify(${JSON.stringify(U(s.u))})}).then(r=>r.status)`);
         if (st !== 200) throw new Error(`connexion ${s.u} : ${st}`);
         jars[s.u] = (await c.send('Network.getCookies', { urls: [SITE] })).cookies;
       } else await c.send('Network.setCookies', { cookies: jars[s.u].map((k) => ({ name: k.name, value: k.value, url: SITE, httpOnly: k.httpOnly, path: '/' })) });
