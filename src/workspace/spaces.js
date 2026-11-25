@@ -29,7 +29,7 @@ const SPACES = [
   { id: 'operations', icon: 'production', title: 'Opérations', desc: 'Production, logistique, chantiers, maintenance.', modules: ['production', 'logistics', 'construction', 'maintenance'] },
   { id: 'projets', icon: 'projects', title: 'Projets et réunions', desc: 'Mes tâches, projets, réunions, bibliothèque. Ouvert à tout le monde.', modules: ['projects', 'meetings', 'chat', 'library'], baseline: true },
   { id: 'gestion', icon: 'legal', title: 'Administration et juridique', desc: 'Documents administratifs, contrats, conformité.', modules: ['administration', 'legal'] },
-  { id: 'compte', icon: 'team', title: 'Administration du compte', desc: 'Équipe, sécurité, intégrations, abonnement.', modules: ['team', 'integrations', 'billing'] },
+  { id: 'compte', icon: 'team', title: 'Administration du compte', desc: 'Équipe, sécurité, intégrations, abonnement.', modules: ['team', 'entreprise', 'integrations', 'billing'] },
 ];
 const SPACE_IDS = SPACES.map((s) => s.id);
 const SPACE_OF = {};
@@ -71,7 +71,7 @@ function presetOf(ids) {
 // ---------- Correspondance chemin d'API → module ----------
 // null = commun à tous (jamais bloqué ici : il garde ses propres règles de rôle). Un chemin inconnu est traité comme commun.
 const SEG = {
-  dashboard: null, decisions: null, share: null, geo: null, mail: null, feedback: null, profile: null, ai: null, data: null, notices: null, spaces: null,
+  dashboard: null, entreprise: null, decisions: null, share: null, geo: null, mail: null, feedback: null, profile: null, ai: null, data: null, notices: null, spaces: null,
   support: 'support', projects: 'projects', budget: 'budget', stock: 'stock', crm: 'crm', parties: 'parties', sales: 'sales', 'sales-mine': 'sales', commercial: 'commercial',
   aifollow: 'aifollow', 'wa-scope': 'sales', hr: 'hr', talents: 'talents', accounting: 'accounting', treasury: 'treasury', library: 'library', history: 'history',
   purchasing: 'purchasing', meetings: 'meetings', chat: 'chat', integrations: 'integrations', payroll: 'payroll', fiscal: 'fiscal', marketing: 'marketing', logistics: 'logistics',
@@ -102,7 +102,9 @@ async function levelsFor(orgId, userId, role) {
   for (const s of SPACES) if (s.baseline) up(s.id, 'write');
   // Repli sûr : une personne à qui le propriétaire n'a affecté AUCUN espace garde ses accès actuels. Ses espaces sont dérivés de ses droits :
   // tout espace dont au moins un écran est ouvert à son rôle lui est accordé en « membre » (ses droits habituels, jamais relevés).
-  const fallback = rows.length === 0 && A.RANK[role] < A.RANK.admin;
+  // Compte d'entreprise : la structure (postes, direction générale) donne des espaces à la personne AFFECTÉE ; null = affectée à rien, rien ne change.
+  const struct = await require('./ent-lib').structureLevels(orgId, userId);
+  const fallback = rows.length === 0 && !struct && A.RANK[role] < A.RANK.admin;
   if (fallback) {
     const { modules } = require('./modules');
     const seen = new Set(modules.filter((m) => A.RANK[role] >= A.RANK[m.min]).map((m) => m.id));
@@ -118,13 +120,13 @@ async function levelsFor(orgId, userId, role) {
   }
   const levels = {}; const via = {};
   for (const s of SPACES) {
-    const e = explicit[s.id]; const d = derived[s.id] || 'none';
+    const e = explicit[s.id] !== undefined ? explicit[s.id] : (struct ? struct[s.id] : undefined); const d = derived[s.id] || 'none'; // l'affectation explicite du propriétaire (même « aucun ») l'emporte sur la structure
     // Le propriétaire et les administrateurs gardent toujours l'accès complet (ils affectent les espaces : jamais de blocage de leur propre compte).
     const fixed = A.RANK[role] >= A.RANK.admin;
     const lv = fixed ? 'manage' : (e !== undefined ? e : d);
     if (lv !== 'none') { levels[s.id] = lv; via[s.id] = fixed ? 'role' : e !== undefined ? 'assigned' : s.baseline && d === 'write' ? 'base' : 'role'; }
   }
-  return { levels, via, explicit, fallback };
+  return { levels, via, explicit, fallback, structure: struct || {} };
 }
 
 async function effective(req) {

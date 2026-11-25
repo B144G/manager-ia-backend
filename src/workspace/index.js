@@ -86,6 +86,7 @@ router.post('/orgs', async (req, res) => {
     const oid = (await db.prepare('INSERT INTO orgs (name, sector, description, currency, owner_id, intake_token, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(name, A.text(b.sector, 100), A.text(b.description, 1000), A.text(b.currency, 10) || 'FCFA', req.user.id, crypto.randomBytes(16).toString('hex'), now)).lastInsertRowid;
     await db.prepare("INSERT INTO org_members (org_id, user_id, role, title, created_at) VALUES (?, ?, 'owner', 'Dirigeant', ?)").run(oid, req.user.id, now);
+    await require('./ent-lib').createFor({ id: oid, name, currency: A.text(b.currency, 10) || 'FCFA', owner_id: req.user.id }, now); // l'entreprise, avec le créateur comme directeur général
     return oid;
   })();
   await A.logActivity(id, req.user.id, 'team', `Organisation « ${name} » créée`);
@@ -105,6 +106,7 @@ router.post('/orgs/join', async (req, res) => {
     await db.prepare('INSERT INTO org_members (org_id, user_id, role, title, branch_id, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(org.id, req.user.id, inv.role, inv.title, inv.branch_id, nowISO());
     await db.prepare('DELETE FROM invites WHERE id = ?').run(inv.id); // un code = une personne
   })();
+  await require('./ent-lib').onJoin(org, req.user, code); // relie le compte à sa fiche (code d'invitation personnel de l'assistant d'entreprise)
   await A.logActivity(org.id, req.user.id, 'team', `${req.user.name} a rejoint l'équipe`);
   res.json({ id: org.id });
 });
@@ -144,6 +146,7 @@ orgRouter.delete('/', A.need('owner'), async (req, res) => {
   await db.transaction(async () => {
     await require('../security/privacy').purgeOrgOrphans(req.org.id); // tables sans liaison en cascade : rien ne doit rester
     await db.prepare('DELETE FROM orgs WHERE id = ?').run(req.org.id);
+    if (req.org.entreprise_id) await db.prepare('DELETE FROM entreprises WHERE id = ? AND NOT EXISTS (SELECT 1 FROM orgs WHERE entreprise_id = ?)').run(req.org.entreprise_id, req.org.entreprise_id); // une entreprise sans organisation disparaît avec elle
   })();
   res.json({ ok: true });
 });
@@ -211,6 +214,7 @@ orgRouter.delete('/members/:userId', async (req, res) => {
     await db.prepare('UPDATE tasks SET assignee_id = NULL WHERE org_id = ? AND assignee_id = ?').run(req.org.id, uid);
     await db.prepare('UPDATE tickets SET assignee_id = NULL WHERE org_id = ? AND assignee_id = ?').run(req.org.id, uid);
     await db.prepare('UPDATE positions SET holder_id = NULL WHERE org_id = ? AND holder_id = ?').run(req.org.id, uid);
+    await db.prepare('DELETE FROM ent_assignments WHERE org_id = ? AND person_id IN (SELECT id FROM ent_people WHERE user_id = ?)').run(req.org.id, uid); // plus aucun poste ni droit lié à la structure dans cette organisation
     await db.prepare('DELETE FROM org_members WHERE id = ?').run(target.id);
   })();
   await W.audit(req, 'member', uid, 'remove', { role: target.role }, null);
@@ -248,6 +252,7 @@ orgRouter.get('/activity', async (req, res) => {
 // ---------- Sous-applications ----------
 // Espaces par rôle : routes de gestion, puis garde appliquée à TOUTES les routes de sous-applications ci-dessous (sans effet tant que le réglage est désactivé).
 orgRouter.use('/spaces', require('./spaces').router);
+orgRouter.use('/entreprise', require('./entreprise').router); // compte d'entreprise : structure, postes, personnes, affectations (droits vérifiés dans le routeur)
 orgRouter.use(require('./spaces').guard);
 // Vague 3 : routes plus précises déclarées AVANT celles des sous-applications existantes (qui gardent leur comportement).
 for (const [p, f] of [['', 'team-w3'], ['/hr', 'hr-w3'], ['/projects', 'projects-ro'], ['/projects', 'projects-fin'], ['/production/flows', 'production-flows'], ['/production/adv', 'production-adv-router'], ['/projects', 'projects-pro'], ['/projects', 'projects-w6'], ['/projects', 'projects-w3'], ['/legal', 'legal-w3'], ['/support', 'support-w3'], ['/marketing', 'marketing-w3'], ['/dashboard', 'dashboard-w3'], ['/data', 'data-w3'], ['/agents', 'agents-w3']]) orgRouter.use(p || '/', require('./' + f));
