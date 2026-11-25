@@ -263,7 +263,9 @@ orgRouter.get('/activity', async (req, res) => {
 // ---------- Sous-applications ----------
 // Espaces par rôle : routes de gestion, puis garde appliquée à TOUTES les routes de sous-applications ci-dessous (sans effet tant que le réglage est désactivé).
 orgRouter.use('/spaces', require('./spaces').router);
-orgRouter.use('/entreprise', require('./entreprise').router); // compte d'entreprise : structure, postes, personnes, affectations (droits vérifiés dans le routeur)
+orgRouter.use('/entreprise', require('./entreprise').router);
+orgRouter.use('/partners', require('./ent-partners').partners); // partenaires entre entreprises (étape 5) : droits vérifiés dans le routeur
+orgRouter.use('/shared', require('./ent-partners').shared); // espaces partagés (chat, réunions, bibliothèque) : membres désignés, objets explicites // compte d'entreprise : structure, postes, personnes, affectations (droits vérifiés dans le routeur)
 orgRouter.use(require('./spaces').guard);
 // Vague 3 : routes plus précises déclarées AVANT celles des sous-applications existantes (qui gardent leur comportement).
 for (const [p, f] of [['', 'team-w3'], ['/hr', 'hr-w3'], ['/projects', 'projects-ro'], ['/projects', 'projects-fin'], ['/production/flows', 'production-flows'], ['/production/adv', 'production-adv-router'], ['/projects', 'projects-pro'], ['/projects', 'projects-w6'], ['/projects', 'projects-w3'], ['/legal', 'legal-w3'], ['/support', 'support-w3'], ['/marketing', 'marketing-w3'], ['/dashboard', 'dashboard-w3'], ['/data', 'data-w3'], ['/agents', 'agents-w3']]) orgRouter.use(p || '/', require('./' + f));

@@ -3841,6 +3841,9 @@ MIGRATIONS.push(...require('./migrations/compte-entreprise-3'));
 // Étape 4 (430 et suivantes) : organisations liées (422 à 429 réservées).
 while (MIGRATIONS.length < 429) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1} AS reserve`);
 MIGRATIONS.push(...require('./migrations/compte-entreprise-4'));
+// Étape 5 (440 et suivantes) : partenaires et espaces partagés (433 à 439 réservées).
+while (MIGRATIONS.length < 439) MIGRATIONS.push(`SELECT ${MIGRATIONS.length + 1} AS reserve`);
+MIGRATIONS.push(...require('./migrations/compte-entreprise-5'));
 
 db.ready = db.migrate(MIGRATIONS);
 
