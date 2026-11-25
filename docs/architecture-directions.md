@@ -119,3 +119,6 @@ Limites honnêtes : le taux de reprise est un indicateur de substitution (nous n
 6. **Habilitations et formations de sécurité** par poste (QHSE avancé), registre des risques par chantier.
 7. **Validation des dépenses et commandes déjà existantes** : restent dans leurs écrans ; seule une file d'attente les liste dans le cockpit.
 8. **Diffusion des rapports de direction** par courriel planifié.
+
+## 8. Captures (démonstration locale)
+`docs/captures-direction/` : directeur commercial (espace de direction) face au commercial (espace d'équipe), le directeur commercial en visiteur sur l'espace de son équipe, affaires, QHSE, directeur technique — en clair, sombre et mobile. Produites par `scripts/demo-direction.js` (entreprise BTP de démonstration, ports 3420/5420) et `scripts/demo/capture-direction.js`.
