@@ -94,5 +94,28 @@ Commercial (marché) → technique (étude, planning) → finances (budget) → 
 
 ## 5. Priorités
 - **P1** (fait) : cockpits réels, circuits de validation, séparation des tâches.
-- **P2** : QHSE (incidents, accidents, inspections), non-conformités et réserves, réception technique, audit interne, gestion des affaires.
+- **P2** (fait) : QHSE (incidents, accidents, inspections), non-conformités et réserves, réception technique, audit interne, gestion des affaires.
 - **P3** (documenté) : sanctions disciplinaires, devis quantitatifs et métrés, contrôle de gestion dédié, avances au personnel.
+
+## 6. Modules ajoutés en P2
+
+| Module | Espace | Contenu | Règles de séparation |
+|---|---|---|---|
+| QHSE (`qhse`) | Opérations | fiches : incident, accident du travail (personnes, jours d'arrêt), inspection, non-conformité, réserve, réception technique ; action corrective, responsable, échéance | le déclarant ne clôture jamais sa fiche ; une réception ne se clôture qu'après approbation du circuit « Réception technique » |
+| Audit interne (`audit_interne`) | Administration et juridique | audits planifiés, constats (fiches de non-conformité rattachées), conclusion | seul l'auditeur désigné consigne et conclut ; il ne clôture pas ses propres constats ; un audit avec constats ne se supprime pas |
+| Gestion des affaires (`affaires`) | Commercial | dossier d'un marché : prospection → négociation → contrat → étude → exécution → réception → clôture financière → clôturée (ou perdue avant contrat) ; fiche de synthèse (marge prévue, chantier relié et son avancement, projet, fiches qualité ouvertes) | une étape à la fois ; le contrat exige « Validation d'un marché » approuvée ; la clôture exige « Clôture financière » approuvée ; chaque étape indique la direction responsable |
+
+Tables : `qhse_items`, `aud_audits`, `affaires` (migrations 453–455, additives). Indicateurs de cockpit désormais réels : accidents du travail et jours perdus, incidents ouverts, constats d'audit ouverts, taux de conformité technique (réceptions validées / réceptions), taux de reprise (non-conformités sur 90 jours rapportées aux contrôles, plafonné à 100 %).
+
+Limites honnêtes : le taux de reprise est un indicateur de substitution (nous n'avons pas de saisie des reprises de travaux elle-même) ; une affaire ne crée pas automatiquement le chantier, le projet ni les achats : elle les relie (liens saisis) ; les dépenses réelles par affaire ne sont pas encore consolidées (voir P3).
+
+## 7. P3 — écarts documentés, non traités
+
+1. **Sanctions disciplinaires** : pas de registre RH (seul le juridique en parle).
+2. **Devis quantitatifs et métrés** : absents ; les devis commerciaux existent mais sans bordereau de quantités.
+3. **Contrôle de gestion dédié** : écarts budget/réel consolidés par affaire (achats, paie, sous-traitance) ; aujourd'hui seulement par projet et par chantier.
+4. **Avances et prêts au personnel** : traités dans la paie uniquement.
+5. **Approvisionnement par projet / affaire** : pas de lien direct commande → affaire.
+6. **Habilitations et formations de sécurité** par poste (QHSE avancé), registre des risques par chantier.
+7. **Validation des dépenses et commandes déjà existantes** : restent dans leurs écrans ; seule une file d'attente les liste dans le cockpit.
+8. **Diffusion des rapports de direction** par courriel planifié.
