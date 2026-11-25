@@ -5,7 +5,7 @@ const { db, nowISO } = require('../db');
 const { parseJSON } = require('../util');
 
 const LV = { none: 0, view: 1, write: 2, manage: 3 };
-const SPACE_IDS = ['direction', 'commercial', 'finances', 'stock', 'rh', 'operations', 'projets', 'gestion', 'compte', 'dir_commercial', 'dir_finances', 'dir_rh', 'dir_production', 'dir_logistique', 'dir_stock', 'dir_marketing', 'dir_it', 'dir_securite'];
+const SPACE_IDS = ['direction', 'commercial', 'finances', 'stock', 'rh', 'operations', 'projets', 'gestion', 'compte', 'dir_general', 'dir_technique', 'dir_commercial', 'dir_finances', 'dir_rh', 'dir_production', 'dir_logistique', 'dir_stock', 'dir_marketing', 'dir_it', 'dir_securite'];
 
 /** Interrupteur général : ENTREPRISE_RIGHTS=off|0|false|non coupe le lien structure → droits pour toutes les entreprises (la structure reste visible). */
 const globalOff = () => /^(off|0|false|no|non|disabled|desactive|désactivé)$/i.test(String(process.env.ENTREPRISE_RIGHTS || '').trim());
@@ -90,7 +90,8 @@ async function structureLevels(orgId, userId) {
   const D = require('./ent-direction'); const dirOn = await D.enabled(orgId);
   const out = {};
   const up = (sp, lv) => { if (SPACE_IDS.includes(sp) && LV[lv] > LV[out[sp] || 'none']) out[sp] = lv; };
-  if (dg) { up('direction', 'manage'); for (const sp of SPACE_IDS) if (sp !== 'direction' && sp !== 'compte' && sp !== 'projets' && (!sp.startsWith('dir_') || dirOn)) up(sp, 'view'); }
+  if (dg && dirOn) up('dir_general', 'manage'); // cockpit de la direction générale
+  if (dg) { up('direction', 'manage'); for (const sp of SPACE_IDS) if (sp !== 'direction' && sp !== 'compte' && sp !== 'projets' && (!sp.startsWith('dir_') || (dirOn && sp !== 'dir_general'))) up(sp, 'view'); }
   for (const p of posts) {
     const own = p.kind === 'director' ? await D.dirSpaceOfPost(p) : null;
     for (const [sp, lv] of Object.entries(parseJSON(p.spaces, {}))) {

@@ -14,10 +14,12 @@ const { HttpError } = require('../util');
 
 /** Espaces de direction : id → espace opérationnel du département, directions du modèle qui y mènent, départements du modèle (équipe). */
 const DIRS = {
+  dir_general: { title: 'Direction générale', icon: 'dashboard', desc: "Pilotage stratégique : résultats, projets, validations et décisions de la direction générale.", op: 'direction', directions: [], depts: ['pilotage'], dg: true },
+  dir_technique: { title: 'Direction technique', icon: 'construction', desc: "Pilotage technique : avancement des chantiers, qualité, coûts, équipements, tâches et dossiers du directeur technique.", op: 'operations', directions: ['dtech'], depts: ['production'] },
   dir_commercial: { title: 'Direction commerciale', icon: 'crm', desc: "Pilotage commercial : indicateurs, objectifs, validations, tâches et dossiers du directeur.", op: 'commercial', directions: ['dcom'], depts: ['commercial'] },
   dir_finances: { title: 'Direction administrative et financière', icon: 'accounting', desc: "Pilotage financier : trésorerie, dépenses à valider, objectifs, tâches et dossiers du DAF.", op: 'finances', directions: ['daf'], depts: ['finance'] },
   dir_rh: { title: 'Direction des ressources humaines', icon: 'hr', desc: "Pilotage RH : effectifs, congés à valider, objectifs, tâches et dossiers du DRH.", op: 'rh', directions: ['drh'], depts: ['rh'] },
-  dir_production: { title: 'Direction de la production', icon: 'production', desc: "Pilotage de la production et des travaux : ordres, chantiers, objectifs, tâches et dossiers du directeur.", op: 'operations', directions: ['dprod', 'dtech'], depts: ['production'] },
+  dir_production: { title: 'Direction de la production', icon: 'production', desc: "Pilotage de la production et des travaux : ordres, chantiers, objectifs, tâches et dossiers du directeur.", op: 'operations', directions: ['dprod'], depts: ['production'] },
   dir_logistique: { title: 'Direction de la logistique', icon: 'logistics', desc: "Pilotage logistique : livraisons, flotte, objectifs, tâches et dossiers du directeur.", op: 'operations', directions: ['dlog'], depts: ['logistique'] },
   dir_stock: { title: 'Direction du stockage et des achats', icon: 'stock', desc: "Pilotage des stocks et des achats : ruptures, commandes à valider, objectifs, tâches et dossiers du directeur.", op: 'stock', directions: ['dstock'], depts: ['achats'] },
   dir_marketing: { title: 'Direction marketing', icon: 'marketing', desc: "Pilotage marketing : campagnes, clients, objectifs, tâches et dossiers du directeur.", op: 'commercial', directions: ['dmkt'], depts: ['marketing'] },
@@ -81,6 +83,27 @@ function routerFor(id) {
     const seats = posts.reduce((s, p) => s + Number(p.headcount), 0); const filled = posts.reduce((s, p) => s + Math.min(Number(p.n), Number(p.headcount)), 0);
     const objectives = (await db.prepare('SELECT * FROM dir_objectives WHERE org_id = ? AND space = ? ORDER BY CASE WHEN due IS NULL THEN 1 ELSE 0 END, due, id').all(o, id)).map(objView);
     res.json({ space: { id, title: D.title, opSpace: D.op, level }, tiles: dash.tiles, team: { seats, filled, vacancies: Math.max(seats - filled, 0), members: members.length, load: load.slice(0, 8) }, objectives, today });
+  });
+
+  // Indicateurs réels du département (aucun chiffre inventé : « non disponible » + ce qu'il faut renseigner).
+  r.get('/kpis', async (req, res) => {
+    const level = await guardLevel(req, id);
+    res.json({ space: { id, title: D.title, level }, kpis: await require('./ent-kpi').kpisFor(req, id), missions: MISSIONS[id] || [] });
+  });
+
+  // Circuits de validation de direction (moteur d'Administration) : à valider par la personne, décision, journal.
+  r.get('/workflows', async (req, res) => {
+    await guardLevel(req, id);
+    const WF = require('./ent-workflows');
+    res.json({ inbox: await WF.inboxOf(req) });
+  });
+  r.post('/workflows/requests/:rid/:decision', async (req, res, next) => {
+    await needManage(req);
+    const dec = req.params.decision;
+    if (!['approve', 'reject'].includes(dec)) throw new HttpError(404, 'Introuvable.');
+    req.params.id = req.params.rid; // le moteur de circuits lit :id
+    await W.audit(req, 'dir_workflow', Number(req.params.rid), dec, { space: id }, { space: id });
+    return require('./adm-flow').handlers[dec](req, res, next); // le moteur de circuits répond lui-même (et signale ses refus par next)
   });
 
   // Validations : file d'approbation du département.
@@ -202,8 +225,25 @@ function routerFor(id) {
 }
 const objView = (o) => ({ id: Number(o.id), title: o.title, unit: o.unit, target: Number(o.target), current: Number(o.current), due: o.due, pct: Number(o.target) ? Math.max(0, Math.min(100, Math.round((Number(o.current) / Number(o.target)) * 100))) : 0 });
 
+/** Missions du directeur : actions renvoyant vers les écrans existants (aucune donnée ici : le cockpit n'a que des liens). */
+const MISSIONS = {
+  dir_general: [{ label: 'Valider les budgets et les investissements', module: 'budget' }, { label: 'Suivre les résultats commerciaux et financiers', module: 'accounting' }, { label: 'Contrôler la rentabilité des projets', module: 'projects' }, { label: 'Superviser les risques de l\'entreprise', module: 'administration' }, { label: 'Suivre les décisions et les plans d\'action', module: 'dashboard' }],
+  dir_finances: [{ label: 'Élaborer et suivre le budget annuel', module: 'budget' }, { label: 'Superviser la comptabilité', module: 'accounting' }, { label: 'Superviser la trésorerie et les banques', module: 'treasury' }, { label: 'Suivre créances et dettes', module: 'crm' }, { label: 'Superviser les déclarations fiscales', module: 'fiscal' }],
+  dir_technique: [{ label: 'Suivre les chantiers et leur avancement', module: 'construction' }, { label: 'Planifier les travaux et les projets', module: 'projects' }, { label: 'Contrôler la qualité et les réserves', module: 'construction' }, { label: 'Suivre les équipements et la maintenance', module: 'maintenance' }, { label: 'Suivre les coûts techniques', module: 'budget' }],
+  dir_production: [{ label: 'Organiser les activités et les ordres de fabrication', module: 'production' }, { label: 'Contrôler rendements et pertes', module: 'production' }, { label: 'Suivre les livraisons', module: 'logistics' }, { label: 'Identifier les blocages opérationnels', module: 'maintenance' }],
+  dir_logistique: [{ label: 'Planifier les tournées et les livraisons', module: 'logistics' }, { label: 'Suivre la flotte et ses échéances', module: 'logistics' }, { label: 'Maîtriser les coûts de transport', module: 'logistics' }, { label: 'Suivre les interventions sur les véhicules', module: 'maintenance' }],
+  dir_stock: [{ label: 'Identifier les besoins et élaborer le plan d\'achats', module: 'purchasing' }, { label: 'Consulter et comparer les fournisseurs', module: 'purchasing' }, { label: 'Prévenir les ruptures de stock', module: 'stock' }, { label: 'Organiser les inventaires', module: 'stock' }, { label: 'Suivre livraisons et réceptions', module: 'purchasing' }],
+  dir_rh: [{ label: 'Suivre les effectifs et les affectations', module: 'hr' }, { label: 'Superviser les recrutements', module: 'hr' }, { label: 'Superviser congés, présences et paie', module: 'payroll' }, { label: 'Piloter formations et compétences', module: 'talents' }],
+  dir_commercial: [{ label: 'Piloter le pipeline et les opportunités', module: 'commercial' }, { label: 'Suivre clients, devis et factures', module: 'crm' }, { label: 'Fixer et suivre les objectifs de vente', module: 'commercial' }, { label: 'Suivre la satisfaction et les demandes clients', module: 'support' }],
+  dir_marketing: [{ label: 'Piloter les campagnes et leur budget', module: 'marketing' }, { label: 'Suivre les prospects générés', module: 'commercial' }, { label: 'Animer l\'assistant commercial', module: 'sales' }],
+  dir_it: [{ label: 'Suivre les interventions et la disponibilité', module: 'maintenance' }, { label: 'Superviser les intégrations', module: 'integrations' }, { label: 'Suivre la sécurité des comptes', module: 'integrations' }],
+  dir_securite: [{ label: 'Suivre obligations légales et conformité', module: 'legal' }, { label: 'Suivre contrats et litiges', module: 'legal' }, { label: 'Contrôler le contrôle interne', module: 'administration' }],
+};
+
 /** Écrans existants proposés comme « rapports » (liens ; la personne n'ouvre que ce que ses droits permettent). */
 const REPORTS = {
+  dir_general: [{ label: 'Tableau de bord', module: 'dashboard' }, { label: 'Comptabilité', module: 'accounting' }, { label: 'Clients et ventes', module: 'crm' }, { label: 'Projets et tâches', module: 'projects' }],
+  dir_technique: [{ label: 'Chantiers (BTP)', module: 'construction' }, { label: 'Maintenance', module: 'maintenance' }, { label: 'Projets et tâches', module: 'projects' }],
   dir_commercial: [{ label: 'Clients et ventes', module: 'crm' }, { label: 'Suivi commercial', module: 'commercial' }, { label: 'Service client', module: 'support' }],
   dir_finances: [{ label: 'Comptabilité', module: 'accounting' }, { label: 'Trésorerie', module: 'treasury' }, { label: 'Budget', module: 'budget' }, { label: 'Fiscalité et liasse', module: 'fiscal' }],
   dir_rh: [{ label: 'Ressources humaines', module: 'hr' }, { label: 'Paie', module: 'payroll' }, { label: 'Talents et compétences', module: 'talents' }],

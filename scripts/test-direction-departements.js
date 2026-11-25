@@ -55,10 +55,10 @@ async function main() {
     console.log('Migrations et modèle');
     check('migrations 450 (réglage) et 451 (tâches, notes, objectifs de direction) ; 444 à 449 réservées', /dir_spaces/.test(MIGRATIONS[449]) && /dir_tasks/.test(MIGRATIONS[450]) && MIGRATIONS.slice(443, 449).every((m) => /reserve/.test(m)), MIGRATIONS.length);
     r = await owner('GET', E);
-    check('organisation neuve : les espaces de direction sont actifs d\'emblée (le modèle les crée)', r.json.direction.enabled === true && r.json.direction.spaces.length === 9, r.json.direction);
+    check('organisation neuve : les espaces de direction sont actifs d\'emblée (le modèle les crée)', r.json.direction.enabled === true && r.json.direction.spaces.length === 11, r.json.direction);
     check('les postes de directeur ont leur espace de direction en responsable et l\'espace opérationnel en consultation', JSON.stringify(post('Directeur commercial').spaces) === JSON.stringify({ dir_commercial: 'manage', commercial: 'view', stock: 'view', direction: 'view' }), post('Directeur commercial').spaces);
     check('les postes du personnel n\'ont aucun espace de direction', posts.filter((p) => p.kind !== 'director').every((p) => !Object.keys(p.spaces).some((k) => k.startsWith('dir_'))));
-    check('chacune des 10 directions du modèle mène à un espace de direction', T.DIRECTIONS.every((d) => ['dir_commercial', 'dir_finances', 'dir_rh', 'dir_production', 'dir_logistique', 'dir_stock', 'dir_marketing', 'dir_it', 'dir_securite'].some((s) => d.director.spaces[s] === 'manage')));
+    check('chacune des 10 directions du modèle mène à un espace de direction', T.DIRECTIONS.every((d) => ['dir_general', 'dir_technique', 'dir_commercial', 'dir_finances', 'dir_rh', 'dir_production', 'dir_logistique', 'dir_stock', 'dir_marketing', 'dir_it', 'dir_securite'].some((s) => d.director.spaces[s] === 'manage')));
 
     console.log('Le directeur a son propre espace');
     let sp = await mine(dc.c, O);
@@ -148,14 +148,14 @@ async function main() {
 
     console.log('Direction générale, propriétaire et administrateurs voient tout');
     sp = await mine(owner, O);
-    check('le propriétaire : tous les espaces de direction en responsable', ['dir_commercial', 'dir_finances', 'dir_rh', 'dir_production', 'dir_logistique', 'dir_stock', 'dir_marketing', 'dir_it', 'dir_securite'].every((k) => sp[k] === 'manage'), sp);
-    check('l\'administrateur aussi', Object.keys(await mine(adm, O)).filter((k) => k.startsWith('dir_')).length === 9);
+    check('le propriétaire : tous les espaces de direction en responsable', ['dir_general', 'dir_technique', 'dir_commercial', 'dir_finances', 'dir_rh', 'dir_production', 'dir_logistique', 'dir_stock', 'dir_marketing', 'dir_it', 'dir_securite'].every((k) => sp[k] === 'manage'), sp);
+    check('l\'administrateur aussi', Object.keys(await mine(adm, O)).filter((k) => k.startsWith('dir_')).length === 11);
     check('le propriétaire lit le pilotage de chaque direction', (await owner('GET', `${D}/summary`)).status === 200 && (await owner('GET', `${O}/dir_finances/summary`)).status === 200);
     // un DG non propriétaire : consultation de tous les espaces, y compris les directions
     const dgp = await person(owner, E, 'dg2', 'Directeur Général Deux', 'inexistant', posts);
     await owner('PUT', `${E}/dg`, { personIds: [(await owner('GET', `${E}/chart`)).json.dg[0].id, dgp.personId] });
     sp = await mine(dgp.c, O);
-    check('un DG non propriétaire : Direction en responsable, directions de département en consultation', sp.direction === 'manage' && sp.dir_commercial === 'view' && sp.dir_finances === 'view', sp);
+    check('un DG non propriétaire : Direction et cockpit de la direction générale en responsable, directions de département en consultation', sp.direction === 'manage' && sp.dir_general === 'manage' && sp.dir_commercial === 'view' && sp.dir_finances === 'view', sp);
     check('… il lit les tâches d\'un directeur mais n\'écrit pas (403 consultation seule)', (await dgp.c('GET', `${D}/tasks`)).status === 200 && (await dgp.c('POST', `${D}/tasks`, { title: 'x' })).status === 403);
 
     console.log('Règles sur les postes (côté serveur)');
@@ -194,8 +194,8 @@ async function main() {
     r = await s1.c('GET', `${E}/my-profile`);
     check('le profil du vendeur reste opérationnel (arrive sur « Mon espace de travail »)', r.json.profile.key === 'vendeur' && !r.json.blocks.some((b) => b.space && b.space.startsWith('dir_')) && (await s1.c('GET', O)).json.profile.landing === true);
     r = await owner('GET', `${E}/profiles`);
-    check('tous les profils existants sont conservés (23)', r.json.profiles.length === 23);
-    check('les profils des 9 directeurs pointent vers leur espace de direction', r.json.profiles.filter((p) => p.config.directionSpace).length === 9);
+    check('tous les profils existants sont conservés (24)', r.json.profiles.length === 24);
+    check('les profils de directeur pointent vers leur espace de direction (DG, DT et 9 directions)', r.json.profiles.filter((p) => p.config.directionSpace).length === 11);
 
     console.log('Non-régression : organisation existante, activation, retour arrière');
     const org3 = (await o3('POST', '/api/ws/orgs', { name: 'Ancienne Entreprise' })).json.id; const O3 = `/api/ws/orgs/${org3}`; const E3 = `${O3}/entreprise`;

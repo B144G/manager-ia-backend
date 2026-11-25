@@ -14,6 +14,7 @@ const PR = require('./ent-profiles');
 const LK = require('./ent-links');
 const Lim = require('./ent-limits');
 const DIR = require('./ent-direction');
+const WF = require('./ent-workflows');
 const overLimit = (what, n, max) => { if (n >= max) throw new HttpError(403, `Votre abonnement permet ${max} ${what} : la limite est atteinte. Passez à une offre supérieure pour en ajouter.`); };
 /** Réglages qui engagent TOUTE l'entreprise (informations, direction générale, code, double authentification) : propriétaire de l'organisation principale ou DG administrateur. Les organisations liées les voient sans les modifier. */
 const entWide = async (req, res, next) => { if (!await LK.canManage(req, req.ent)) throw new HttpError(403, "Réservé à la direction générale et à l'organisation principale de l'entreprise."); next(); };
@@ -557,6 +558,31 @@ router.post('/direction/disable', A.need('owner'), async (req, res) => {
   await audit(req, 'ent_direction', req.org.id, 'disable', null, null);
   res.json({ ok: true, enabled: false });
 });
+
+// ---------- Circuits de validation de direction (moteur de circuits d'Administration) ----------
+router.get('/workflows', async (req, res) => {
+  const mine = await WF.initiable(req);
+  res.json({ mine, workflows: A.can(req, 'admin') ? await WF.listFor(req) : undefined, directions: WF.DIRECTION_KEYS, threshold: WF.THRESHOLD, can: { manage: A.can(req, 'admin') && await LK.canManage(req, req.ent) } });
+});
+router.post('/workflows/install', A.need('admin'), entWide, async (req, res) => {
+  const keys = Array.isArray((req.body || {}).keys) && req.body.keys.length ? req.body.keys : WF.WORKFLOWS.map((w) => w.key);
+  const done = [];
+  for (const k of keys) { if (!WF.BY[k]) throw new HttpError(400, 'Opération inconnue.'); done.push({ key: k, flowId: await WF.install(req, k) }); }
+  await audit(req, 'ent_workflow', req.org.id, 'install', null, { keys: done.map((d) => d.key) });
+  res.json({ ok: true, installed: done });
+});
+router.put('/workflows/:key', A.need('admin'), entWide, async (req, res) => {
+  const key = String(req.params.key);
+  if (!WF.BY[key]) throw new HttpError(404, 'Opération introuvable.');
+  const steps = WF.cleanSteps((req.body || {}).steps);
+  const cur = await WF.cfgOf(req.org.id, key);
+  await db.prepare(`INSERT INTO ent_workflows (org_id, key, config, flow_id, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT (org_id, key) DO UPDATE SET config = EXCLUDED.config, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at`).run(req.org.id, key, JSON.stringify({ steps }), cur.flowId, req.user.id, nowISO());
+  if (cur.flowId) await WF.install(req, key); // circuit déjà en service : mis à jour (nouvelle version ; les demandes en cours gardent leurs étapes)
+  await audit(req, 'ent_workflow', req.org.id, 'update', null, { key, steps: steps.length });
+  res.json({ ok: true });
+});
+router.post('/workflows/:key/request', async (req, res, next) => WF.start(req, res, String(req.params.key), next));
 
 // ---------- Profils de rôle (étape 3) : le profil ne donne aucun droit, il organise l'écran de la personne ----------
 const moduleIds = () => require('./modules').modules.map((m) => m.id);

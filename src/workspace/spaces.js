@@ -151,6 +151,7 @@ function landing(eff, last) {
   const main = ids.filter((id) => LV[eff.levels[id]] >= LV.write && !SPACES.find((s) => s.id === id).baseline);
   const cand = main.length ? main : ids.filter((id) => LV[eff.levels[id]] >= LV.write);
   if (last && eff.levels[last]) return { space: last, choose: false };
+  if (eff.levels.dir_general === 'manage') return { space: 'dir_general', choose: false }; // cockpit de la direction générale (espaces de direction actifs)
   if (eff.levels.direction === 'manage' || (eff.levels.direction && A.RANK[eff.role] >= A.RANK.admin)) return { space: 'direction', choose: false };
   if (cand.length === 1) return { space: cand[0], choose: false };
   if (cand.length > 1) return { space: null, choose: true };

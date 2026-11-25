@@ -21,8 +21,10 @@ const MAX_STEPS = 12; const MAX_APPROVERS = 10;
 
 // ---------- Étapes d'un circuit ----------
 async function normApprover(req, a) {
-  const kind = A.oneOf(a && a.kind, ['role', 'user', 'position'], undefined, 'Type d’approbateur inconnu (role, user ou position).');
+  const kind = A.oneOf(a && a.kind, ['role', 'user', 'position', 'epost', 'edg'], undefined, 'Type d’approbateur inconnu (role, user, position, epost ou edg).');
   if (kind === 'role') return { kind, role: A.oneOf(a.role, ['member', 'manager', 'admin', 'owner'], undefined, 'Rôle inconnu.') };
+  if (kind === 'edg') return { kind }; // direction générale de l'entreprise (compte d'entreprise)
+  if (kind === 'epost') { const pid = A.id(a.id, 'Approbateur invalide.'); if (!await db.prepare('SELECT 1 FROM ent_posts WHERE id = ? AND org_id = ?').get(pid, req.org.id)) throw new HttpError(400, 'Poste inconnu.'); return { kind, id: pid }; } // poste de l'organigramme (directeur d'un département…)
   const id = A.id(a.id, 'Approbateur invalide.');
   if (kind === 'user') await A.memberOf(req, id);
   else if (!await db.prepare('SELECT 1 FROM positions WHERE id = ? AND org_id = ?').get(id, req.org.id)) throw new HttpError(400, 'Poste inconnu.');
@@ -127,6 +129,14 @@ router.delete('/flows/:id', design, async (req, res) => {
 async function resolveSpec(orgId, spec, mem) {
   if (spec.kind === 'user') return mem.some((m) => m.userId === Number(spec.id)) ? [Number(spec.id)] : [];
   if (spec.kind === 'role') return mem.filter((m) => m.role === spec.role).map((m) => m.userId);
+  if (spec.kind === 'edg') { // direction générale : les directeurs généraux de l'entreprise qui font partie de cette organisation
+    const rows = await db.prepare('SELECT pe.user_id FROM ent_dg g JOIN ent_people pe ON pe.id = g.person_id JOIN orgs o ON o.entreprise_id = g.entreprise_id WHERE o.id = ? AND pe.user_id IS NOT NULL').all(orgId);
+    return rows.map((r) => Number(r.user_id)).filter((u) => mem.some((m) => m.userId === u));
+  }
+  if (spec.kind === 'epost') { // personnes affectées à un poste de l'organigramme DE CETTE organisation (affectations propres à chaque organisation)
+    const rows = await db.prepare('SELECT pe.user_id FROM ent_assignments a JOIN ent_people pe ON pe.id = a.person_id WHERE a.post_id = ? AND a.org_id = ? AND pe.user_id IS NOT NULL').all(Number(spec.id), orgId);
+    return rows.map((r) => Number(r.user_id)).filter((u) => mem.some((m) => m.userId === u));
+  }
   if (spec.kind === 'position') { const p = await db.prepare('SELECT holder_id FROM positions WHERE id = ? AND org_id = ?').get(Number(spec.id), orgId); return p && p.holder_id && mem.some((m) => m.userId === Number(p.holder_id)) ? [Number(p.holder_id)] : []; }
   return [];
 }
@@ -215,7 +225,7 @@ router.post('/requests', async (req, res) => {
       .run(req.org.id, 'DEM-' + String(n).padStart(4, '0'), flow.id, flow.version, flow.kind === kind || b.flowId ? flow.kind : kind, title, A.text(b.detail, 3000), amount, req.user.id, A.text(b.linkType, 40), A.idOrNull(b.linkId), now)).lastInsertRowid);
     for (const [i, s] of steps.entries()) {
       const applies = amount >= Number(s.minAmount || 0) && (!Number(s.maxAmount) || amount <= Number(s.maxAmount));
-      const groups = s.approvers.map((a) => ({ spec: a, deputy: s.deputy, label: a.kind === 'role' ? `Rôle : ${a.role}` : a.kind === 'user' ? 'Personne' : 'Poste' }));
+      const groups = s.approvers.map((a) => ({ spec: a, deputy: s.deputy, label: a.kind === 'role' ? `Rôle : ${a.role}` : a.kind === 'user' ? 'Personne' : a.kind === 'edg' ? 'Direction générale' : 'Poste' }));
       await db.prepare('INSERT INTO adm_request_steps (org_id, request_id, idx, name, mode, groups, delay_hours, escalate_to, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .run(req.org.id, id, i, s.name, s.mode, JSON.stringify(groups), s.delayHours || 0, s.escalateTo ? JSON.stringify(s.escalateTo) : '', applies ? 'queued' : 'skipped');
     }
@@ -395,4 +405,8 @@ async function stats(orgId) {
 }
 router.get('/stats', async (req, res) => { await sweep(req.org.id); res.json(await stats(req.org.id)); });
 
-module.exports = { router, sweep, stats, resolveSpec, KINDS };
+/** Gestionnaires des demandes (création, approbation, refus), réutilisés par les cockpits de direction : un SEUL moteur de validation, pas de moteur parallèle. */
+const handlerOf = (method, path) => router.stack.find((l) => l.route && l.route.path === path && l.route.methods[method]).route.stack.slice(-1)[0].handle;
+const handlers = { create: handlerOf('post', '/requests'), approve: handlerOf('post', '/requests/:id/approve'), reject: handlerOf('post', '/requests/:id/reject') };
+
+module.exports = { router, sweep, stats, resolveSpec, KINDS, handlers };

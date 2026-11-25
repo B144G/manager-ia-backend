@@ -1,7 +1,8 @@
 'use strict';
 // Espaces de direction de département : migrations 450 et 451 (444 à 449 réservées). Append-only, additives.
 //  450 : réglage par organisation « espaces de direction » (désactivé tant que le propriétaire ne l'active pas : aucune entreprise existante ne change) ;
-//  451 : tâches, notes (dossiers) et objectifs PROPRES à un espace de direction : tables séparées, jamais visibles du personnel du département.
+//  451 : tâches, notes (dossiers) et objectifs PROPRES à un espace de direction : tables séparées, jamais visibles du personnel du département ;
+//  452 : paramétrage par l'entreprise des circuits de validation de direction (installés dans le moteur de circuits d'Administration, adm_flows : aucun moteur parallèle).
 module.exports = [
   `
   ALTER TABLE ent_setup ADD COLUMN IF NOT EXISTS dir_spaces INTEGER NOT NULL DEFAULT 0;
@@ -46,5 +47,16 @@ module.exports = [
     updated_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS dir_objectives_space ON dir_objectives (org_id, space, id);
+  `,
+  `
+  CREATE TABLE IF NOT EXISTS ent_workflows (
+    org_id BIGINT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    config TEXT NOT NULL DEFAULT '{}',
+    flow_id BIGINT,
+    updated_by BIGINT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, key)
+  );
   `,
 ];

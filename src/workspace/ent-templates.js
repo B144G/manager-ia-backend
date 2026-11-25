@@ -15,7 +15,7 @@ const SECTOR_IDS = SECTORS.map((s) => s.id);
 // Directions du pilotage. `on` = secteurs où la direction est active d'emblée (les autres sont proposées, désactivées : on peut les activer).
 const DIRECTIONS = [
   { key: 'daf', name: 'Direction administrative et financière', director: { title: 'Directeur administratif et financier (DAF)', spaces: { dir_finances: 'manage', finances: 'view', direction: 'view', commercial: 'view' } } },
-  { key: 'dtech', name: 'Direction technique', on: ['btp'], director: { title: 'Directeur technique', spaces: { dir_production: 'manage', operations: 'view', direction: 'view', stock: 'view' } } },
+  { key: 'dtech', name: 'Direction technique', on: ['btp'], director: { title: 'Directeur technique', spaces: { dir_technique: 'manage', operations: 'view', direction: 'view', stock: 'view' } } },
   { key: 'dcom', name: 'Direction commerciale', director: { title: 'Directeur commercial', spaces: { dir_commercial: 'manage', commercial: 'view', stock: 'view', direction: 'view' } } },
   { key: 'dprod', name: 'Direction de la production', director: { title: 'Directeur de production', spaces: { dir_production: 'manage', operations: 'view', stock: 'view', direction: 'view' } } },
   { key: 'dlog', name: 'Direction de la logistique', director: { title: 'Directeur de la logistique', spaces: { dir_logistique: 'manage', operations: 'view', stock: 'view', direction: 'view' } } },
