@@ -32,6 +32,13 @@ router.get('/overview', asyncHandler(async (req, res) => {
   });
 }));
 
+// ---- Journal d'activité : les événements de sécurité de MON compte (jamais ceux d'une autre personne) ----
+const ACTIVITY = ['twofa.', 'session.', 'security.', 'privacy.', 'login.', 'org.ownership_transfer'];
+router.get('/activity', asyncHandler(async (req, res) => {
+  const rows = await db.prepare(`SELECT id, at, action, severity, ip, ua FROM audit_trail WHERE actor_type = 'user' AND actor_id = ? AND (${ACTIVITY.map(() => 'action LIKE ?').join(' OR ')}) ORDER BY id DESC LIMIT 40`).all(req.user.id, ...ACTIVITY.map((a) => a + '%'));
+  res.json({ events: rows.map((r) => ({ id: Number(r.id), at: r.at, action: r.action, severity: r.severity, ip: r.ip || '', device: central.sessions.deviceName(r.ua) })) });
+}));
+
 // ---- Appareils connectés ----
 router.delete('/sessions/:id', asyncHandler(async (req, res) => {
   const s = await central.sessions.ofUser(String(req.params.id).slice(0, 64), req.user.id);

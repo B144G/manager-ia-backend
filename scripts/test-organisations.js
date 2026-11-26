@@ -73,6 +73,12 @@ run('Organisations : tableau, transfert, suppression', async ({ check, owner, mg
   r = await owner('DELETE', ws(t1), { confirm: 'Atelier à transférer', password: PASS });
   check('l\'ancien propriétaire ne peut plus supprimer (403)', r.status === 403);
 
+  console.log('Journal d\'activité du compte');
+  r = await owner('GET', '/api/security/activity');
+  check('le journal d\'activité contient le transfert de propriété de la personne (pas de détail brut)', r.status === 200 && r.json.events.some((e) => e.action === 'org.ownership_transfer') && r.json.events.every((e) => !('detail' in e)), r.json);
+  r = await mem('GET', '/api/security/activity');
+  check('un autre compte ne voit pas ces événements', r.status === 200 && !r.json.events.some((e) => e.action === 'org.ownership_transfer'), r.json);
+
   console.log('Suppression protégée');
   r = await mgr('DELETE', ws(org), { confirm: 'Boutique Awa', password: PASS });
   check('un non-propriétaire ne peut pas supprimer (403)', r.status === 403);
