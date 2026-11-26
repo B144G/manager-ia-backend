@@ -48,15 +48,26 @@ router.post('/ownership-transfer', A.need('owner'), async (req, res) => {
   if (owned >= lim.orgs) throw new HttpError(403, `L'offre de ${target.name} ne permet pas d'être propriétaire d'une organisation de plus.`);
   const members = Number((await db.prepare('SELECT COUNT(*) c FROM org_members WHERE org_id = ?').get(req.org.id)).c);
   if (members > lim.members) throw new HttpError(403, `L'offre de ${target.name} permet ${lim.members} personne(s) : l'organisation en compte ${members}.`);
+  // Organisation principale d'une entreprise : le titulaire de l'entreprise (abonnement, gestion des organisations liées) suit la propriété.
+  let ent = null; let isMain = false; let entOrgs = 1;
+  if (req.org.entreprise_id) {
+    ent = await db.prepare('SELECT * FROM entreprises WHERE id = ?').get(req.org.entreprise_id);
+    const main = ent ? await require('./ent-links').mainOrgOf(ent) : null;
+    isMain = Boolean(main) && Number(main.id) === Number(req.org.id);
+    entOrgs = Number((await db.prepare('SELECT COUNT(*) c FROM orgs WHERE entreprise_id = ?').get(req.org.entreprise_id)).c);
+    if (isMain && entOrgs > 1 && entOrgs > lim.orgs) throw new HttpError(403, `L'offre de ${target.name} permet ${lim.orgs} organisation(s) : l'entreprise en compte ${entOrgs} (organisations liées comprises).`);
+  }
   await db.transaction(async () => {
     await db.prepare('UPDATE orgs SET owner_id = ? WHERE id = ?').run(to, req.org.id);
+    if (isMain && ent) await db.prepare('UPDATE entreprises SET owner_user_id = ? WHERE id = ?').run(to, ent.id);
     await db.prepare("UPDATE org_members SET role = 'owner' WHERE org_id = ? AND user_id = ?").run(req.org.id, to);
     await db.prepare("UPDATE org_members SET role = 'admin' WHERE org_id = ? AND user_id = ?").run(req.org.id, req.user.id);
   })();
   await W.audit(req, 'ownership', req.org.id, 'transfer', { owner: req.user.id }, { owner: to });
+  await require('../security').audit.record(req, 'org.ownership_transfer', { orgId: req.org.id, severity: 'high', detail: `de ${req.user.id} à ${to}` });
   await A.logActivity(req.org.id, req.user.id, 'team', `Propriété transférée à ${target.name}`);
   await W.push(req.org.id, to, 'team', `${req.user.name} vous a transféré la propriété de « ${req.org.name} ».`, 'org');
-  res.json({ ok: true, newOwnerId: to });
+  res.json({ ok: true, newOwnerId: to, companyOwnerMoved: isMain });
 });
 
 module.exports = router;

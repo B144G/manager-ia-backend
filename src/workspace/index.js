@@ -122,6 +122,8 @@ router.post('/orgs/link/preview', limits.make(15 * 60 * 1000, 30, 'Trop de tenta
   res.json({ company: ent.name, copyStructure: Boolean(Number(link.copy_structure)), expiresAt: link.expires_at });
 });
 
+router.use('/organisations', require('./organisations').router); // tableau de toutes les organisations de la personne (et de son entreprise)
+
 const orgRouter = express.Router({ mergeParams: true });
 router.use('/orgs/:orgId', A.loadOrg, require('../services/brand-lib').context, orgRouter); // la marque de l'entreprise est disponible à tout le code appelé ensuite (PDF, e-mails, invites de l'IA)
 
@@ -153,15 +155,24 @@ orgRouter.put('/', A.need('admin'), async (req, res) => {
   res.json({ ok: true });
 });
 
-orgRouter.delete('/', A.need('owner'), async (req, res) => {
-  if ((req.body || {}).confirm !== req.org.name) throw new HttpError(400, "Pour supprimer, écrivez exactement le nom de l'organisation.");
+orgRouter.get('/deletion-impact', A.need('owner'), async (req, res) => res.json(await require('./organisations').deletionImpact(req))); // ce qui serait effacé, avec les nombres réels
+
+const deleteGuard = limits.make(60 * 60 * 1000, 10, 'Trop de tentatives de suppression. Réessayez dans une heure.', { shared: true, prefix: 'orgdelete' });
+orgRouter.delete('/', A.need('owner'), deleteGuard, async (req, res) => {
+  const b = req.body || {};
+  if (b.confirm !== req.org.name) throw new HttpError(400, "Pour supprimer, écrivez exactement le nom de l'organisation.");
+  const central = require('../security');
+  const pass = typeof b.password === 'string' ? b.password.slice(0, 200) : '';
+  if (!pass || !(await require('bcryptjs').compare(pass, req.user.pass_hash))) { await central.audit.record(req, 'security.password_check_fail', { orgId: req.org.id, severity: 'warn' }); throw new HttpError(403, 'Mot de passe incorrect.'); }
+  const impact = await require('./organisations').deletionImpact(req);
+  if (impact.blocked) throw new HttpError(409, `« ${req.org.name} » est l'organisation principale de l'entreprise et ${impact.linked.length} organisation(s) y sont liées. Transférez d'abord la propriété de l'organisation principale, ou supprimez d'abord les organisations liées.`);
   await require('../services/waWeb').dropOrg(req.org.id).catch(() => {}); // ferme la session WhatsApp par QR code ; la base efface le reste en cascade
   await db.transaction(async () => {
     await require('../security/privacy').purgeOrgOrphans(req.org.id); // tables sans liaison en cascade : rien ne doit rester
     await db.prepare('DELETE FROM orgs WHERE id = ?').run(req.org.id);
     if (req.org.entreprise_id) await db.prepare('DELETE FROM entreprises WHERE id = ? AND NOT EXISTS (SELECT 1 FROM orgs WHERE entreprise_id = ?)').run(req.org.entreprise_id, req.org.entreprise_id); // une entreprise sans organisation disparaît avec elle
   })();
-  res.json({ ok: true });
+  res.json({ ok: true, companyDeleted: impact.lastOfCompany });
 });
 
 // ---------- Antennes (succursales / extensions) ----------

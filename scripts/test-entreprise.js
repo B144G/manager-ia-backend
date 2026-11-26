@@ -355,7 +355,7 @@ async function main() {
     const org3 = (await camp('POST', '/api/ws/orgs', { name: 'À supprimer', currency: 'FCFA' })).json.id;
     await camp('POST', `/api/ws/orgs/${org3}/entreprise/template`, { sector: 'commerce' });
     const ent3 = Number((await db.prepare('SELECT entreprise_id FROM orgs WHERE id = ?').get(org3)).entreprise_id);
-    r = await camp('DELETE', `/api/ws/orgs/${org3}`, { confirm: 'À supprimer' });
+    r = await camp('DELETE', `/api/ws/orgs/${org3}`, { confirm: 'À supprimer', password: 'secret123' });
     check('supprimer l\'organisation supprime son entreprise et sa structure (rien ne reste)', r.status === 200 && Number((await db.prepare('SELECT COUNT(*) c FROM entreprises WHERE id = ?').get(ent3)).c) === 0 && Number((await db.prepare('SELECT COUNT(*) c FROM ent_posts WHERE org_id = ?').get(org3)).c) === 0 && Number((await db.prepare('SELECT COUNT(*) c FROM ent_people WHERE entreprise_id = ?').get(ent3)).c) === 0);
 
     console.log('Limitation de débit');

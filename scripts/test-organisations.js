@@ -1,0 +1,105 @@
+'use strict';
+// Gestion des organisations : tableau de toutes les organisations de la personne, transfert de propriété, suppression protégée (nom + mot de passe,
+// règle de l'organisation principale), isolation entre entreprises. Lancez-le avec : npm run test:organisations
+const { run } = require('./lib/wave1');
+
+run('Organisations : tableau, transfert, suppression', async ({ check, owner, mgr, mem, other, org, org2, ws, dbx }) => {
+  const PASS = 'secret123';
+  const uid = async (name) => Number((await dbx.prepare("SELECT id FROM users WHERE name = ?").get(name)).id);
+  const ownerId = await uid('Awa'); const mgrId = await uid('Marc'); const otherId = await uid('Zoe');
+  const plan = (id, p) => dbx.prepare('UPDATE users SET plan = ?, plan_expires = ? WHERE id = ?').run(p, new Date(Date.now() + 86400000 * 30).toISOString(), id);
+  await plan(ownerId, 'Illimité'); await plan(mgrId, 'Illimité'); await plan(otherId, 'Illimité');
+
+  console.log('Tableau des organisations');
+  let r = await owner('GET', '/api/ws/organisations');
+  let row = (r.json.orgs || []).find((o) => o.id === org);
+  check('le propriétaire voit son organisation avec ses compteurs', r.status === 200 && row && row.name === 'Boutique Awa' && row.myRole === 'owner' && row.members === 3 && row.type === 'main' && row.membersMax >= 3 && typeof row.planLabel === 'string' && row.createdAt, row);
+  check('le propriétaire a les droits de transférer et de supprimer, et d\'ouvrir', row.canTransfer && row.canDelete && row.canOpen);
+  r = await mem('GET', '/api/ws/organisations');
+  row = r.json.orgs.find((o) => o.id === org);
+  check('un simple membre voit l\'organisation en lecture seule (ni transfert ni suppression)', row && row.myRole === 'member' && !row.canTransfer && !row.canDelete && row.canOpen, row);
+  r = await other('GET', '/api/ws/organisations');
+  check('une personne ne voit jamais les organisations d\'une autre entreprise', r.status === 200 && r.json.orgs.length === 1 && r.json.orgs[0].id === org2 && !JSON.stringify(r.json).includes('Boutique Awa'), r.json);
+
+  console.log('Organisation liée : visible de la direction, pas des autres');
+  r = await owner('POST', `${ws(org)}/entreprise/links`, { label: 'Filiale test' });
+  const code = r.json.code;
+  r = await other('POST', '/api/ws/orgs', { name: 'Filiale Zoe', associationCode: code });
+  const linked = r.json.id;
+  check('l\'organisation liée est créée', r.status === 201 && linked, r.json);
+  r = await owner('GET', '/api/ws/organisations');
+  let lrow = r.json.orgs.find((o) => o.id === linked);
+  check('la direction (administratrice de la filiale) la voit, sans droit de suppression ni de transfert', lrow && lrow.type === 'linked' && lrow.myRole === 'admin' && lrow.canOpen && !lrow.canDelete && !lrow.canTransfer, lrow);
+  await other('DELETE', `${ws(linked)}/members/${ownerId}`);
+  r = await owner('GET', '/api/ws/organisations');
+  lrow = r.json.orgs.find((o) => o.id === linked);
+  check('même sans en être membre, la direction de l\'entreprise voit la filiale en lecture seule', lrow && lrow.myRole === null && !lrow.canOpen && !lrow.canDelete && !lrow.canTransfer, lrow);
+  check('l\'organisation principale est marquée « principale » et les deux ont la même entreprise', r.json.orgs.find((o) => o.id === org).type === 'main' && lrow.company && lrow.company.id === r.json.orgs.find((o) => o.id === org).company.id);
+  r = await other('GET', '/api/ws/organisations');
+  check('le propriétaire de la filiale voit sa filiale et son organisation, jamais l\'organisation principale', r.json.orgs.some((o) => o.id === linked && o.canDelete) && r.json.orgs.some((o) => o.id === org2) && !r.json.orgs.some((o) => o.id === org), r.json.orgs.map((o) => o.id));
+  r = await mgr('GET', '/api/ws/organisations');
+  check('un responsable (non DG) ne voit que ses organisations', r.json.orgs.length === 1 && r.json.orgs[0].id === org, r.json.orgs);
+
+  console.log('Ce qui sera effacé');
+  r = await mgr('GET', `${ws(org)}/deletion-impact`);
+  check('l\'état des lieux est réservé au propriétaire (403)', r.status === 403);
+  r = await other('GET', `${ws(org)}/deletion-impact`);
+  check('une personne d\'une autre entreprise reçoit 404', r.status === 403 || r.status === 404, r.status);
+  await owner('POST', `${ws(org)}/stock/items`, { name: 'Ciment', unit: 'sac', quantity: 10, unitCost: 5000 });
+  r = await owner('GET', `${ws(org)}/deletion-impact`);
+  check('nombres réels : 2 personnes perdent l\'accès, 1 article de stock', r.status === 200 && r.json.counts.members === 2 && r.json.counts.products >= 1 && r.json.peopleLosingAccess === 2, r.json);
+  check('l\'organisation principale avec une filiale est bloquée, la filiale est nommée', r.json.isMain && r.json.blocked === 'linked_orgs' && r.json.linked.some((l) => l.id === linked) && !r.json.lastOfCompany, r.json);
+
+  console.log('Transfert de propriété');
+  r = await owner('POST', '/api/ws/orgs', { name: 'Atelier à transférer' });
+  const t1 = r.json.id;
+  r = await owner('POST', `${ws(t1)}/invites`, { role: 'member' });
+  await mgr('POST', '/api/ws/orgs/join', { code: r.json.code });
+  r = await mgr('POST', `${ws(t1)}/ownership-transfer`, { userId: mgrId, confirm: 'Atelier à transférer' });
+  check('un non-propriétaire ne peut pas transférer (403)', r.status === 403, r.json);
+  r = await owner('POST', `${ws(t1)}/ownership-transfer`, { userId: mgrId, confirm: 'mauvais' });
+  check('le nom exact est exigé (400)', r.status === 400);
+  r = await owner('POST', `${ws(t1)}/ownership-transfer`, { userId: otherId, confirm: 'Atelier à transférer' });
+  check('on ne transfère qu\'à un membre de l\'organisation (404)', r.status === 404);
+  r = await owner('POST', `${ws(t1)}/ownership-transfer`, { userId: mgrId, confirm: 'Atelier à transférer' });
+  check('transfert accepté', r.status === 200 && r.json.newOwnerId === mgrId, r.json);
+  r = await owner('GET', '/api/ws/organisations');
+  let t = r.json.orgs.find((o) => o.id === t1);
+  check('l\'ancien propriétaire devient administrateur : plus de transfert ni de suppression', t && t.myRole === 'admin' && !t.canTransfer && !t.canDelete, t);
+  r = await mgr('GET', '/api/ws/organisations');
+  t = r.json.orgs.find((o) => o.id === t1);
+  check('le nouveau propriétaire a les droits', t && t.myRole === 'owner' && t.canTransfer && t.canDelete, t);
+  check('le transfert est au journal d\'audit de sécurité', Number((await dbx.prepare("SELECT COUNT(*) c FROM audit_trail WHERE action = 'org.ownership_transfer' AND org_id = ?").get(t1)).c) === 1);
+  r = await owner('DELETE', ws(t1), { confirm: 'Atelier à transférer', password: PASS });
+  check('l\'ancien propriétaire ne peut plus supprimer (403)', r.status === 403);
+
+  console.log('Suppression protégée');
+  r = await mgr('DELETE', ws(org), { confirm: 'Boutique Awa', password: PASS });
+  check('un non-propriétaire ne peut pas supprimer (403)', r.status === 403);
+  r = await mem('DELETE', ws(org), { confirm: 'Boutique Awa', password: PASS });
+  check('un simple membre non plus (403)', r.status === 403);
+  r = await other('DELETE', ws(org), { confirm: 'Boutique Awa', password: PASS });
+  check('une personne d\'une autre entreprise reçoit un refus', r.status === 403 || r.status === 404, r.status);
+  r = await owner('DELETE', ws(org), { confirm: 'Boutique', password: PASS });
+  check('le nom exact est exigé (400)', r.status === 400);
+  r = await owner('DELETE', ws(org), { confirm: 'Boutique Awa' });
+  check('le mot de passe est exigé (403)', r.status === 403 && /mot de passe/i.test(r.json.error), r.json);
+  r = await owner('DELETE', ws(org), { confirm: 'Boutique Awa', password: 'pas-le-bon' });
+  check('un mauvais mot de passe est refusé (403)', r.status === 403);
+  r = await owner('DELETE', ws(org), { confirm: 'Boutique Awa', password: PASS });
+  check('l\'organisation principale ne se supprime pas tant qu\'il reste une filiale (409, message clair)', r.status === 409 && /organisations? .*li/i.test(r.json.error), r.json);
+  check('rien n\'a été effacé', Boolean(await dbx.prepare('SELECT 1 FROM orgs WHERE id = ?').get(org)));
+  const entId = Number((await dbx.prepare('SELECT entreprise_id FROM orgs WHERE id = ?').get(org)).entreprise_id);
+  r = await other('DELETE', ws(linked), { confirm: 'Filiale Zoe', password: PASS });
+  check('le propriétaire de la filiale la supprime (200, l\'entreprise reste)', r.status === 200 && r.json.companyDeleted === false && !await dbx.prepare('SELECT 1 FROM orgs WHERE id = ?').get(linked) && Boolean(await dbx.prepare('SELECT 1 FROM entreprises WHERE id = ?').get(entId)), r.json);
+  check('la suppression d\'une organisation est au journal d\'audit (critique)', Number((await dbx.prepare("SELECT COUNT(*) c FROM audit_trail WHERE action = 'org.delete' AND severity = 'critical'").get()).c) === 1);
+  r = await owner('GET', `${ws(org)}/deletion-impact`);
+  check('la principale n\'est plus bloquée', r.json.blocked === null && r.json.lastOfCompany === true, r.json);
+  r = await owner('DELETE', ws(org), { confirm: 'Boutique Awa', password: PASS });
+  check('dernière organisation : supprimée avec son entreprise', r.status === 200 && r.json.companyDeleted === true && !await dbx.prepare('SELECT 1 FROM orgs WHERE id = ?').get(org) && !await dbx.prepare('SELECT 1 FROM entreprises WHERE id = ?').get(entId), r.json);
+  check('les organisations d\'ailleurs sont intactes', Boolean(await dbx.prepare('SELECT 1 FROM orgs WHERE id = ?').get(org2)) && Boolean(await dbx.prepare('SELECT 1 FROM orgs WHERE id = ?').get(t1)));
+  r = await owner('GET', '/api/ws/organisations');
+  check('le tableau ne montre plus l\'organisation supprimée', !r.json.orgs.some((o) => o.id === org), r.json.orgs.map((o) => o.id));
+  r = await mgr('DELETE', ws(t1), { confirm: 'Atelier à transférer', password: PASS });
+  check('le nouveau propriétaire supprime son organisation (200)', r.status === 200);
+});

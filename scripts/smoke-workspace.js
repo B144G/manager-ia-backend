@@ -1737,9 +1737,9 @@ async function main() {
     check('un simple utilisateur ne peut pas générer de lien -> 401', r.status === 401, r.json);
 
     console.log('Suppression');
-    r = await owner('DELETE', `/api/ws/orgs/${org}`, { confirm: 'mauvais nom' });
+    r = await owner('DELETE', `/api/ws/orgs/${org}`, { confirm: 'mauvais nom', password: 'secret123' });
     check('suppression sans le bon nom -> 400', r.status === 400, r.json);
-    r = await owner('DELETE', `/api/ws/orgs/${org}`, { confirm: 'Boutique Awa' });
+    r = await owner('DELETE', `/api/ws/orgs/${org}`, { confirm: 'Boutique Awa', password: 'secret123' });
     check('suppression avec confirmation', r.status === 200, r.json);
     r = await owner('GET', '/api/ws/orgs');
     check('plus aucune organisation', r.json.orgs.length === 0, r.json);

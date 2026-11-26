@@ -47,7 +47,7 @@ run('Fusion : export et suppression complète d\'une organisation multi-modules'
   check('export d\'organisation : les champs sensibles sont lisibles (déchiffrés) et aucun secret', JSON.stringify(ex.tables.employees || []).includes('CNPS-777') && !JSON.stringify(ex).includes('v2:'), null);
 
   // --- Suppression complète ---
-  r = await owner('DELETE', `/api/ws/orgs/${org}`, { confirm: 'Boutique Awa' });
+  r = await owner('DELETE', `/api/ws/orgs/${org}`, { confirm: 'Boutique Awa', password: 'secret123' });
   check('suppression d\'organisation acceptée', r.status === 200, r.json);
   const tabs = await dbx.prepare("SELECT table_name t FROM information_schema.columns WHERE table_schema = 'public' AND column_name = 'org_id' AND table_name NOT IN ('audit_trail')").all();
   const left = [];

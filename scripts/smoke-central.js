@@ -200,7 +200,7 @@ async function main() {
     check('liste des organisations : état WhatsApp présent', r.status === 200 && r.json.orgs.some((x) => x.id === org) && r.json.orgs.every((x) => x.wa && typeof x.wa.status === 'string'), r.json);
     r = await adm('POST', `/api/admin/security/orgs/${org}/wa-disconnect`, {});
     check('déconnexion WhatsApp d\'une organisation par l\'administrateur', r.status === 200 && r.json.ok === true, r.json);
-    r = await o('DELETE', `/api/ws/orgs/${org}`, { confirm: 'Boutique Audit 2' });
+    r = await o('DELETE', `/api/ws/orgs/${org}`, { confirm: 'Boutique Audit 2', password: PASS });
     r = await adm('GET', '/api/admin/security/audit?action=org.delete');
     check('suppression d\'organisation au journal (critique)', r.json.events.length === 1 && r.json.events[0].severity === 'critical', r.json.events);
     r = await adm('GET', '/api/admin/security/audit?action=admin.');
