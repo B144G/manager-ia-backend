@@ -99,9 +99,9 @@ run('Confidentialité : droits des personnes, conservation, suppression', async 
   await dbx.prepare("INSERT INTO tmp_files (org_id, mime, data, expires_at) VALUES (?, 'audio/mpeg', ?, ?)").run(org2, Buffer.from('x'), new Date(Date.now() + 3600000).toISOString());
   await other('POST', `/api/ws/orgs/${org2}/crm/customers`, { name: 'Client à effacer', phone: '237611111111' });
   await other('POST', `/api/ws/orgs/${org2}/hr/employees`, { name: 'Employé à effacer', cnpsNo: 'X1' });
-  r = await other('DELETE', `/api/ws/orgs/${org2}`, { confirm: 'Mauvais nom' });
+  r = await other('DELETE', `/api/ws/orgs/${org2}`, { confirm: 'Mauvais nom', password: 'secret123' });
   check("suppression d'organisation : exige le nom exact", r.status === 400, r.status);
-  r = await other('DELETE', `/api/ws/orgs/${org2}`, { confirm: 'Autre Société' });
+  r = await other('DELETE', `/api/ws/orgs/${org2}`, { confirm: 'Autre Société', password: 'secret123' });
   check("suppression d'organisation : acceptée pour son propriétaire", r.status === 200, r.json);
   const tables = await dbx.prepare("SELECT table_name t FROM information_schema.columns WHERE table_schema = 'public' AND column_name = 'org_id' AND table_name NOT IN ('audit_trail')").all();
   const leftovers = [];

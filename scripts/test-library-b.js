@@ -564,7 +564,7 @@ run('Bibliothèque : blocs protégés, droits, documents, corbeille, journal', a
   r = await other('GET', `/api/privacy/orgs/${org2}/export`);
   const ex = r.json && r.json.tables ? r.json.tables : {};
   check('export d\'organisation : blocs, documents, versions, droits et journal de la bibliothèque inclus, sans le contenu des fichiers', r.status === 200 && ex.lib_blocks && ex.lib_docs && ex.lib_versions && ex.lib_audit && ex.lib_role_perms && !r.text.includes('CONTENU-ORG2-UNIQUE') && !/"data":/.test(JSON.stringify(ex.lib_versions)), Object.keys(ex).filter((k) => k.startsWith('lib_')));
-  r = await other('DELETE', ws(org2), { confirm: 'Autre Société' });
+  r = await other('DELETE', ws(org2), { confirm: 'Autre Société', password: 'secret123' });
   check('suppression de l\'organisation 2', r.status === 200, r.json);
   const left = {};
   for (const t of ['lib_blocks', 'lib_docs', 'lib_versions', 'lib_folders', 'lib_audit', 'lib_grants', 'lib_settings', 'lib_attempts']) left[t] = Number((await dbx.prepare(`SELECT COUNT(*) AS n FROM ${t} WHERE org_id = ?`).get(org2)).n);

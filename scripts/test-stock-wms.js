@@ -1507,7 +1507,7 @@ run('Stock WMS : emplacements, transferts, réservations, retours…', async (t)
     await owner('POST', `${WX}/returns`, { kind: 'scrap', reason: 'Test', validate: true, lines: [{ itemId: ix, quantity: 1, reasonCode: 'damaged' }] });
     await owner('POST', `${WX}/receipts`, { lines: [{ itemId: ix, quantity: 2, unitCost: 10 }], costs: [{ kind: 'transport', amount: 20 }] });
     await owner('POST', `${WX}/picks`, { label: 'p', lines: [{ itemId: ix, quantity: 1 }] });
-    r = await owner('DELETE', ws(orgX), { confirm: 'Société à supprimer' });
+    r = await owner('DELETE', ws(orgX), { confirm: 'Société à supprimer', password: 'secret123' });
     check('suppression d\'une organisation qui a des emplacements, transferts, réservations, retours, réceptions et listes → 200', r.status === 200, r.json);
     const left = await dbx.prepare('SELECT (SELECT COUNT(*) FROM wms_stock WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_locations WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_warehouses WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_transfers WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_returns WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_receipts WHERE org_id = ?) + (SELECT COUNT(*) FROM wms_picks WHERE org_id = ?) AS n').get(orgX, orgX, orgX, orgX, orgX, orgX, orgX);
     check('rien d\'orphelin après la suppression', left.n === 0, left);

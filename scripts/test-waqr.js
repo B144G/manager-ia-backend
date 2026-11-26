@@ -307,7 +307,7 @@ async function main() {
     fresh({ loadLib: async () => lib3 });
     await waWeb.start(orgB);
     check('session de B en mémoire avant suppression', waWeb.hasSession(orgB));
-    r = await owner2('DELETE', `/api/ws/orgs/${orgB}`, { confirm: 'Atelier Zoe' });
+    r = await owner2('DELETE', `/api/ws/orgs/${orgB}`, { confirm: 'Atelier Zoe', password: 'secret123' });
     check('suppression de l\'organisation -> session fermée et données effacées', r.status === 200 && !waWeb.hasSession(orgB) && lib3.sockets[lib3.sockets.length - 1].ended === true && (await db.prepare('SELECT COUNT(*) c FROM wa_qr_auth WHERE org_id = ?').get(orgB)).c === 0 && !(await db.prepare('SELECT 1 FROM wa_qr_sessions WHERE org_id = ?').get(orgB)));
 
     // ---------- 13. Bibliothèque réelle (sans réseau) ----------
